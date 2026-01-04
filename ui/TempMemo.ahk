@@ -16,10 +16,12 @@
 #Requires AutoHotkey v2.0
 
 class TempMemo {
-    ; --- 基本設定 (指定された3つの定数のみ) ---
+    ; --- 基本設定 ---
     static MEMO_DIR := A_ScriptDir "\ui\memos"
     static GUI_ALPHA_INIT := 235
     static TAB_NAMES := ["Memo 1", "Memo 2", "Memo 3", "Work"]
+    static GUI_WIDTH_DEFAULT := 600
+    static GUI_HEIGHT_DEFAULT := 450
 
     static GuiObj := ""
     static TabObj := ""
@@ -37,23 +39,91 @@ class TempMemo {
         OnExit((*) => this.SaveAll())
     }
 
+    ; --- 表示・非表示の切り替え（シングルトン & 位置制御） ---
     static Toggle(*) {
+        ; ウィンドウが既にアクティブなら保存して隠す
         if (this.GuiObj && WinActive("ahk_id " this.GuiObj.Hwnd)) {
             this.SaveAll()
             this.GuiObj.Hide()
+            return
+        }
+
+        ; 表示位置の計算
+        CoordMode "Caret", "Screen"
+        CoordMode "Mouse", "Screen"
+
+        ; 現在のウィンドウサイズを取得（未表示時はデフォルト値を使用）
+        this.GuiObj.Opt("+LastFound")
+        hWnd := WinExist()
+        WinGetPos(, , &curW, &curH, hWnd)
+        realW := (curW > 0) ? curW : this.GUI_WIDTH_DEFAULT
+        realH := (curH > 0) ? curH : this.GUI_HEIGHT_DEFAULT
+
+        targetX := 0
+        targetY := 0
+
+        if CaretGetPos(&cX, &cY) {
+            targetX := cX + 5
+            monitorNum := this._GetMonitorFromPos(cX, cY)
+            MonitorGetWorkArea(monitorNum, &L, &T, &R, &B)
+
+            ; 画面下端にはみ出る場合は、キャレットの上側に表示（反転）
+            if (cY + 25 + realH > B) {
+                targetY := cY - realH - 10
+            } else {
+                targetY := cY + 25
+            }
         } else {
-            this.GuiObj.Show()
-            ; フォーカス処理
-            if (this.EditObjs.Length >= this.TabObj.Value) {
-                this.EditObjs[this.TabObj.Value].Focus()
+            ; キャレット座標が取得できない場合はマウス位置を基準にする
+            MouseGetPos(&mX, &mY)
+            targetX := mX + 15
+            targetY := mY + 15
+        }
+
+        ; 画面外へのはみ出し防止
+        this._EnsureInScreen(&targetX, &targetY, realW, realH)
+
+        this.GuiObj.Show("x" . targetX . " y" . targetY)
+
+        ; フォーカス処理
+        if (this.EditObjs.Length >= this.TabObj.Value) {
+            this.EditObjs[this.TabObj.Value].Focus()
+        }
+    }
+
+    ; --- 座標・モニター判定ヘルパー ---
+    static _GetMonitorFromPos(x, y) {
+        loop MonitorGetCount() {
+            MonitorGet(A_Index, &L, &T, &R, &B)
+            if (x >= L && x <= R && y >= T && y <= B) {
+                return A_Index
+            }
+        }
+        return MonitorGetPrimary()
+    }
+
+    static _EnsureInScreen(&x, &y, w, h) {
+        loop MonitorGetCount() {
+            MonitorGetWorkArea(A_Index, &left, &top, &right, &bottom)
+            if (x >= left && x <= right && y >= top && y <= bottom) {
+                if (x + w > right) {
+                    x := right - w - 10
+                }
+                if (y + h > bottom) {
+                    y := bottom - h - 10
+                }
+                if (y < top) {
+                    y := top + 10
+                }
+                return
             }
         }
     }
 
+    ; --- データ管理ロジック ---
     static SaveAll(*) {
         for index, name in this.TAB_NAMES {
             filePath := this.MEMO_DIR "\Tab" index ".txt"
-
             try {
                 if (FileExist(filePath)) {
                     FileDelete(filePath)
@@ -72,6 +142,7 @@ class TempMemo {
         }
     }
 
+    ; --- GUI構築 ---
     static _BuildGui() {
         this.GuiObj := Gui("+AlwaysOnTop +ToolWindow +Resize", "Temp Memo")
         this.GuiObj.Opt("+MinSize350x250")
@@ -84,14 +155,12 @@ class TempMemo {
         this.EditObjs := []
         for index, name in this.TAB_NAMES {
             this.TabObj.UseTab(index)
-
-            ; 0x100: ES_NOHIDESEL (フォーカスが外れても選択を維持)
+            ; 0x100: ES_NOHIDESEL (フォーカスが外れても選択範囲を維持)
             editCtrl := this.GuiObj.AddEdit("Multi WantTab -Wrap HScroll VScroll +0x100 x10 y35")
             editCtrl.SetFont("s11", "Consolas")
 
-            ; 左右の余白（8px）を設定してメモ帳に近づける
+            ; 左右の余白（8px）を設定
             SendMessage(0x00D3, 3, 8 | (8 << 16), editCtrl.Hwnd)
-
             this.EditObjs.Push(editCtrl)
         }
         this.TabObj.UseTab()
@@ -101,30 +170,24 @@ class TempMemo {
         this.SliderObj := this.GuiObj.AddSlider("h30 Range50-255", this.GUI_ALPHA_INIT)
         this.SliderObj.OnEvent("Change", (sd, *) => this._OnAlphaChange(sd))
 
-        this.GuiObj.Show("w600 h450 Hide")
-        this._OnSize(600, 450)
+        ; 初回生成時は隠した状態でサイズを適用
+        this.GuiObj.Show("w" this.GUI_WIDTH_DEFAULT " h" this.GUI_HEIGHT_DEFAULT " Hide")
+        this._OnSize(this.GUI_WIDTH_DEFAULT, this.GUI_HEIGHT_DEFAULT)
         this._OnAlphaChange(this.SliderObj)
 
-        ; --- GUI専用ホットキーの設定 ---
+        ; ホットキーの設定
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        ; Ctrl + V をオーバーライドして改行コードを修正
         Hotkey("^v", (*) => this._PasteCorrected())
         Hotkey("Esc", (*) => this.Toggle())
         HotIf()
     }
 
-    /**
-     * クリップボードの改行コードを CRLF に修正して貼り付ける
-     */
     static _PasteCorrected() {
-        ; クリップボードのテキストを取得し、全ての改行(LF/CR/CRLF)をCRLF(`r`n)に統一
+        ; 改行コードをCRLFに統一して貼り付け
         cleanText := RegExReplace(A_Clipboard, "\R", "`r`n")
-
-        ; 現在フォーカスのあるEditコントロールに貼り付け
         focusedHwnd := ControlGetFocus("ahk_id " this.GuiObj.Hwnd)
         if (focusedHwnd) {
-            ; AHK v2 の Edit.Paste メソッド相当 of 処理
-            SendMessage(0x00C2, 1, StrPtr(cleanText), focusedHwnd) ; EM_REPLACESEL
+            SendMessage(0x00C2, 1, StrPtr(cleanText), focusedHwnd)
         }
     }
 
@@ -135,22 +198,17 @@ class TempMemo {
     }
 
     static _OnSize(w, h) {
-        ; v2でのreturnエラー防止のため明示的なifブロック
-        if (w = 0 || h = 0) {
+        if (w == 0 || h == 0) {
             return
         }
-
         tabW := w - 10
         tabH := h - 15 - 30
         this.TabObj.Move(, , tabW, tabH)
-
         editW := tabW - 15
         editH := tabH - 30 - 10
-
         for editCtrl in this.EditObjs {
             editCtrl.Move(, , editW, editH)
         }
-
         sliderY := 10 + tabH
         this.LabelObj.Move(5, sliderY + 5, 110)
         this.SliderObj.Move(115, sliderY, tabW - 110)
