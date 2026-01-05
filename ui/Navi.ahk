@@ -3,20 +3,24 @@
 ; Description:  汎用フォルダランチャー & アクティブパス実行ツール
 ;               - フォルダパスのTreeView表示とクイックアクセス
 ;               - 表示・非表示の個別/一括切り替え機能
-;               - リストの順序入れ替え（上下移動）
+;
+; - リストの順序入れ替え（上下移動）
 ;               - 外部ファイラー（Tablacus等）やVSCodeへのパス渡し
 ; Version:      1.0.0
 ; License:      MIT
+;
 ;
 ; Usage Example (Main.ahk):
 ;   #Include ui\Navi.ahk
 ;   Navi.Init()
 ;   vk1D & f:: Navi.Show() ; 無変換 + f で起動
+;
 ; ==============================================================================
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
 class Navi {
+    ;
     ; --- クラス定数 ---
     static GUI_WIDTH := 450
     static GUI_HEIGHT_APPROX := 520
@@ -25,6 +29,7 @@ class Navi {
     static TOOLTIP_ERROR_DURATION := 2000
     static TOOLTIP_SUCCESS_DURATION := 1000
 
+    ;
     ; GUIオブジェクトを保持するスタティック変数
     static GuiObj := ""
 
@@ -41,16 +46,10 @@ class Navi {
         this._EnsureDefaultFolders()
         this.ExplorerPath := this._LoadConfig()
 
-        ; グローバルトリガー：無変換長押しで表示
-        Hotkey("vk1D", (*) => this._HandleGlobalTrigger(), "On")
+        ; 無変換長押しのグローバルトリガーを削除しました
     }
 
-    static _HandleGlobalTrigger() {
-        if !KeyWait("vk1D", "T0.3") {
-            this.Show()
-            KeyWait("vk1D")
-        }
-    }
+    ; _HandleGlobalTrigger メソッドを削除しました
 
     static Show() {
         if (this.ExplorerPath == "") {

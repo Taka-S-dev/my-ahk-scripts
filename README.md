@@ -24,7 +24,7 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 | | `MOD_KEY + c` | Navi: コマンドプロンプトで開く (Navi 選択中のみ) |
 | **入力支援** | `MOD_KEY + p` | スニペット選択 (SnippetPicker.ahk) 起動 |
 | | `(Picker中) ;today` | **クイックトリガ**: 今日の日付を動的に生成して挿入 |
-| | `MOD_KEY + ;` | **日付入力**: Excel 風の操作感で今日の日付を挿入 |
+| | `Ctrl + ;` | **日付入力**: Excel 風の操作感で今日の日付を挿入 |
 | **編集・移動** | `MOD_KEY + h/j/k/l` | Vim 風カーソル移動 (左/下/上/右) |
 | | `MOD_KEY + r + 記号` | 選択範囲を括弧等で囲む (WrapPalette) ※対応記号: " ' ( [ { < `|
 | **メモ・ストック** |`MOD_KEY + m` | テンポラリ・メモ (TempMemo.ahk) 起動 |

@@ -35,4 +35,18 @@ class VimNavigation {
             Send(noShift)
         }
     }
+
+    /**
+     * 新しい行を開いて挿入状態にする (Vimの o/O)
+     * @param isAbove Trueなら上の行(O)、Falseなら下の行(o)
+     */
+    static OpenLine(isAbove := false) {
+        if isAbove {
+            ; 上に改行 (O): 行頭に移動 -> 改行 -> 上に移動
+            Send("{Home}{Enter}{Up}")
+        } else {
+            ; 下に改行 (o): 行末に移動 -> 改行
+            Send("{End}{Enter}")
+        }
+    }
 }

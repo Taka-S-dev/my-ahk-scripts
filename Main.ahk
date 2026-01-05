@@ -99,25 +99,29 @@ ModifierKeyHandler.OnTap := (*) => ImeControl.Toggle(false)
 #HotIf GetKeyState(MOD_KEY, "P")
 
 ; hjkl: 基本移動
-h:: VimNavigation.Move("{Left}", "+{Left}")
-j:: VimNavigation.Move("{Down}", "+{Down}")
-k:: VimNavigation.Move("{Up}", "+{Up}")
-l:: VimNavigation.Move("{Right}", "+{Right}")
+*h:: VimNavigation.Move("{Left}", "+{Left}")
+*j:: VimNavigation.Move("{Down}", "+{Down}")
+*k:: VimNavigation.Move("{Up}", "+{Up}")
+*l:: VimNavigation.Move("{Right}", "+{Right}")
 
 ; w/b: 単語単位移動
-w:: VimNavigation.Move("^{Right}", "+^{Right}")
-b:: VimNavigation.Move("^{Left}", "+^{Left}")
+*w:: VimNavigation.Move("^{Right}", "+^{Right}")
+*b:: VimNavigation.Move("^{Left}", "+^{Left}")
 
 ; 0/4: 行頭・行末移動
-0:: VimNavigation.Move("{Home}", "+{Home}")
-4:: VimNavigation.Move("{End}", "+{End}")
+*0:: VimNavigation.Move("{Home}", "+{Home}")
+*4:: VimNavigation.Move("{End}", "+{End}")
 
 ; u/d: ページアップ・ダウン
-u:: VimNavigation.Move("{PgUp}", "+{PgUp}")
-d:: VimNavigation.Move("{PgDn}", "+{PgDn}")
+*u:: VimNavigation.Move("{PgUp}", "+{PgUp}")
+*d:: VimNavigation.Move("{PgDn}", "+{PgDn}")
 
 ; x: 削除
-x:: Send("{Del}")
+; *x:: Send("{Del}")
+*x:: VimNavigation.Move("{Del}", "{BackSpace}")
+
+; Vimの o / O (行の挿入)
+*o:: VimNavigation.OpenLine(GetKeyState("Shift", "P"))
 
 #HotIf
 
