@@ -112,17 +112,33 @@ ModifierKeyHandler.OnTap := (*) => ImeControl.Toggle(false)
 *0:: VimNavigation.Move("{Home}", "+{Home}")
 *4:: VimNavigation.Move("{End}", "+{End}")
 
-; u/d: ページアップ・ダウン
-*u:: VimNavigation.Move("{PgUp}", "+{PgUp}")
-*d:: VimNavigation.Move("{PgDn}", "+{PgDn}")
-
-; x: 削除
+; --- 編集系（単一キー） ---
 ; *x:: Send("{Del}")
 *x:: VimNavigation.Move("{Del}", "{BackSpace}")
+u:: Send("^z")        ; 元に戻す
+p:: Send("^v")        ; 貼り付け
 
 ; Vimの o / O (行の挿入)
 *o:: VimNavigation.OpenLine(GetKeyState("Shift", "P"))
 
+; --- 削除命令 (d) : dd  ---
+d:: {
+    KeyWait "d"  ; dキーが離されるまで待つ
+    startTime := A_TickCount
+
+    while (A_TickCount - startTime < 500) {
+        if GetKeyState("d", "P") {  ; dが押されたら
+            KeyWait "d"
+            VimNavigation.DeleteLine()  ; dd実行
+            return
+        }
+        Sleep 10
+    }
+}
+
+; --- 二度打ち系 ( yy: 行コピー) ---
+; HandleDoubleKey メソッドをクラス側に追加している前提です
+y:: VimNavigation.HandleDoubleKey("y", VimNavigation.CopyLine)
 #HotIf
 
 ; ------------------------------------------------------------
@@ -173,7 +189,7 @@ SnippetPicker.Init()
 
 ; 3. ホットキー登録
 #HotIf GetKeyState(MOD_KEY, "P")
-p:: SnippetPicker.Show()
+s:: SnippetPicker.Show()
 #HotIf
 
 ; ------------------------------------------------------------
@@ -187,4 +203,14 @@ TempMemo.Init()
 ; 無変換 + m でテンポラリメモを呼び出し
 #HotIf GetKeyState(MOD_KEY, "P")
 m:: TempMemo.Toggle()
+#HotIf
+
+; ------------------------------------------------------------
+;  ホットストリングマネージャ
+; ------------------------------------------------------------
+#Include "ui\HotstringManager.ahk"
+; Main.ahk への記述例
+; 無変換を押しながら Ctrl + H
+#HotIf GetKeyState(MOD_KEY, "P")
+^h:: HotstringManager.Show()
 #HotIf
