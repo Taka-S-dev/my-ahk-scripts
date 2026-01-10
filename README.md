@@ -23,6 +23,7 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 | | `MOD_KEY + v` | Navi: VSCode で開く (Navi 選択中のみ) |
 | | `MOD_KEY + c` | Navi: コマンドプロンプトで開く (Navi 選択中のみ) |
 | **入力支援** | `MOD_KEY + s` | スニペット選択 (SnippetPicker.ahk) 起動 |
+| | `MOD_KEY + Ctrl + h` | **Hotstring Manager**: 動的な短縮入力の登録・管理画面を起動 |
 | | `(Picker中) ;today` | **クイックトリガ**: 今日の日付を動的に生成して挿入 |
 | | `Ctrl + ;` | **日付入力**: Excel 風の操作感で今日の日付を挿入 |
 | **編集・移動** | `MOD_KEY + h/j/k/l` | Vim 風カーソル移動 (左/下/上/右) |
@@ -81,8 +82,8 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 - 定型文を一覧から検索・選択して挿入
 - 日付入力などの動的な入力にも対応
 - コーディング・業務文書入力の高速化を目的とした設計
-- 汎用ツールをあえて使わず、メモリ使用量を極限まで抑えるために AHK ネイティブで実装
-- 隠しパラメータ（プレフィックス）による分類・抽出機能により高速検索可能
+- 汎用ツールをあえて使わず、メモリ使用量を抑えるために AHK ネイティブで実装
+- **プレースホルダ置換エンジン搭載** 定型文の中に `yyyy/mm/dd`（日付）、`HH:mm`（時刻）、`{{clip}}`（クリップボード内容）を含めることで、挿入時にこれらを動的に展開
 
 ### 修飾キー制御 (ModifierKeyHandler.ahk)
 
@@ -127,7 +128,12 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 - **EOL 正規化**: 貼り付け時に改行コードを自動修正し、ブラウザからのコピーが 1 行になる問題を防止
 - **開発者向け表示**: 等幅フォント・折り返し無効・透明度調整など、コードの断片保持に最適化
 
-### その他ユーティリティ(ImeControl.ahk/Hotstrings.ahk)
+### ホットストリング管理 (HotstringManager.ahk)
+
+- **動的な登録と反映** INI ファイルによる永続化を行い、スクリプトの再起動なしで新しいホットストリングを即座に反映
+- **プレースホルダ対応** スニペット機能と同様の置換エンジンを備え、日付やクリップボードを組み合わせた動的な短縮入力をサポート
+
+### その他ユーティリティ(ImeControl.ahk)
 
 - IME 状態制御
 - 日付・時刻の即時入力
@@ -226,12 +232,12 @@ XButton1::FolderToggle.Execute()        ; マウスサイドボタンでフォ�
 │   ├── VimNavigation.ahk
 │   ├── FolderToggle.ahk
 │   ├── DateTimeInsert.ahk
-│   ├── WrapPalette.ahk
-│   └── Hotstrings.ahk
+│   └── WrapPalette.ahk
 ├── ui/                 # GUI 関連クラス
 │   ├── Navi.ahk
 │   ├── TempMemo.ahk
-│   └── SnippetPicker.ahk
+│   ├── SnippetPicker.ahk
+│   └── HotstringManager.ahk
 └── tests/              # 動作確認・テスト用スクリプト
 ```
 
