@@ -20,19 +20,24 @@
 #SingleInstance Force
 
 class Navi {
-    ;
     ; --- クラス定数 ---
     static GUI_WIDTH := 450
-    static GUI_HEIGHT_APPROX := 520
+    static GUI_HEIGHT_APPROX := 540
     static IniPath := A_ScriptDir "\ui\Navi.ini"
     static ExplorerPath := ""
     static TOOLTIP_ERROR_DURATION := 2000
     static TOOLTIP_SUCCESS_DURATION := 1000
 
-    ; --- セッション内メモリ：AHKが再起動されるまで保持される ---
+    ; --- [追加] アクションメニュー用の定数 ---
+    static MENU_BG_COLOR := "262626"  ; メニューの背景色
+    static MENU_WIDTH := 250       ; メニューの幅
+    static MENU_BTN_W := 230       ; ボタンの幅
+    static MENU_BTN_H := 38        ; ボタンの高さ
+    static MENU_OFFSET_Y := 320    ; 中央配置の計算用オフセット
+
+    ; --- セッション内メモリ ---
     static lastRoot := ""
     static lastPath := ""
-
     static GuiObj := ""
 
     static Init() {
@@ -65,7 +70,6 @@ class Navi {
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
 
-        ; 前回選択したルートのインデックスを計算
         chooseIdx := 1
         for i, name in folderNames {
             if (name == this.lastRoot) {
@@ -76,10 +80,14 @@ class Navi {
 
         rootDDL := this.GuiObj.Add("DropDownList", "xm w280 Choose" . chooseIdx . " vRootDDL", folderNames)
         btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h28 -Tabstop", "編集")
-        this.GuiObj.Add("Checkbox", "x+10 yp vPinCheck -Tabstop", "固定")
+        this.GuiObj.Add("Checkbox", "x+50 yp+5 vPinCheck -Tabstop", "ピン留め")
         tv := this.GuiObj.Add("TreeView", "xm w455 r20 vFolderTree")
 
-        ; ルート変更時にツリーを更新し、現在のルート名をメモリに保存
+        ; ステータスバーによる操作案内
+        this.GuiObj.SetFont("s8")
+        sb := this.GuiObj.Add("StatusBar")
+        sb.SetText(" [Space] アクションメニューを表示  /  [Enter] エクスプローラー   /  [Ctrl+P] ピン留め")
+
         rootDDL.OnEvent("Change", (*) => (
             this.lastRoot := rootDDL.Text,
             this._RefreshTree(tv, folderMap[rootDDL.Text])
@@ -90,21 +98,16 @@ class Navi {
         tv.OnEvent("DoubleClick", (obj, id, *) => this.Execute("e"))
         this.GuiObj.OnEvent("Close", (*) => (this.GuiObj := ""))
 
-        ; コンテキスト限定ホットキー：Naviがアクティブな時だけ無変換コンビネーションを有効化
+        ; ホットキー設定（Naviアクティブ時のみ）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("vk1D & t", (*) => this.Execute("t"), "On")
-        Hotkey("vk1D & v", (*) => this.Execute("v"), "On")
-        Hotkey("vk1D & c", (*) => this.Execute("c"), "On")
-        Hotkey("vk1D & p", (*) => this.Execute("p"), "On")
-        Hotkey("vk1D & e", (*) => this.Execute("e"), "On")
+        Hotkey("Space", (*) => this.ShowActionMenu(), "On")
         Hotkey("Enter", (*) => this.Execute("e"), "On")
-        Hotkey("^k", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
+        Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
         Hotkey("Esc", (*) => this._DestroyGui(), "On")
         HotIf()
 
         if (folderNames.Length > 0) {
             this._RefreshTree(tv, folderMap[rootDDL.Text])
-            ; 前回のパスがあれば自動展開して選択
             if (this.lastPath != "") {
                 this._FocusPath(tv, this.lastPath)
             }
@@ -132,6 +135,56 @@ class Navi {
         this.GuiObj.Show("x" . targetX . " y" . targetY)
     }
 
+    /**
+     * アクション選択用のオーバーレイメニュー
+     */
+    static ShowActionMenu() {
+        tvObj := this.GuiObj["FolderTree"]
+        if !(id := tvObj.GetSelection()) {
+            ToolTip("フォルダを選択してください")
+            SetTimer(() => ToolTip(), -1000)
+            return
+        }
+
+        fullPath := this._GetTVFullPath(tvObj, id)
+        this.GuiObj.GetPos(&gx, &gy, &gw, &gh)
+
+        this.GuiObj.Opt("+Disabled")
+
+        actGui := Gui("+Owner" . this.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border")
+        actGui.BackColor := this.MENU_BG_COLOR
+        actGui.MarginX := 10
+        actGui.MarginY := 15
+
+        actGui.SetFont("s11 w700 cWhite", "Segoe UI")
+        folderName := (InStr(fullPath, "\")) ? StrSplit(fullPath, "\")[-1] : fullPath
+        actGui.Add("Text", "Center w" . this.MENU_BTN_W, "Selected: " . folderName)
+
+        actGui.SetFont("s10 w400")
+        ; アクションメニューを追加する場合はactions 配列に、新しいオブジェクト（key と label）を追加し、
+        ; _ExecuteExtension()に追加した key に対応する処理（case）を書き足す
+        actions := [{ key: "e", label: "&E: Explorer" }, { key: "t", label: "&t: Preferred Explorer" }, { key: "v",
+            label: "&V: VS Code" }, { key: "c",
+                label: "&C: Command Prompt" }, { key: "p",
+                    label: "&P: PowerShell" }, { key: "k", label: "&K: Copy Path" }
+        ]
+
+        for act in actions {
+            btn := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm", act.label)
+            btn.OnEvent("Click", ((k, *) => (
+                this.GuiObj.Opt("-Disabled"),
+                actGui.Destroy(),
+                this.Execute(k)
+            )).Bind(act.key))
+        }
+
+        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+12", "&X: Cancel")
+        btnCancel.OnEvent("Click", (*) => (this.GuiObj.Opt("-Disabled"), actGui.Destroy()))
+        actGui.OnEvent("Escape", (*) => (this.GuiObj.Opt("-Disabled"), actGui.Destroy()))
+
+        actGui.Show("AutoSize x" . gx + (gw - this.MENU_WIDTH) // 2 . " y" . gy + (gh - this.MENU_OFFSET_Y) // 2)
+    }
+
     static Execute(key) {
         fullPath := ""
         if (this.GuiObj && WinExist(this.GuiObj)) {
@@ -154,8 +207,10 @@ class Navi {
                     this._DestroyGui()
                 }
             }
-            ToolTip("実行 [" . key . "]: " . fullPath)
-            SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+            if (key != "k") {
+                ToolTip("実行 [" . key . "]: " . fullPath)
+                SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+            }
         } else {
             ToolTip("対象のパスが見つかりません")
             SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
@@ -195,7 +250,7 @@ class Navi {
                 break
         }
         tv.Modify(currentID, "Select Vis")
-        tv.Focus()                        ; コントロール自体にフォーカスを当てる
+        tv.Focus()
     }
 
     static _DestroyGui() {
@@ -217,6 +272,10 @@ class Navi {
             case "c": Run(A_ComSpec . ' /K cd /d "' . path . '"')
             case "p": Run('powershell.exe -NoExit -Command Set-Location -LiteralPath "' . path . '"')
             case "e": Run('explorer.exe "' . path . '"')
+            case "k":
+                A_Clipboard := path
+                ToolTip("Path Copied: " . path)
+                SetTimer(() => ToolTip(), -2000)
         }
     }
 

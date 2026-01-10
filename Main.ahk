@@ -168,10 +168,6 @@ r:: WrapPalette.Execute()
 ; Navi: GUI 起動
 f:: Navi.Show()
 
-; Navi: アクティブ窓のパスを別ツールで開く
-v:: Navi.Execute("v") ; VS Code
-t:: Navi.Execute("t") ; Tablacus (INIのTE_Pathに依存)
-c:: Navi.Execute("c") ; CMD
 #HotIf
 
 ; リロード: Ctrl + R
