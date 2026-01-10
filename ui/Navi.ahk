@@ -29,8 +29,10 @@ class Navi {
     static TOOLTIP_ERROR_DURATION := 2000
     static TOOLTIP_SUCCESS_DURATION := 1000
 
-    ;
-    ; GUIオブジェクトを保持するスタティック変数
+    ; --- セッション内メモリ：AHKが再起動されるまで保持される ---
+    static lastRoot := ""
+    static lastPath := ""
+
     static GuiObj := ""
 
     static Init() {
@@ -45,11 +47,7 @@ class Navi {
         }
         this._EnsureDefaultFolders()
         this.ExplorerPath := this._LoadConfig()
-
-        ; 無変換長押しのグローバルトリガーを削除しました
     }
-
-    ; _HandleGlobalTrigger メソッドを削除しました
 
     static Show() {
         if (this.ExplorerPath == "") {
@@ -67,12 +65,26 @@ class Navi {
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
 
-        rootDDL := this.GuiObj.Add("DropDownList", "xm w280 Choose1 vRootDDL", folderNames)
+        ; 前回選択したルートのインデックスを計算
+        chooseIdx := 1
+        for i, name in folderNames {
+            if (name == this.lastRoot) {
+                chooseIdx := i
+                break
+            }
+        }
+
+        rootDDL := this.GuiObj.Add("DropDownList", "xm w280 Choose" . chooseIdx . " vRootDDL", folderNames)
         btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h28 -Tabstop", "編集")
         this.GuiObj.Add("Checkbox", "x+10 yp vPinCheck -Tabstop", "固定")
         tv := this.GuiObj.Add("TreeView", "xm w455 r20 vFolderTree")
 
-        rootDDL.OnEvent("Change", (*) => this._RefreshTree(tv, folderMap[rootDDL.Text]))
+        ; ルート変更時にツリーを更新し、現在のルート名をメモリに保存
+        rootDDL.OnEvent("Change", (*) => (
+            this.lastRoot := rootDDL.Text,
+            this._RefreshTree(tv, folderMap[rootDDL.Text])
+        ))
+
         btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this.Execute("e"))
@@ -91,10 +103,13 @@ class Navi {
         HotIf()
 
         if (folderNames.Length > 0) {
-            this._RefreshTree(tv, folderMap[folderNames[1]])
+            this._RefreshTree(tv, folderMap[rootDDL.Text])
+            ; 前回のパスがあれば自動展開して選択
+            if (this.lastPath != "") {
+                this._FocusPath(tv, this.lastPath)
+            }
         }
 
-        ; --- 表示位置の計算（キャレット追従・反転） ---
         CoordMode "Caret", "Screen"
         CoordMode "Mouse", "Screen"
         targetX := 0, targetY := 0
@@ -123,6 +138,9 @@ class Navi {
             tvObj := this.GuiObj["FolderTree"]
             if (id := tvObj.GetSelection()) {
                 fullPath := this._GetTVFullPath(tvObj, id)
+                ; 操作したパスとルート名をメモリに保存
+                this.lastPath := fullPath
+                this.lastRoot := this.GuiObj["RootDDL"].Text
             }
         }
         if (fullPath == "") {
@@ -142,6 +160,42 @@ class Navi {
             ToolTip("対象のパスが見つかりません")
             SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
         }
+    }
+
+    static _FocusPath(tv, targetPath) {
+        if (!DirExist(targetPath) && !FileExist(targetPath))
+            return
+
+        currentID := tv.GetNext(0, "Full")
+        if (currentID == 0)
+            return
+
+        rootPath := tv.GetText(currentID)
+        if (!InStr(targetPath, rootPath))
+            return
+
+        relPath := LTrim(StrReplace(targetPath, rootPath, ""), "\")
+        parts := StrSplit(relPath, "\")
+
+        for part in parts {
+            tv.Modify(currentID, "Expand")
+            this._OnItemExpand(tv, currentID)
+
+            childID := tv.GetChild(currentID)
+            found := false
+            while (childID != 0) {
+                if (tv.GetText(childID) == part) {
+                    currentID := childID
+                    found := true
+                    break
+                }
+                childID := tv.GetNext(childID)
+            }
+            if (!found)
+                break
+        }
+        tv.Modify(currentID, "Select Vis")
+        tv.Focus()                        ; コントロール自体にフォーカスを当てる
     }
 
     static _DestroyGui() {
