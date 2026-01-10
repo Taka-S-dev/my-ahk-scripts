@@ -12,7 +12,7 @@
 ; Usage Example (Main.ahk):
 ;   #Include ui\SnippetPicker.ahk
 ;   SnippetPicker.Init()
-;   vk1D & p:: SnippetPicker.Show() ; 無変換 + p で起動
+;   vk1D & s:: SnippetPicker.Show() ; 無変換 + s で起動
 ;
 ;
 ; ==============================================================================
@@ -43,8 +43,24 @@ class SnippetPicker {
         this._BuildGui()
     }
 
-    ;
-    ; --- 検索画面の表示（キャレット追従・反転ロジック） ---
+    ; --- プレースホルダ置換エンジン ---
+    ; HotstringManager.ahk の置換ロジックを独立・整理
+    static _ProcessPlaceholders(rawText) {
+        text := rawText
+
+        ; 1. クリップボード同期
+        text := StrReplace(text, "{{clip}}", A_Clipboard)
+
+        ; 2. 日付・時刻フォーマットの置換
+        text := StrReplace(text, "yyyy/mm/dd", FormatTime(, "yyyy/MM/dd"))
+        text := StrReplace(text, "yy/mm/dd", FormatTime(, "yy/MM/dd"))
+        text := StrReplace(text, "yymmdd", FormatTime(, "yyMMdd"))
+        text := StrReplace(text, "HH:mm", FormatTime(, "HH:mm"))
+
+        return text
+    }
+
+    ; --- 検索画面の表示 ---
     static Show() {
         this.SearchObj.Value := ""
         this._FilterList("")
@@ -150,25 +166,19 @@ class SnippetPicker {
         btnCancel := entryGui.Add("Button", "x+5 w100", "キャンセル")
         btnCancel.OnEvent("Click", (*) => this._CloseEntry(parentGui, entryGui))
 
-        entryGui.OnEvent("Close", (*) => this._CloseEntry(parentGui,
-            entryGui))
+        entryGui.OnEvent("Close", (*) => this._CloseEntry(parentGui, entryGui))
 
         entryGui.Show("Hide")
         entryGui.GetPos(&nx, &ny, &nw, &nh)
-        entryGui.Show("x" .
-            px + (pw - nw) // 2 . " y" .
-            py + (ph - nh) // 2)
+        entryGui.Show("x" . px + (pw - nw) // 2 . " y" . py + (ph - nh) // 2)
     }
 
-    ;
-    ; --- モーダル制御（MsgBoxの位置固定） ---
+    ; --- 内部ロジック群 ---
     static _ModalAction(targetGui, actionCallback) {
         targetGui.Opt("+OwnDialogs")
         return actionCallback()
     }
 
-    ;
-    ; --- 以降、内部ロジック ---
     static _HandleSave(editGui, lv) {
         this._SaveList(lv)
         editGui.Destroy()
@@ -207,14 +217,13 @@ class SnippetPicker {
     static _MoveItem(lv, direction) {
         row := lv.GetNext()
         if (row == 0) {
-
             return
         }
         target := row + direction
-        if (target < 1 ||
-            target > lv.GetCount()) {
+        if (target < 1 || target > lv.GetCount()) {
             return
         }
+
         g1 := lv.GetText(row, 1), t1 := lv.GetText(row, 2), c1 := lv.GetText(row, 3)
         g2 := lv.GetText(target, 1), t2 := lv.GetText(target, 2), c2 := lv.GetText(target, 3)
         lv.Modify(row, , g2, t2, c2)
@@ -230,11 +239,9 @@ class SnippetPicker {
         }
         if (selectedRows.Length == 0) {
             this._ModalAction(editGui, () => MsgBox("削除行を選択してください。", "警告", "Icon! " this.FLAG_MODAL))
-
             return
         }
-        confirmMsg := (selectedRows.Length == 1) ?
-            "削除しますか？" : selectedRows.Length " 件削除しますか？"
+        confirmMsg := (selectedRows.Length == 1) ? "削除しますか？" : selectedRows.Length " 件削除しますか？"
         if (this._ModalAction(editGui, () => MsgBox(confirmMsg, "確認", "YesNo Icon? " this.FLAG_MODAL)) == "Yes") {
             loop selectedRows.Length {
                 lv.Delete(selectedRows.Pop())
@@ -244,7 +251,6 @@ class SnippetPicker {
 
     static _GetMonitorFromPos(x, y) {
         loop MonitorGetCount() {
-
             MonitorGet(A_Index, &L, &T, &R, &B)
             if (x >= L && x <= R && y >= T && y <= B) {
                 return A_Index
@@ -259,8 +265,7 @@ class SnippetPicker {
             MonitorGetWorkArea(A_Index, &left, &top, &right, &bottom)
             if (x >= left && x <= right && y >= top && y <= bottom) {
                 if (x + w > right) {
-                    x := right - w -
-                        10
+                    x := right - w - 10
                 }
                 if (y + h > bottom) {
                     y := bottom - h - 10
@@ -295,10 +300,8 @@ class SnippetPicker {
         try {
             content := FileRead(this.IniPath, "UTF-8")
             for line in StrSplit(content, "`n", "`r") {
-
                 line := Trim(line)
-                if (line == "" ||
-                    SubStr(line, 1, 1) == ";") {
+                if (line == "" || SubStr(line, 1, 1) == ";") {
                     continue
                 }
                 if (RegExMatch(line, "^\[(.+)\]$", &match)) {
@@ -318,8 +321,7 @@ class SnippetPicker {
     }
 
     static _BuildGui() {
-        this.GuiObj := Gui("+AlwaysOnTop",
-            "Snippets Picker [検索]")
+        this.GuiObj := Gui("+AlwaysOnTop", "Snippets Picker [検索]")
         this.GuiObj.SetFont("s10", "Segoe UI")
         this.SearchObj := this.GuiObj.AddEdit("xm w" this.GUI_WIDTH)
         this.SearchObj.OnEvent("Change", (ed, *) => this._FilterList(ed.Value))
@@ -327,28 +329,29 @@ class SnippetPicker {
             "内容"])
         this.LvObj.ModifyCol(1, 80), this.LvObj.ModifyCol(2, 150)
         this.LvObj.OnEvent("DoubleClick", (*) => this._InsertSelected())
-        this.GuiObj.AddButton("xm w"
-            this.BTN_WIDTH " Default -Tabstop", "Insert").OnEvent("Click", (*) => this._InsertSelected())
+
+        this.GuiObj.AddButton("xm w" this.BTN_WIDTH " Default -Tabstop", "Insert").OnEvent("Click", (*) => this._InsertSelected())
         this.GuiObj.AddButton("x+5 w" this.BTN_WIDTH " -Tabstop", "Manage").OnEvent("Click", (*) => this._ShowEditGui())
         this.GuiObj.AddButton("x+5 w" this.BTN_WIDTH " -Tabstop", "Reload").OnEvent("Click", (*) => (this._LoadData(),
         this._FilterList()))
+
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Enter", (*) => this._InsertSelected(), "On"), Hotkey("Esc", (*) => this.GuiObj.Hide(), "On")
         HotIf()
     }
 
     static _FilterList(query := "") {
-        ; --- クイックトリガーを復元しました ---
+        ; --- クイックトリガー（置換エンジン適用） ---
         if (query == ";today") {
             this.GuiObj.Hide()
-            this._QuickPaste(FormatTime(, "yyyy/MM/dd"))
+            ; yyyy/mm/dd を置換エンジンに渡して実行
+            this._QuickPaste(this._ProcessPlaceholders("yyyy/mm/dd"))
             return
         }
 
         this.LvObj.Delete()
         for item in this.SnipList {
-            if (query == "" ||
-                InStr(item.group, query) || InStr(item.title, query) || InStr(item.content, query)) {
+            if (query == "" || InStr(item.group, query) || InStr(item.title, query) || InStr(item.content, query)) {
                 this.LvObj.Add(, item.group, item.title, StrReplace(item.content, "`r`n", " "))
             }
         }
@@ -363,12 +366,14 @@ class SnippetPicker {
         if (row == 0) {
             return
         }
+
         dispG := this.LvObj.GetText(row, 1), dispT := this.LvObj.GetText(row, 2)
         for item in this.SnipList {
             if (item.group == dispG && item.title == dispT) {
-
                 this.GuiObj.Hide()
-                this._QuickPaste(item.content)
+                ; 挿入前に置換エンジンを実行
+                processedContent := this._ProcessPlaceholders(item.content)
+                this._QuickPaste(processedContent)
                 return
             }
         }
@@ -379,7 +384,7 @@ class SnippetPicker {
         A_Clipboard := text
         Sleep(this.SLEEP_PASTE)
         Send("^v")
-
+        ; 貼り付け後にクリップボードを復元
         SetTimer((*) => (A_Clipboard := oldClip), this.TIMER_RESTORE)
     }
 
