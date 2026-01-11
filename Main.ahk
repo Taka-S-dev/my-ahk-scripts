@@ -134,15 +134,6 @@ y:: VimNavigation.HandleDoubleKey("y", VimNavigation.CopyLine)
 #HotIf
 
 ; ------------------------------------------------------------
-; WrapPaletteホットキー
-; ------------------------------------------------------------
-#Include modules\WrapPalette.ahk
-
-#HotIf GetKeyState(MOD_KEY, "P")
-r:: WrapPalette.Execute()
-#HotIf
-
-; ------------------------------------------------------------
 ; Excel専用ホットキー
 ; ------------------------------------------------------------
 ; 使用する場合は、以下のコメントアウト（/* と */）を外してください。
@@ -203,4 +194,13 @@ m:: TempMemo.Toggle()
 ; 無変換を押しながら Ctrl + H
 #HotIf GetKeyState(MOD_KEY, "P")
 ^h:: HotstringManager.Show()
+#HotIf
+
+; ------------------------------------------------------------
+; WrapPaletteホットキー
+; ------------------------------------------------------------
+#Include ui\WrapPalette.ahk
+
+#HotIf GetKeyState(MOD_KEY, "P")
+r:: WrapPalette.Execute()
 #HotIf

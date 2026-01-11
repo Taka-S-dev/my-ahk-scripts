@@ -23,7 +23,7 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 | | `MOD_KEY + Ctrl + h` | Hotstring Manager (HotstringManager.ahk) 起動 |
 | | `Ctrl + ;` | **日付入力**: Excel 風の操作感で今日の日付を挿入 |
 | **編集・移動** | `MOD_KEY + h/j/k/l` | Vim 風カーソル移動 (左/下/上/右) |
-| | `MOD_KEY + r + 記号` | 選択範囲を括弧等で囲む (WrapPalette) ※対応記号: " ' ( [ { < `|
+| | `MOD_KEY + r` | 選択範囲を括弧等で囲む (WrapPalette) ※囲みの文字は自由に登録可能|
 | **メモ・ストック** |`MOD_KEY + m` | テンポラリ・メモ (TempMemo.ahk) 起動 |
 
 ---
@@ -119,7 +119,11 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 ### テキスト囲みユーティリティ(WrapPalette.ahk)
 
 - 選択範囲を括弧・引用符などで即座に囲む
-- 入力待機型の操作により、最小キー数で完結
+
+- **自由なパーツ登録**: HTML タグ、括弧、引用符、コードブロックなど、任意の囲み文字を登録可能
+- **複数行パーツ対応**: 改行を含むコードスニペットやテンプレートも登録可能
+- GUI による直感的な操作が可能
+- **トリガキーによる即実行**: 1 文字のショートカットで即座に適用
 
 ### テンポラリ・メモ (TempMemo.ahk)
 
@@ -231,13 +235,13 @@ XButton1::FolderToggle.Execute()        ; マウスサイドボタンでフォ�
 │   ├── ImeControl.ahk
 │   ├── VimNavigation.ahk
 │   ├── FolderToggle.ahk
-│   ├── DateTimeInsert.ahk
-│   └── WrapPalette.ahk
+│   └── DateTimeInsert.ahk
 ├── ui/                 # GUI 関連クラス
 │   ├── Navi.ahk
 │   ├── TempMemo.ahk
 │   ├── SnippetPicker.ahk
-│   └── HotstringManager.ahk
+│   ├── HotstringManager.ahk
+│   └── WrapPalette.ahk
 └── tests/              # 動作確認・テスト用スクリプト
 ```
 
