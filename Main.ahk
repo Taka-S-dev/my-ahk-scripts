@@ -65,11 +65,6 @@ vk1C:: ImeControl.Toggle(true)
 ; 日付入力 (Ctrl + ;) のみ定義
 ^;:: DateTimeInsert.Execute()
 
-; ------------------------------------------------------------
-;  Vim 風ナビゲーション定義
-; ------------------------------------------------------------
-#Include "modules\VimNavigation.ahk"                    ; Vim 風キーバインド
-
 ; ============================================================
 ; 【修飾キー制御】選択可能な2つのモード
 ; ============================================================
@@ -95,6 +90,11 @@ ModifierKeyHandler.OnTap := (*) => ImeControl.Toggle(false)
 ; Space:     ModifierKeyHandler.Init("vk20", "sc039")
 ; Right Alt: ModifierKeyHandler.Init("vkA5", "sc138")
 ; ============================================================
+
+; ------------------------------------------------------------
+;  Vim 風ナビゲーション定義
+; ------------------------------------------------------------
+#Include "modules\VimNavigation.ahk"                    ; Vim 風キーバインド
 
 #HotIf GetKeyState(MOD_KEY, "P")
 
@@ -122,19 +122,7 @@ p:: Send("^v")        ; 貼り付け
 *o:: VimNavigation.OpenLine(GetKeyState("Shift", "P"))
 
 ; --- 削除命令 (d) : dd  ---
-d:: {
-    KeyWait "d"  ; dキーが離されるまで待つ
-    startTime := A_TickCount
-
-    while (A_TickCount - startTime < 500) {
-        if GetKeyState("d", "P") {  ; dが押されたら
-            KeyWait "d"
-            VimNavigation.DeleteLine()  ; dd実行
-            return
-        }
-        Sleep 10
-    }
-}
+d:: VimNavigation.HandleDoubleKey("d", VimNavigation.DeleteLine)
 
 ; --- 二度打ち系 ( yy: 行コピー) ---
 ; HandleDoubleKey メソッドをクラス側に追加している前提です

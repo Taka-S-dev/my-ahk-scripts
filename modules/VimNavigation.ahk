@@ -42,17 +42,15 @@ class VimNavigation {
     }
 
     /**
-     * /**
      * 二度打ち (dd, yy) の判定ロジック
-     * @param key 押されたキー
-     * @param callback 二度打ち成立時に実行する関数
      */
     static HandleDoubleKey(key, callback) {
         currentTime := A_TickCount
-        ; 500ms以内の同一キー打鍵を「二度打ち」と判定
-        if (this.lastKey == key && currentTime - this.lastTime < 500) {
+
+        if (this.lastKey == key && currentTime - this.lastTime < this.DOUBLE_TAP_GAP) {
+            this.lastKey := ""
+            this.lastTime := 0
             callback.Call(this)
-            this.lastKey := "" ; リセット
         } else {
             this.lastKey := key
             this.lastTime := currentTime
@@ -60,53 +58,49 @@ class VimNavigation {
     }
 
     /**
-     * 行削除 (Vimの dd)
-     * 最終行(EOF)でも行ごと削除されるように調整
+     * 行削除 (Vim: dd)
+     * 最後の一行でも確実に削除するため、End -> Shift+Home のシーケンスを使用
      */
-    static DeleteLine() {
-        ; 行頭に移動 -> 行全体を選択して削除
-        ; EOF対策として、文字削除後に空行が残る場合はDeleteとBSで掃除
-        Send("{Home}{Home}+{Down}{Delete}")
+    static DeleteLine(*) {
+        this._SafeSend("{End}+{Home 2}{Delete}{BackSpace}")
     }
 
     /**
-     * 単語削除 (dw)
+     * 行コピー (Vim: yy)
      */
-    /**
-     * 単語削除 (dw) - Vim本来の動作を再現
-     * カーソル位置から次の単語の先頭まで（スペース含む）削除
-     * 
-     * 例1: "☆I have a pen" → "☆have a pen" (☆がカーソル位置、単語の先頭)
-     * 例2: "I ☆have a pen" → "I ☆a pen" (☆がカーソル位置、単語の途中/先頭)
-     */
-    static DeleteWord() {
-        ; 無変換キー(vk1D)を一時的に離す
-        Send("{vk1D up}")
-
-        ; 単語の終わりまで選択して削除
-        Send("+^{Right}{Delete}")
-
-        ; 無変換キーを押し直す
-        Send("{vk1D down}")
+    static CopyLine(*) {
+        this._SafeSend("{End}+{Home 2}^c{Left}")
     }
 
     /**
-     * 行コピー (Vimの yy)
-     */
-    static CopyLine() {
-        ; 行全体を選択してコピー -> 選択解除して元の位置付近へ
-        Send("{Home}{Home}+{Down}^c{Left}")
-    }
-
-    /**
-     * 新しい行を開いて挿入状態にする (Vimの o/O)
+     * 行の挿入 (Vim: o/O)
+     * Excel の場合はセル内改行 (Alt+Enter) を実行する
      */
     static OpenLine(isAbove := false) {
+        isExcel := WinActive("ahk_exe EXCEL.EXE")
+        enterKey := isExcel ? "!{Enter}" : "{Enter}"
+
         if isAbove {
-            Send("{Home}{Enter}{Up}")
+            this._SafeSend("{Home}" enterKey "{Up}")
         } else {
-            Send("{End}{Enter}")
+            this._SafeSend("{End}" enterKey)
         }
     }
 
+    /**
+     * 修飾キー(無変換)との干渉を防ぎつつキーを送信する内部メソッド
+     */
+    static _SafeSend(keys) {
+        ; 無変換キーを物理的に押していても、一旦離した状態にして送信する
+        if GetKeyState("vk1D", "P") {
+            Send("{vk1D up}")
+        }
+
+        ; 安定性の高い SendEvent を使用
+        SendEvent(keys)
+
+        if GetKeyState("vk1D", "P") {
+            Send("{vk1D down}")
+        }
+    }
 }
