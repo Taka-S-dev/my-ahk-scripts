@@ -27,6 +27,8 @@ class VimNavigation {
 
     static lastKey := ""
     static lastTime := 0
+    static DOUBLE_TAP_GAP := 300  ; 二度打ち判定の時間間隔（ミリ秒）
+
     /**
      * Shift 状態に応じて入力を送り分ける（範囲選択対応）
      * @param noShift Shiftなし時のキー（例: "{Left}"）
