@@ -27,12 +27,12 @@ class VimNavigation {
 
     static lastKey := ""
     static lastTime := 0
-    static DOUBLE_TAP_GAP := 300  ; 二度打ち判定の時間間隔（ミリ秒）
+    static DOUBLE_TAP_GAP := 300  ; 二度打ち判定の時間間隔(ミリ秒)
 
     /**
-     * Shift 状態に応じて入力を送り分ける（範囲選択対応）
-     * @param noShift Shiftなし時のキー（例: "{Left}"）
-     * @param withShift Shiftあり時のキー（例: "+{Left}"）
+     * Shift 状態に応じて入力を送り分ける(範囲選択対応)
+     * @param noShift Shiftなし時のキー(例: "{Left}")
+     * @param withShift Shiftあり時のキー(例: "+{Left}")
      */
     static Move(noShift, withShift) {
         ; 物理的な Shift キーの押下状態を確認
@@ -64,44 +64,49 @@ class VimNavigation {
      * 最後の一行でも確実に削除するため、End -> Shift+Home のシーケンスを使用
      */
     static DeleteLine(*) {
-        this._SafeSend("{End}+{Home 2}{Delete}{BackSpace}")
+        this._SafeSend("{End}+{Home 2}{Delete}{BackSpace}", false)
     }
 
     /**
      * 行コピー (Vim: yy)
      */
     static CopyLine(*) {
-        this._SafeSend("{End}+{Home 2}^c{Left}")
+        this._SafeSend("{End}+{Home 2}^c{Left}", false)
     }
 
     /**
      * 行の挿入 (Vim: o/O)
      * Excel の場合はセル内改行 (Alt+Enter) を実行する
+     * 修正: IMEのカタカナ変換を防ぐため、Enter後に無変換キーを復元しない
      */
     static OpenLine(isAbove := false) {
         isExcel := WinActive("ahk_exe EXCEL.EXE")
         enterKey := isExcel ? "!{Enter}" : "{Enter}"
 
         if isAbove {
-            this._SafeSend("{Home}" enterKey "{Up}")
+            this._SafeSend("{Home}" enterKey "{Up}", false)
         } else {
-            this._SafeSend("{End}" enterKey)
+            this._SafeSend("{End}" enterKey, false)
         }
     }
 
     /**
      * 修飾キー(無変換)との干渉を防ぎつつキーを送信する内部メソッド
+     * @param keys 送信するキー
+     * @param restoreModifier 送信後に無変換キーの状態を復元するか (デフォルト: true)
      */
-    static _SafeSend(keys) {
+    static _SafeSend(keys, restoreModifier := true) {
         ; 無変換キーを物理的に押していても、一旦離した状態にして送信する
-        if GetKeyState("vk1D", "P") {
+        wasDown := GetKeyState("vk1D", "P")
+        if wasDown {
             Send("{vk1D up}")
         }
 
         ; 安定性の高い SendEvent を使用
         SendEvent(keys)
 
-        if GetKeyState("vk1D", "P") {
+        ; restoreModifier が true で、元々押されていた場合のみ復元
+        if wasDown && restoreModifier {
             Send("{vk1D down}")
         }
     }
