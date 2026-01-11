@@ -57,6 +57,12 @@ class WrapPalette {
      * WrapPaletteを起動してテキストを取得
      */
     static Execute() {
+        ; シングルトンチェック：既にGUIが開いている場合はアクティブにして終了
+        if (WrapPalette.MainGui && WinExist("ahk_id " . WrapPalette.MainGui.Hwnd)) {
+            WinActivate("ahk_id " . WrapPalette.MainGui.Hwnd)
+            return
+        }
+
         ; 修飾キーの待機
         KeyWait("Ctrl")
         KeyWait("Shift")
@@ -238,6 +244,14 @@ class WrapPalette {
         if (N == "")
             return
 
+        ; 登録名の特殊文字チェック
+        if (InStr(N, ";") || InStr(N, "=") || InStr(N, "[") || InStr(N, "]")) {
+            G.Opt("+OwnDialogs")
+            errorMsg := "登録名に以下の文字は使用できません：`n`n  セミコロン(;) イコール(=) 角括弧([]) `n`n別の名前を指定してください。"
+            MsgBox(errorMsg, "エラー", "Icon!")
+            return
+        }
+
         ; トリガキーの重複チェック
         if (T != "") {
             Names := WrapPalette.GetNames()
@@ -246,8 +260,8 @@ class WrapPalette {
                     existingTrig := IniRead(WrapPalette.IniPath, name, "trigger", "")
                     if (existingTrig == T) {
                         G.Opt("+OwnDialogs")
-                        MsgBox("トリガキー '" T "' は既に '" name "' で使用されています。`n別のトリガキーを指定してください。",
-                            "エラー", "Icon!")
+                        errorMsg := "トリガキー '" . T . "' は既に '" . name . "' で使用されています。`n別のトリガキーを指定してください。"
+                        MsgBox(errorMsg, "エラー", "Icon!")
                         return
                     }
                 }
@@ -306,6 +320,7 @@ class WrapPalette {
         Send("^v")
 
         WrapPalette.ResetPosition()
+        WrapPalette.MainGui := ""
     }
 
     ; ========================================
@@ -331,6 +346,7 @@ class WrapPalette {
         }
 
         WrapPalette.ResetPosition()
+        WrapPalette.MainGui := ""
     }
 
     ; ========================================
