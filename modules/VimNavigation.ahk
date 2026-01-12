@@ -71,7 +71,7 @@ class VimNavigation {
      * 行コピー (Vim: yy)
      */
     static CopyLine(*) {
-        this._SafeSend("{End}+{Home 2}^c{Left}", false)
+        this._SafeSend("{End}+{Home 2}^c{Home}", false)
     }
 
     /**
