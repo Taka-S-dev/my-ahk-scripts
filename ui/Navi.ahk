@@ -44,6 +44,8 @@ class Navi {
     static lastRoot := ""
     static lastPath := ""
     static GuiObj := ""
+    static QuickPathFocused := false
+    static QuickPathHwnd := 0
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -99,6 +101,18 @@ class Navi {
             }
         }
 
+        ; クイック登録: フルパス入力→Enterでルート追加（Tab移動ではフォーカスしない）
+        quickEdit := this.GuiObj.Add("Edit", "xm w455 vQuickPath -Tabstop", "")
+        ; プレースホルダ
+        try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", 0x1501, "ptr", 1, "wstr",
+            "Add root: full path + Enter", "ptr")
+        quickEdit.SetFont("s8 c808080")
+        this.GuiObj.Add("Text", "xm c808080", "Add root: paste full path and press Enter")
+        ; フォーカス状態をトラック
+        quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
+        quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
+        this.QuickPathHwnd := quickEdit.Hwnd
+
         rootDDL := this.GuiObj.Add("DropDownList", "xm w280 Choose" . chooseIdx . " vRootDDL", folderNames)
         btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h28 -Tabstop", "編集")
         this.GuiObj.Add("Checkbox", "x+50 yp+5 vPinCheck -Tabstop", "ピン留め")
@@ -122,7 +136,7 @@ class Navi {
         ; ホットキー設定（Naviアクティブ時のみ）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Space", (*) => this.ShowActionMenu(), "On")
-        Hotkey("Enter", (*) => this.Execute("e"), "On")
+        Hotkey("Enter", (*) => this._HandleEnter(), "On")
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
         Hotkey("Esc", (*) => this._DestroyGui(), "On")
         HotIf()
@@ -294,7 +308,7 @@ class Navi {
             ; 関数オブジェクトをプロパティから呼ぶ場合は .Call() を使用
             try {
                 fn.Call(path)
-            } catch As e {
+            } catch as e {
                 ToolTip("Action error: " . e.Message)
                 SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
             }
@@ -309,7 +323,7 @@ class Navi {
         parentGui.Opt("+Disabled")
         editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルートディレクトリ管理")
         editGui.SetFont("s10", "Segoe UI")
-        lv := editGui.Add("ListView", "r15 w550 Grid vFolderList", ["名称", "パス", "表示"])
+        lv := editGui.Add("ListView", "r15 w550 Grid Multi vFolderList", ["名称", "パス", "表示"])
         lv.ModifyCol(1, 120), lv.ModifyCol(2, 350), lv.ModifyCol(3, 50)
         this._LoadLVFolders(lv)
         btnAdd := editGui.Add("Button", "xm w70", "追加"), btnMod := editGui.Add("Button", "x+5 w70", "修正"), btnDel :=
@@ -420,11 +434,22 @@ class Navi {
     }
 
     static _DeleteItem(lv, editGui) {
-        row := lv.GetNext()
-        if (row != 0) {
+        ; すべての選択行を取得
+        selected := []
+        r := 0
+        while (r := lv.GetNext(r)) {
+            selected.Push(r)
+        }
+        if (selected.Length > 0) {
             editGui.Opt("+OwnDialogs")
-            if (MsgBox("選択した項目を削除しますか？", "削除確認", "YesNo Icon? 4096") == "Yes") {
-                lv.Delete(row)
+            msg := (selected.Length = 1)
+                ? "選択した項目を削除しますか？"
+                : selected.Length . " 件の項目を削除しますか？"
+            if (MsgBox(msg, "削除確認", "YesNo Icon? 4096") == "Yes") {
+                ; 下から削除してインデックスずれを防ぐ
+                for i, _ in selected {
+                    lv.Delete(selected[selected.Length - i + 1])
+                }
             }
         }
     }
@@ -563,6 +588,71 @@ class Navi {
         return ""
     }
 
+    static _QuickRegisterFromEdit() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        e := this.GuiObj["QuickPath"]
+        path := Trim(e.Value)
+        if (path = "")
+            return
+        if (!DirExist(path)) {
+            ToolTip("無効なパスです"), SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+            return
+        }
+        name := StrSplit(RTrim(path, "\"), "\")[-1]
+
+        ; INIへ書き込み（表示=1）
+        IniWrite(path . "|1", this.IniPath, "Folders", name)
+
+        ; DDLの先頭に表示させる（新しいリストを作り直す）
+        folderMap := Map(), folderNames := []
+        this._LoadFolders(folderMap, folderNames)
+
+        newNames := [name]
+        for n in folderNames {
+            if (n != name)
+                newNames.Push(n)
+        }
+
+        ddl := this.GuiObj["RootDDL"]
+        tv := this.GuiObj["FolderTree"]
+        ddl.Delete()
+        ddl.Add(newNames)
+        ddl.Text := name
+
+        this.lastRoot := name
+        this.lastPath := path
+        this._RefreshTree(tv, path)
+
+        e.Value := ""
+        ToolTip("Root added: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+    }
+
+    static _HandleEnter() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        ; 現在のフォーカスHWNDを取得（まずはAHK API、失敗時はWinAPIにフォールバック）
+        currFocus := 0
+        try {
+            ctrl := ControlGetFocus("ahk_id " this.GuiObj.Hwnd)
+            currFocus := ControlGetHwnd(ctrl, "ahk_id " this.GuiObj.Hwnd)
+        } catch {
+            try {
+                currFocus := DllCall("user32\GetFocus", "ptr")
+            } catch {
+                currFocus := 0
+            }
+        }
+
+        if (this.QuickPathHwnd && currFocus = this.QuickPathHwnd) {
+            ; クイック登録欄がフォーカスなら登録を優先
+            this._QuickRegisterFromEdit()
+            return
+        }
+        ; それ以外は従来通りエクスプローラー実行
+        this.Execute("e")
+    }
+
     static _InitDefaultActions() {
         this.RegisterAction("e", "&E: Explorer", (path) => Run('explorer.exe "' . path . '"'))
         this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
@@ -572,8 +662,10 @@ class Navi {
         ))
         this.RegisterShellAction("v", "&V: VS Code", A_ComSpec . ' /c code "{path}"', "Hide")
         this.RegisterShellAction("c", "&C: Command Prompt", A_ComSpec . ' /K cd /d "{path}"')
-        this.RegisterShellAction("p", "&P: PowerShell", 'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"')
-        this.RegisterAction("k", "&K: Copy Path", (path) => (A_Clipboard := path, ToolTip("Path Copied: " . path), SetTimer(() => ToolTip(), -2000)))
+        this.RegisterShellAction("p", "&P: PowerShell",
+            'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"')
+        this.RegisterAction("k", "&K: Copy Path", (path) => (A_Clipboard := path, ToolTip("Path Copied: " . path),
+        SetTimer(() => ToolTip(), -2000)))
     }
 
     static _LoadUserActions() {
