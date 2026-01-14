@@ -138,6 +138,10 @@ class HotstringManager {
         this._RefreshList()
 
         this.GuiObj.Add("Button", "xm w100", "Delete Selected").OnEvent("Click", (*) => this._Delete())
+        this.GuiObj.Add("Button", "x+10 w100", "Edit Selected").OnEvent("Click", (*) => this._Edit())
+
+        ; 行のダブルクリックで編集開始
+        this.LvObj.OnEvent("DoubleClick", (lv, row) => (row ? this._Edit(row) : 0))
 
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Esc", (*) => this.GuiObj.Hide(), "On")
@@ -193,6 +197,79 @@ class HotstringManager {
             this.GuiObj.Opt("-Disabled")
             this.GuiObj.Show()
         }
+    }
+
+    static _Edit(row := 0) {
+        if (row = 0) {
+            row := this.LvObj.GetNext()
+            if (row = 0)
+                return
+        }
+        oldTrig := this.LvObj.GetText(row, 1)
+        oldRepl := this.LvObj.GetText(row, 2)
+        this._ShowEditDialog(oldTrig, oldRepl)
+    }
+
+    static _ShowEditDialog(oldTrig, oldRepl) {
+        parent := this.GuiObj
+        parent.Opt("+Disabled +OwnDialogs")
+
+        dlg := Gui("+Owner" . parent.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "Edit Hotstring")
+        dlg.SetFont("s9", "Segoe UI")
+
+        dlg.Add("Text", "xm", "Trigger:")
+        trigEdit := dlg.Add("Edit", "vTrig w120 xm", oldTrig)
+        dlg.Add("Text", "x+10", "Replacement:")
+        replEdit := dlg.Add("Edit", "vRepl w240 x+5", oldRepl)
+
+        okBtn := dlg.Add("Button", "xm w80 Default", "Save")
+        cancelBtn := dlg.Add("Button", "x+10 w80", "Cancel")
+
+        okBtn.OnEvent("Click", (*) => (
+            vals := dlg.Submit(false),
+            this._UpsertHotstring(oldTrig, vals.Trig, vals.Repl),
+            dlg.Destroy(),
+            parent.Opt("-Disabled"),
+            parent.Show()
+        ))
+        cancelBtn.OnEvent("Click", (*) => (dlg.Destroy(), parent.Opt("-Disabled"), parent.Show()))
+        dlg.OnEvent("Close", (*) => (dlg.Destroy(), parent.Opt("-Disabled"), parent.Show()))
+
+        ; 親ウィンドウの中央に表示
+        parent.GetPos(&px, &py, &pw, &ph)
+        dlg.Show("Hide")
+        dlg.GetPos(, , &dw, &dh)
+        dlg.Show("x" . px + (pw - dw) // 2 . " y" . py + (ph - dh) // 2)
+    }
+
+    static _UpsertHotstring(oldTrig, newTrig, newRepl) {
+        newTrig := Trim(newTrig)
+        if (newTrig = "" || newRepl = "")
+            return
+
+        ; トリガー変更時は競合を確認
+        if (newTrig != oldTrig) {
+            try existing := IniRead(this.IniPath, "Custom", newTrig, "")
+            if (existing != "") {
+                if (MsgBox("Overwrite existing trigger '" . newTrig . "'?", "Confirm", "YesNo Icon? 4096") != "Yes")
+                    return
+            }
+        }
+
+        ; 古い登録を外す（トリガー変更時）
+        if (oldTrig != "" && oldTrig != newTrig) {
+            IniDelete(this.IniPath, "Custom", oldTrig)
+            try Hotstring("::" . oldTrig, , "Off")
+        }
+
+        ; 書き込み（新規 or 更新）
+        IniWrite(newRepl, this.IniPath, "Custom", newTrig)
+
+        ; 再登録（置換のみ変更時も念のため外して入れ直す）
+        try Hotstring("::" . newTrig, , "Off")
+        this._AddHS(newTrig, newRepl)
+
+        this._RefreshList()
     }
 
     ; --- ユーティリティ：座標補正とモニター取得 ---

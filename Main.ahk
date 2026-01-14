@@ -191,6 +191,7 @@ m:: TempMemo.Toggle()
 ;  ホットストリングマネージャ
 ; ------------------------------------------------------------
 #Include "ui\HotstringManager.ahk"
+HotstringManager.Init()
 ; 無変換を押しながら Ctrl + H
 #HotIf GetKeyState(MOD_KEY, "P")
 ^h:: HotstringManager.Show()
