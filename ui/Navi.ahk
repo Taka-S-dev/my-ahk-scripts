@@ -17,7 +17,6 @@
 ;
 ; ==============================================================================
 #Requires AutoHotkey v2.0
-#SingleInstance Force
 
 class Navi {
     ; --- クラス定数 ---
@@ -35,10 +34,30 @@ class Navi {
     static MENU_BTN_H := 38        ; ボタンの高さ
     static MENU_OFFSET_Y := 320    ; 中央配置の計算用オフセット
 
+    ; --- 位置決定用の定数（魔法数の明示化） ---
+    static CARET_OFFSET_X := 5     ; キャレットからのXオフセット
+    static CARET_GAP_Y := 25       ; キャレット下に表示する際の縦方向ギャップ
+    static SCREEN_MARGIN := 10     ; 画面端からのマージン
+    static MOUSE_OFFSET := 15      ; マウス位置からのオフセット
+
     ; --- セッション内メモリ ---
     static lastRoot := ""
     static lastPath := ""
     static GuiObj := ""
+
+    ; ---- Action registry ----
+    static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
+
+    static RegisterAction(key, label, fn) {
+        this.Actions[StrLower(key)] := { label: label, run: fn }
+    }
+
+    static RegisterShellAction(key, label, cmdTemplate, runOpt := "") {
+        ; {path} を選択パスで置換して実行
+        this.RegisterAction(key, label, (path) => (
+            Run(StrReplace(cmdTemplate, "{path}", path), , runOpt)
+        ))
+    }
 
     static Init() {
         uiDir := A_ScriptDir "\ui"
@@ -52,6 +71,8 @@ class Navi {
         }
         this._EnsureDefaultFolders()
         this.ExplorerPath := this._LoadConfig()
+        this._InitDefaultActions()
+        this._LoadUserActions()
     }
 
     static Show() {
@@ -118,17 +139,17 @@ class Navi {
         targetX := 0, targetY := 0
 
         if CaretGetPos(&cX, &cY) {
-            targetX := cX + 5
+            targetX := cX + this.CARET_OFFSET_X
             monitorNum := this._GetMonitorFromPos(cX, cY)
             MonitorGetWorkArea(monitorNum, &L, &T, &R, &B)
-            if (cY + 25 + this.GUI_HEIGHT_APPROX > B) {
-                targetY := cY - this.GUI_HEIGHT_APPROX - 10
+            if (cY + this.CARET_GAP_Y + this.GUI_HEIGHT_APPROX > B) {
+                targetY := cY - this.GUI_HEIGHT_APPROX - this.SCREEN_MARGIN
             } else {
-                targetY := cY + 25
+                targetY := cY + this.CARET_GAP_Y
             }
         } else {
             MouseGetPos(&mX, &mY)
-            targetX := mX + 15, targetY := mY + 15
+            targetX := mX + this.MOUSE_OFFSET, targetY := mY + this.MOUSE_OFFSET
         }
 
         this._EnsureInScreen(&targetX, &targetY, this.GUI_WIDTH, this.GUI_HEIGHT_APPROX)
@@ -161,21 +182,27 @@ class Navi {
         actGui.Add("Text", "Center w" . this.MENU_BTN_W, "Selected: " . folderName)
 
         actGui.SetFont("s10 w400")
-        ; アクションメニューを追加する場合はactions 配列に、新しいオブジェクト（key と label）を追加し、
-        ; _ExecuteExtension()に追加した key に対応する処理（case）を書き足す
-        actions := [{ key: "e", label: "&E: Explorer" }, { key: "t", label: "&t: Preferred Explorer" }, { key: "v",
-            label: "&V: VS Code" }, { key: "c",
-                label: "&C: Command Prompt" }, { key: "p",
-                    label: "&P: PowerShell" }, { key: "k", label: "&K: Copy Path" }
-        ]
+        ; レジストリに登録されたアクションからボタンを生成
+        keys := []
+        for k, _ in this.Actions
+            keys.Push(k)
+        ; AHK v2 arrays don't have a Sort method. Use global Sort() on a joined string.
+        if (keys.Length > 1) {
+            tmp := ""
+            for _, kk in keys
+                tmp .= kk . "`n"
+            tmp := Sort(RTrim(tmp, "`n"))
+            keys := StrSplit(tmp, "`n")
+        }
 
-        for act in actions {
+        for k in keys {
+            act := this.Actions[k]
             btn := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm", act.label)
-            btn.OnEvent("Click", ((k, *) => (
+            btn.OnEvent("Click", ((kk, *) => (
                 this.GuiObj.Opt("-Disabled"),
                 actGui.Destroy(),
-                this.Execute(k)
-            )).Bind(act.key))
+                this.Execute(kk)
+            )).Bind(k))
         }
 
         btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+12", "&X: Cancel")
@@ -201,7 +228,7 @@ class Navi {
         }
 
         if (fullPath != "" && (DirExist(fullPath) || FileExist(fullPath))) {
-            this._ExecuteExtension(key, fullPath)
+            this._ExecuteAction(key, fullPath)
             if (this.GuiObj && WinExist(this.GuiObj)) {
                 if (!this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
                     this._DestroyGui()
@@ -260,22 +287,20 @@ class Navi {
         }
     }
 
-    static _ExecuteExtension(key, path) {
-        switch StrLower(key) {
-            case "t":
-                if (this.ExplorerPath == "explorer.exe") {
-                    Run('explorer.exe "' . path . '"')
-                } else if (FileExist(this.ExplorerPath)) {
-                    Run('"' . this.ExplorerPath . '" "' . path . '"')
-                }
-            case "v": Run(A_ComSpec . ' /c code "' . path . '"', , "Hide")
-            case "c": Run(A_ComSpec . ' /K cd /d "' . path . '"')
-            case "p": Run('powershell.exe -NoExit -Command Set-Location -LiteralPath "' . path . '"')
-            case "e": Run('explorer.exe "' . path . '"')
-            case "k":
-                A_Clipboard := path
-                ToolTip("Path Copied: " . path)
-                SetTimer(() => ToolTip(), -2000)
+    static _ExecuteAction(key, path) {
+        k := StrLower(key)
+        if (this.Actions.Has(k)) {
+            fn := this.Actions[k].run
+            ; 関数オブジェクトをプロパティから呼ぶ場合は .Call() を使用
+            try {
+                fn.Call(path)
+            } catch As e {
+                ToolTip("Action error: " . e.Message)
+                SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+            }
+        } else {
+            ToolTip("未定義のアクション: " . key)
+            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
         }
     }
 
@@ -333,15 +358,12 @@ class Navi {
         loop MonitorGetCount() {
             MonitorGetWorkArea(A_Index, &left, &top, &right, &bottom)
             if (x >= left && x <= right && y >= top && y <= bottom) {
-                if (x + w > right) {
-                    x := right - w - 10
-                }
-                if (y + h > bottom) {
-                    y := bottom - h - 10
-                }
-                if (y < top) {
-                    y := top + 10
-                }
+                if (x + w > right)
+                    x := right - w - this.SCREEN_MARGIN
+                if (y + h > bottom)
+                    y := bottom - h - this.SCREEN_MARGIN
+                if (y < top)
+                    y := top + this.SCREEN_MARGIN
                 return
             }
         }
@@ -539,5 +561,40 @@ class Navi {
             }
         }
         return ""
+    }
+
+    static _InitDefaultActions() {
+        this.RegisterAction("e", "&E: Explorer", (path) => Run('explorer.exe "' . path . '"'))
+        this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
+            (this.ExplorerPath == "explorer.exe")
+                ? Run('explorer.exe "' . path . '"')
+                : (FileExist(this.ExplorerPath) ? Run('"' . this.ExplorerPath . '" "' . path . '"') : 0)
+        ))
+        this.RegisterShellAction("v", "&V: VS Code", A_ComSpec . ' /c code "{path}"', "Hide")
+        this.RegisterShellAction("c", "&C: Command Prompt", A_ComSpec . ' /K cd /d "{path}"')
+        this.RegisterShellAction("p", "&P: PowerShell", 'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"')
+        this.RegisterAction("k", "&K: Copy Path", (path) => (A_Clipboard := path, ToolTip("Path Copied: " . path), SetTimer(() => ToolTip(), -2000)))
+    }
+
+    static _LoadUserActions() {
+        try {
+            content := IniRead(this.IniPath, "Actions", , "")
+            for line in StrSplit(content, "`n", "`r") {
+                if !InStr(line, "=")
+                    continue
+                kv := StrSplit(line, "=", , 2)
+                key := Trim(kv[1])
+                parts := StrSplit(Trim(kv[2]), "|")
+                if (parts.Length >= 3) {
+                    label := parts[1]
+                    kind := StrLower(parts[2])
+                    if (kind = "shell") {
+                        cmd := parts[3]
+                        opt := (parts.Length >= 4) ? parts[4] : ""
+                        this.RegisterShellAction(key, label, cmd, opt)
+                    }
+                }
+            }
+        }
     }
 }
