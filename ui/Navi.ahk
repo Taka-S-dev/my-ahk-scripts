@@ -46,6 +46,7 @@ class Navi {
     static GuiObj := ""
     static QuickPathFocused := false
     static QuickPathHwnd := 0
+    static FilesShown := Map()
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -119,9 +120,9 @@ class Navi {
         tv := this.GuiObj.Add("TreeView", "xm w455 r20 vFolderTree")
 
         ; ステータスバーによる操作案内
-        this.GuiObj.SetFont("s8")
+        this.GuiObj.SetFont("s7")
         sb := this.GuiObj.Add("StatusBar")
-        sb.SetText(" [Space] アクションメニューを表示  /  [Enter] エクスプローラー   /  [Ctrl+P] ピン留め")
+        sb.SetText(" [Space] アクションメニューを表示   /   [Enter] エクスプローラー  /   [Ctrl + Enter] ファイル表示   /  [Ctrl+P] ピン留め")
 
         rootDDL.OnEvent("Change", (*) => (
             this.lastRoot := rootDDL.Text,
@@ -137,6 +138,7 @@ class Navi {
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Space", (*) => this.ShowActionMenu(), "On")
         Hotkey("Enter", (*) => this._HandleEnter(), "On")
+        Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
         Hotkey("Esc", (*) => this._DestroyGui(), "On")
         HotIf()
@@ -651,6 +653,44 @@ class Navi {
         }
         ; それ以外は従来通りエクスプローラー実行
         this.Execute("e")
+    }
+
+    static ToggleFilesUnderSelection() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        tv := this.GuiObj["FolderTree"]
+        id := tv.GetSelection()
+        if (id = 0)
+            return
+        full := this._GetTVFullPath(tv, id)
+        if (!DirExist(full)) {
+            return
+        }
+        ; 既に表示済みなら削除
+        if (this.FilesShown.Has(id)) {
+            for _, cid in this.FilesShown[id] {
+                try tv.Delete(cid)
+            }
+            this.FilesShown.Delete(id)
+            ToolTip("Files hidden"), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+            return
+        }
+        ; 表示（上限FileMax、既定200）
+        fileMax := 200
+        try fileMax := Integer(IniRead(this.IniPath, "Settings", "FileMax", "200"))
+        shown := []
+        count := 0
+        loop files, full . "\*", "F" {
+            if InStr(A_LoopFileAttrib, "H")
+                continue
+            fid := tv.Add(A_LoopFileName, id)
+            shown.Push(fid)
+            count += 1
+            if (count >= fileMax)
+                break
+        }
+        this.FilesShown[id] := shown
+        ToolTip("Files shown: " . count), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
     }
 
     static _InitDefaultActions() {
