@@ -9,6 +9,7 @@
 !README.md
 !LICENSE
 !Main.ahk
+!.pre-commit-config.yaml
 
 # 4. 特定フォルダ内の「.ahk」ファイルだけを許可
 !modules/**/*.ahk

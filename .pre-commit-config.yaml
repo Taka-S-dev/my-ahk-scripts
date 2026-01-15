@@ -1,0 +1,21 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+      - id: end-of-file-fixer
+        name: Fix End of Files
+      - id: check-yaml
+        name: Check YAML syntax
+      - id: check-added-large-files
+        name: Check for large files
+        args: ["--maxkb=500"]
+
+  - repo: local
+    hooks:
+      - id: forbidden-keywords-check
+        name: Source Code Sanitizer (Disallow internal keywords)
+        language: pygrep
+        entry: '\[cite:'
+        files: '\.ahk$'
