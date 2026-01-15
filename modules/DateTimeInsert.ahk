@@ -38,7 +38,7 @@ class DateTimeInsert {
             this.index := 1
         }
 
-        ; フォーマットを適用して文字列を生成 [cite: 93, 94]
+        ; フォーマットを適用して文字列を生成
         targetFormat := this.Formats[this.index]
         txt := FormatTime(A_Now, targetFormat)
 

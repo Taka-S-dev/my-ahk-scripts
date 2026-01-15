@@ -1,9 +1,9 @@
 ﻿; ==============================================================================
 ; Module:       VimNavigation.ahk
 ; Description:  無変換キー(vk1D)との組み合わせで Vim 風の操作を実現
-; Features:     - hjkl: カーソル移動 (Shift 併用で範囲選択) [cite: 1, 2]
+; Features:     - hjkl: カーソル移動 (Shift 併用で範囲選択) 
 ;               - dd / yy: 行削除 / 行コピー (二度打ち判定)
-;               - o / O: 下 / 上 に新しい行を挿入 [cite: 5, 6, 7, 8]
+;               - o / O: 下 / 上 に新しい行を挿入
 ; Version:      1.1.0
 ; License:      MIT
 ;
