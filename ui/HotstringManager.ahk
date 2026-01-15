@@ -79,13 +79,32 @@ class HotstringManager {
             for line in StrSplit(content, "`n") {
                 parts := StrSplit(line, "=", , 2)
                 if (parts.Length >= 2) {
-                    this._AddHS(parts[1], parts[2])
+                    trig := this._DecodeKey(parts[1])
+                    this._AddHS(trig, parts[2])
                 }
             }
         }
     }
 
     static _AddHS(trig, repl) => Hotstring("::" . trig, (n) => this._SendProcessedText(repl), "On")
+
+    ; --- INIキーのエンコード/デコード（先頭セミコロン対策） ---
+    static _EncodeKey(key) {
+        if (SubStr(key, 1, 1) = ";") {
+            return "HSENC:%3B" . SubStr(key, 2)
+        }
+        return key
+    }
+
+    static _DecodeKey(key) {
+        k := key
+        prefix := "HSENC:%3B"
+        prefLen := StrLen(prefix)
+        if (StrLower(SubStr(k, 1, prefLen)) = StrLower(prefix)) {
+            return ";" . SubStr(k, prefLen + 1)
+        }
+        return k
+    }
 
     ; --- GUI制御：座標計算と表示 ---
     static Show(*) {
@@ -155,7 +174,8 @@ class HotstringManager {
             for line in StrSplit(content, "`n") {
                 parts := StrSplit(line, "=", , 2)
                 if (parts.Length >= 2) {
-                    this.LvObj.Add(, parts[1], parts[2])
+                    trig := this._DecodeKey(parts[1])
+                    this.LvObj.Add(, trig, parts[2])
                 }
             }
         }
@@ -165,7 +185,8 @@ class HotstringManager {
         t := this.EditTrig.Value
         r := this.EditRepl.Value
         if (t !== "" && r !== "") {
-            IniWrite(r, this.IniPath, "Custom", t)
+            encT := this._EncodeKey(t)
+            IniWrite(r, this.IniPath, "Custom", encT)
             this._AddHS(t, r)
             this._RefreshList()
             this.EditTrig.Value := ""
@@ -189,7 +210,8 @@ class HotstringManager {
 
             if (MsgBox(msg, "Confirmation", "YesNo Icon? " . this.FLAG_MODAL) == "Yes") {
                 for trig in selectedTriggers {
-                    IniDelete(this.IniPath, "Custom", trig)
+                    encT := this._EncodeKey(trig)
+                    IniDelete(this.IniPath, "Custom", encT)
                     try Hotstring("::" . trig, , "Off")
                 }
                 this._RefreshList()
@@ -249,7 +271,8 @@ class HotstringManager {
 
         ; トリガー変更時は競合を確認
         if (newTrig != oldTrig) {
-            try existing := IniRead(this.IniPath, "Custom", newTrig, "")
+            encNew := this._EncodeKey(newTrig)
+            try existing := IniRead(this.IniPath, "Custom", encNew, "")
             if (existing != "") {
                 if (MsgBox("Overwrite existing trigger '" . newTrig . "'?", "Confirm", "YesNo Icon? 4096") != "Yes")
                     return
@@ -258,12 +281,14 @@ class HotstringManager {
 
         ; 古い登録を外す（トリガー変更時）
         if (oldTrig != "" && oldTrig != newTrig) {
-            IniDelete(this.IniPath, "Custom", oldTrig)
+            encOld := this._EncodeKey(oldTrig)
+            IniDelete(this.IniPath, "Custom", encOld)
             try Hotstring("::" . oldTrig, , "Off")
         }
 
         ; 書き込み（新規 or 更新）
-        IniWrite(newRepl, this.IniPath, "Custom", newTrig)
+        encNewFinal := this._EncodeKey(newTrig)
+        IniWrite(newRepl, this.IniPath, "Custom", encNewFinal)
 
         ; 再登録（置換のみ変更時も念のため外して入れ直す）
         try Hotstring("::" . newTrig, , "Off")
