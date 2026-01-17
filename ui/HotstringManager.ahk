@@ -3,7 +3,7 @@
 ; Description:  Dynamic Hotstring Registration & Management Tool
 ;               - INIファイルによる永続化と、スクリプト再起動なしの動的反映
 ;               - プレースホルダ展開機能 ({{clip}}, yyyy/mm/dd, HH:mm)
-;               - マウス/キャレット追従表示およびモニター境界の自動補正 
+;               - マウス/キャレット追従表示およびモニター境界の自動補正
 ;               - トレイメニューへの統合によるホットキーの節約
 ;               - マジックナンバーを排除した定数管理による高い保守性
 ; Author:       Taka-S-dev
@@ -33,6 +33,8 @@ class HotstringManager {
 
     static FLAG_MODAL := 4096 ; System Modal
     static IniPath := A_ScriptDir "\ui\Hotstrings.ini"
+    static SLEEP_PASTE := 100
+    static TIMER_RESTORE := -500
 
     ; --- 内部変数 ---
     static GuiObj := ""
@@ -56,7 +58,8 @@ class HotstringManager {
         text := rawText
 
         ; 1. クリップボード同期
-        text := StrReplace(text, "{{clip}}", A_Clipboard)
+        ; "{{clip}}" を基本に、片側の波括弧が欠けたケースも吸収（{clip}}, {{clip}, {clip}）
+        text := RegExReplace(text, "\{{1,2}\s*clip\s*\}{1,2}", A_Clipboard)
 
         ; 2. 基本の日付・時刻フォーマット
         text := StrReplace(text, "yymmdd", FormatTime(, "yyMMdd"))
@@ -70,7 +73,8 @@ class HotstringManager {
     ; --- 内部ロジック：ホットストリングの実行と動的登録 ---
     static _SendProcessedText(repl) {
         processed := this._ApplyPlaceholders(repl)
-        SendText(processed)
+        ; ホットストリングの自動バックスペース完了を待つため、少し遅延して貼り付け
+        SetTimer((*) => this._QuickPaste(processed), -30)
     }
 
     static _RegisterFromIni() {
@@ -327,5 +331,14 @@ class HotstringManager {
             DirCreate(A_ScriptDir "\ui")
         if !FileExist(this.IniPath)
             FileAppend("[Custom]`n", this.IniPath, "UTF-8")
+    }
+
+    ; --- クリップボード経由での安全な貼り付け ---
+    static _QuickPaste(text) {
+        oldClip := ClipboardAll()
+        A_Clipboard := text
+        Sleep(this.SLEEP_PASTE)
+        Send("^v")
+        SetTimer((*) => (A_Clipboard := oldClip), this.TIMER_RESTORE)
     }
 }
