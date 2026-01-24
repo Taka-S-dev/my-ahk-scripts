@@ -26,6 +26,9 @@ class Navi {
     static ExplorerPath := ""
     static TOOLTIP_ERROR_DURATION := 2000
     static TOOLTIP_SUCCESS_DURATION := 1000
+    static TOOLTIP_COPY_DURATION := 2000
+    static TEMP_DIR_SUBPATH := "\ui\NaviTemp"
+    static TEMP_PREFIX := "TEMP_"
 
     ; --- [追加] アクションメニュー用の定数 ---
     static MENU_BG_COLOR := "262626"  ; メニューの背景色
@@ -693,6 +696,46 @@ class Navi {
         ToolTip("Files shown: " . count), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
     }
 
+    /**
+     * 選択ファイルをNaviと同階層(ui)の一時フォルダにコピーし、既定アプリで開く
+     * ファイル名に TEMP_YYYYMMDD-HHMMSS_ の接頭辞を付与
+     */
+    static _OpenTempCopy(path) {
+        tempDir := A_ScriptDir . this.TEMP_DIR_SUBPATH
+        try {
+            if (!DirExist(tempDir))
+                DirCreate(tempDir)
+        } catch as e {
+            ToolTip("一時フォルダ作成失敗: " . e.Message)
+            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+            return
+        }
+        if (DirExist(path)) {
+            ; フォルダ選択時はテンポラリフォルダを開く
+            Run('explorer.exe "' . tempDir . '"')
+            ToolTip("Temp folder opened: " . tempDir)
+            SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+            return
+        }
+        if (!FileExist(path)) {
+            ToolTip("ファイルが見つかりません")
+            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+            return
+        }
+        SplitPath(path, &fileName)
+        ts := FormatTime(, "yyyyMMdd-HHmmss") ; YYYYMMDD-HHMMSS
+        dest := tempDir . "\" . this.TEMP_PREFIX . ts . "_" . fileName
+        try {
+            FileCopy(path, dest, true)
+            Run('"' . dest . '"')
+            ToolTip("Temp copy opened: " . dest)
+            SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+        } catch as e {
+            ToolTip("コピーまたは起動に失敗: " . e.Message)
+            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+        }
+    }
+
     static _InitDefaultActions() {
         this.RegisterAction("e", "&E: Explorer", (path) => Run('explorer.exe "' . path . '"'))
         this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
@@ -705,7 +748,17 @@ class Navi {
         this.RegisterShellAction("p", "&P: PowerShell",
             'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"')
         this.RegisterAction("k", "&K: Copy Path", (path) => (A_Clipboard := path, ToolTip("Path Copied: " . path),
-        SetTimer(() => ToolTip(), -2000)))
+        SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)))
+        ; ファイル/フォルダ名のみをコピー
+        this.RegisterAction("n", "&N: Copy Name", (path) => (
+            SplitPath(path, &fn),
+            name := (fn != "" ? fn : path),
+            A_Clipboard := name,
+            ToolTip("Name Copied: " . name),
+            SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
+        ))
+        ; 一時コピーを作成して開く
+        this.RegisterAction("o", "&O: Open Temp Copy", (path) => this._OpenTempCopy(path))
     }
 
     static _LoadUserActions() {
