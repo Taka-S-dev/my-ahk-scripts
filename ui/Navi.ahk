@@ -17,6 +17,7 @@
 ;
 ; ==============================================================================
 #Requires AutoHotkey v2.0
+#Include *i Navi.Search.ahk
 
 class Navi {
     ; --- クラス定数 ---
@@ -249,11 +250,15 @@ class Navi {
         if (fullPath != "" && (DirExist(fullPath) || FileExist(fullPath))) {
             this._ExecuteAction(key, fullPath)
             if (this.GuiObj && WinExist(this.GuiObj)) {
-                if (!this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
-                    this._DestroyGui()
+                ; 検索アクション(f:Local)はクローズしない
+                k := StrLower(key)
+                if (k != "f") {
+                    if (!this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
+                        this._DestroyGui()
+                    }
                 }
             }
-            if (key != "k") {
+            if (key != "k" && StrLower(key) != "f") {
                 ToolTip("実行 [" . key . "]: " . fullPath)
                 SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
             }
@@ -301,6 +306,8 @@ class Navi {
 
     static _DestroyGui() {
         if (this.GuiObj && WinExist(this.GuiObj)) {
+            ; 検索ウィンドウなど付随UIも確実に閉じる
+            try NaviSearch._DestroyJumpGui()
             this.GuiObj.Destroy()
             this.GuiObj := ""
         }
@@ -759,6 +766,8 @@ class Navi {
         ))
         ; 一時コピーを作成して開く
         this.RegisterAction("o", "&O: Open Temp Copy", (path) => this._OpenTempCopy(path))
+        ; ローカル再帰検索
+        this.RegisterAction("f", "&F: Search (Local)", (path) => NaviSearch.RunLocal(this, path))
     }
 
     static _LoadUserActions() {
