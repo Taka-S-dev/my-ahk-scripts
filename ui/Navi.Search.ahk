@@ -478,10 +478,12 @@ class NaviSearch {
         jg := this.JumpGui
         if (Type(jg) = "Gui" && jg.Hwnd && WinExist("ahk_id " jg.Hwnd)) {
             this._UpdateJumpLabel()
+            ; 常に最前面を維持
+            WinSetAlwaysOnTop(1, "ahk_id " jg.Hwnd)
             return
         }
-        ; マルチモニタでの座標ずれ回避のためオーナーは付けない
-        g := Gui("+AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "Search Hits")
+        ; Ownerを設定してNaviより常に前面に表示
+        g := Gui("+Owner" . navi.GuiObj.Hwnd . " +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "Search Hits")
         g.SetFont("s9", "Segoe UI")
         prev := g.Add("Button", "xm w" . this.BTN_W_SMALL, "Prev")
         next := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "Next")
@@ -492,39 +494,13 @@ class NaviSearch {
         next.OnEvent("Click", (*) => NaviSearch.Jump(navi, +1))
         clr.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
         closeBtn.OnEvent("Click", (*) => (NaviSearch._DestroyJumpGui()))
-        ; ツリーに被らない位置に配置（右→左→上→下の優先順）
+        ; Naviウィンドウの外側下部に配置（WinGetPosで正確なスクリーン座標を取得）
         g.Show("Hide AutoSize")
         g.GetPos(, , &gw, &gh)
-        tv := navi.GuiObj["FolderTree"]
-        x := 0, y := 0
-        if (tv) {
-            rect := Buffer(16, 0)
-            try DllCall("GetWindowRect", "ptr", tv.Hwnd, "ptr", rect.Ptr)
-            left   := NumGet(rect, 0, "Int")
-            top    := NumGet(rect, 4, "Int")
-            right  := NumGet(rect, 8, "Int")
-            bottom := NumGet(rect, 12, "Int")
-            margin := this.UI_MARGIN
-            ; 1) 右側
-            x := right + margin, y := top
-            if (x + gw > A_ScreenWidth) {
-                ; 2) 左側
-                x := left - gw - margin, y := top
-            }
-            if (x < 0) {
-                ; 3) 上側
-                x := left, y := top - gh - margin
-            }
-            if (y < 0) {
-                ; 4) 下側
-                x := left, y := bottom + margin
-            }
-        } else {
-            ; フォールバック: 親の右上付近
-            navi.GuiObj.GetPos(&px, &py, &pw, &ph)
-            x := px + pw - gw - 16
-            y := py + 16
-        }
+        WinGetPos(&px, &py, &pw, &ph, "ahk_id " navi.GuiObj.Hwnd)
+        ; Naviウィンドウの下部外側、中央揃え
+        x := px + (pw - gw) // 2
+        y := py + ph + this.UI_MARGIN
         g.Show("x" . x . " y" . y)
         ; 親は無効化しない（ツリー操作を阻害しない）
         this.LastNavi := navi

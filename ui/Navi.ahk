@@ -45,6 +45,12 @@ class Navi {
     static SCREEN_MARGIN := 10     ; 画面端からのマージン
     static MOUSE_OFFSET := 15      ; マウス位置からのオフセット
 
+    ; --- パンくずリスト用の定数 ---
+    static BREADCRUMB_COLOR := "505050"      ; パンくずテキスト色
+    static BREADCRUMB_HEIGHT := 20           ; パンくずの高さ
+    static BREADCRUMB_MAX_LEN := 70          ; パス表示の最大文字数
+    static BREADCRUMB_WATCH_MS := 100        ; 選択監視タイマー間隔
+
     ; --- セッション内メモリ ---
     static lastRoot := ""
     static lastPath := ""
@@ -52,6 +58,7 @@ class Navi {
     static QuickPathFocused := false
     static QuickPathHwnd := 0
     static FilesShown := Map()
+    static lastSelectedId := 0  ; パンくず更新用
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -122,7 +129,14 @@ class Navi {
         rootDDL := this.GuiObj.Add("DropDownList", "xm w280 Choose" . chooseIdx . " vRootDDL", folderNames)
         btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h28 -Tabstop", "編集")
         this.GuiObj.Add("Checkbox", "x+50 yp+5 vPinCheck -Tabstop", "ピン留め")
-        tv := this.GuiObj.Add("TreeView", "xm w455 r20 vFolderTree")
+
+        ; パンくずリスト（現在のパス表示 & クリックで階層メニュー）
+        this.GuiObj.SetFont("s8", "Segoe UI")
+        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . this.BREADCRUMB_HEIGHT . " vBreadcrumb c" . this.BREADCRUMB_COLOR . " +0x100", "")  ; +0x100 = SS_NOTIFY for click
+        breadcrumb.OnEvent("Click", (*) => this._OnBreadcrumbClick())
+        this.GuiObj.SetFont("s10", "Segoe UI")
+
+        tv := this.GuiObj.Add("TreeView", "xm w455 r18 vFolderTree")
 
         ; ステータスバーによる操作案内
         this.GuiObj.SetFont("s7")
@@ -148,11 +162,16 @@ class Navi {
         Hotkey("Esc", (*) => this._DestroyGui(), "On")
         HotIf()
 
+        ; パンくず更新用タイマー開始
+        this.lastSelectedId := 0
+        SetTimer(this._BreadcrumbWatcher.Bind(this), this.BREADCRUMB_WATCH_MS)
+
         if (folderNames.Length > 0) {
             this._RefreshTree(tv, folderMap[rootDDL.Text])
             if (this.lastPath != "") {
                 this._FocusPath(tv, this.lastPath)
             }
+            this._RefreshBreadcrumb()
         }
 
         ; マウスカーソルがあるモニタの作業領域中央に配置
@@ -298,6 +317,8 @@ class Navi {
     }
 
     static _DestroyGui() {
+        ; パンくず監視タイマーを停止
+        SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
         if (this.GuiObj && WinExist(this.GuiObj)) {
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
@@ -571,6 +592,89 @@ class Navi {
             path := (i == 1) ? p : RTrim(path, "\") . "\" . p
         }
         return path
+    }
+
+    ; --- パンくずリスト関連 ---
+    static _BreadcrumbWatcher() {
+        try {
+            if !(this.GuiObj && this.GuiObj.Hwnd && WinExist("ahk_id " this.GuiObj.Hwnd)) {
+                SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
+                return
+            }
+            tv := this.GuiObj["FolderTree"]
+            id := tv.GetSelection()
+            if (id != this.lastSelectedId) {
+                this.lastSelectedId := id
+                this._UpdateBreadcrumb(tv, id)
+            }
+        }
+    }
+
+    static _RefreshBreadcrumb() {
+        try {
+            if !(this.GuiObj && this.GuiObj.Hwnd && WinExist("ahk_id " this.GuiObj.Hwnd))
+                return
+            tv := this.GuiObj["FolderTree"]
+            id := tv.GetSelection()
+            this.lastSelectedId := id
+            this._UpdateBreadcrumb(tv, id)
+        }
+    }
+
+    static _UpdateBreadcrumb(tv, id) {
+        try {
+            if !(this.GuiObj && this.GuiObj.Hwnd)
+                return
+            if (id = 0) {
+                this.GuiObj["Breadcrumb"].Value := ""
+                return
+            }
+            fullPath := this._GetTVFullPath(tv, id)
+            displayPath := fullPath
+            if (StrLen(displayPath) > this.BREADCRUMB_MAX_LEN) {
+                displayPath := "..." . SubStr(displayPath, -(this.BREADCRUMB_MAX_LEN - 3))
+            }
+            this.GuiObj["Breadcrumb"].Value := displayPath
+        }
+    }
+
+    static _OnBreadcrumbClick() {
+        tv := this.GuiObj["FolderTree"]
+        id := tv.GetSelection()
+        if (id = 0)
+            return
+
+        ; 現在のパスから各階層をメニューに表示
+        pathParts := []
+        currID := id
+        while (currID != 0) {
+            pathParts.InsertAt(1, {id: currID, name: tv.GetText(currID)})
+            currID := tv.GetParent(currID)
+        }
+
+        if (pathParts.Length = 0)
+            return
+
+        ; ポップアップメニューを作成
+        bcMenu := Menu()
+        for i, part in pathParts {
+            partID := part.id
+            indent := ""
+            loop i - 1
+                indent .= "    "
+            bcMenu.Add(indent . part.name, ((pid, *) => this._JumpToTreeItem(pid)).Bind(partID))
+        }
+        bcMenu.Show()
+    }
+
+    static _JumpToTreeItem(id) {
+        tv := this.GuiObj["FolderTree"]
+        tv.Modify(id, "Select Vis")
+        if (tv.GetChild(id)) {
+            tv.Modify(id, "Expand")
+            this._OnItemExpand(tv, id)
+        }
+        tv.Focus()
     }
 
     static _GetActiveWindowPath() {
