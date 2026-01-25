@@ -23,6 +23,7 @@ class Navi {
     ; --- クラス定数 ---
     static GUI_WIDTH := 450
     static GUI_HEIGHT_APPROX := 540
+    static WINDOW_FRAME_WIDTH := 14  ; ウィンドウフレーム補正値（Win10/11標準テーマ）
     static IniPath := A_ScriptDir "\ui\Navi.ini"
     static ExplorerPath := ""
     static TOOLTIP_ERROR_DURATION := 2000
@@ -154,26 +155,18 @@ class Navi {
             }
         }
 
-        CoordMode "Caret", "Screen"
+        ; マウスカーソルがあるモニタの作業領域中央に配置
         CoordMode "Mouse", "Screen"
-        targetX := 0, targetY := 0
+        MouseGetPos(&mX, &mY)
+        monitorNum := this._GetMonitorFromPos(mX, mY)
+        MonitorGetWorkArea(monitorNum, &waL, &waT, &waR, &waB)
 
-        if CaretGetPos(&cX, &cY) {
-            targetX := cX + this.CARET_OFFSET_X
-            monitorNum := this._GetMonitorFromPos(cX, cY)
-            MonitorGetWorkArea(monitorNum, &L, &T, &R, &B)
-            if (cY + this.CARET_GAP_Y + this.GUI_HEIGHT_APPROX > B) {
-                targetY := cY - this.GUI_HEIGHT_APPROX - this.SCREEN_MARGIN
-            } else {
-                targetY := cY + this.CARET_GAP_Y
-            }
-        } else {
-            MouseGetPos(&mX, &mY)
-            targetX := mX + this.MOUSE_OFFSET, targetY := mY + this.MOUSE_OFFSET
-        }
+        winW := this.GUI_WIDTH + this.WINDOW_FRAME_WIDTH
+        winH := this.GUI_HEIGHT_APPROX
+        centerX := waL + (waR - waL - winW) // 2
+        centerY := waT + (waB - waT - winH) // 2
 
-        this._EnsureInScreen(&targetX, &targetY, this.GUI_WIDTH, this.GUI_HEIGHT_APPROX)
-        this.GuiObj.Show("x" . targetX . " y" . targetY)
+        this.GuiObj.Show("x" . centerX . " y" . centerY)
     }
 
     /**

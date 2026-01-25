@@ -22,6 +22,7 @@ class HotstringManager {
     ; --- クラス定数（可読性と保守性のための定数値） ---
     static GUI_WIDTH := 420
     static GUI_HEIGHT_EST := 350
+    static WINDOW_FRAME_WIDTH := 14  ; ウィンドウフレーム補正値（Win10/11標準テーマ）
     static LV_ROWS := 10
     static COL_WIDTH_TRIG := 100
     static COL_WIDTH_REPL := 280
@@ -116,31 +117,18 @@ class HotstringManager {
             this._BuildGui()
         }
 
-        CoordMode "Caret", "Screen"
+        ; マウスカーソルがあるモニタの作業領域中央に配置
         CoordMode "Mouse", "Screen"
+        MouseGetPos(&mX, &mY)
+        monitorNum := this._GetMonitorFromPos(mX, mY)
+        MonitorGetWorkArea(monitorNum, &waL, &waT, &waR, &waB)
 
-        targetX := 0
-        targetY := 0
+        winW := this.GUI_WIDTH + this.WINDOW_FRAME_WIDTH
+        winH := this.GUI_HEIGHT_EST
+        centerX := waL + (waR - waL - winW) // 2
+        centerY := waT + (waB - waT - winH) // 2
 
-        ; キャレット位置を優先的に取得
-        if CaretGetPos(&cX, &cY) {
-            targetX := cX + this.OFFSET_CARET
-            monitorNum := this._GetMonitorFromPos(cX, cY)
-            MonitorGetWorkArea(monitorNum, &L, &T, &R, &B)
-
-            if (cY + this.OFFSET_LINE + this.GUI_HEIGHT_EST > B) {
-                targetY := cY - this.GUI_HEIGHT_EST - this.OFFSET_SCREEN
-            } else {
-                targetY := cY + this.OFFSET_LINE
-            }
-        } else {
-            MouseGetPos(&mX, &mY)
-            targetX := mX + this.OFFSET_MOUSE
-            targetY := mY + this.OFFSET_MOUSE
-        }
-
-        this._EnsureInScreen(&targetX, &targetY, this.GUI_WIDTH, this.GUI_HEIGHT_EST)
-        this.GuiObj.Show("x" . targetX . " y" . targetY)
+        this.GuiObj.Show("x" . centerX . " y" . centerY)
         this.EditTrig.Focus()
     }
 

@@ -22,6 +22,7 @@ class TempMemo {
     static TAB_NAMES := ["Memo 1", "Memo 2", "Memo 3", "Work"]
     static GUI_WIDTH_DEFAULT := 600
     static GUI_HEIGHT_DEFAULT := 450
+    static WINDOW_FRAME_WIDTH := 14  ; ウィンドウフレーム補正値（Win10/11標準テーマ）
 
     static GuiObj := ""
     static TabObj := ""
@@ -48,42 +49,18 @@ class TempMemo {
             return
         }
 
-        ; 表示位置の計算
-        CoordMode "Caret", "Screen"
+        ; マウスカーソルがあるモニタの作業領域中央に配置
         CoordMode "Mouse", "Screen"
+        MouseGetPos(&mX, &mY)
+        monitorNum := this._GetMonitorFromPos(mX, mY)
+        MonitorGetWorkArea(monitorNum, &waL, &waT, &waR, &waB)
 
-        ; 現在のウィンドウサイズを取得（未表示時はデフォルト値を使用）
-        this.GuiObj.Opt("+LastFound")
-        hWnd := WinExist()
-        WinGetPos(, , &curW, &curH, hWnd)
-        realW := (curW > 0) ? curW : this.GUI_WIDTH_DEFAULT
-        realH := (curH > 0) ? curH : this.GUI_HEIGHT_DEFAULT
+        winW := this.GUI_WIDTH_DEFAULT + this.WINDOW_FRAME_WIDTH
+        winH := this.GUI_HEIGHT_DEFAULT
+        centerX := waL + (waR - waL - winW) // 2
+        centerY := waT + (waB - waT - winH) // 2
 
-        targetX := 0
-        targetY := 0
-
-        if CaretGetPos(&cX, &cY) {
-            targetX := cX + 5
-            monitorNum := this._GetMonitorFromPos(cX, cY)
-            MonitorGetWorkArea(monitorNum, &L, &T, &R, &B)
-
-            ; 画面下端にはみ出る場合は、キャレットの上側に表示（反転）
-            if (cY + 25 + realH > B) {
-                targetY := cY - realH - 10
-            } else {
-                targetY := cY + 25
-            }
-        } else {
-            ; キャレット座標が取得できない場合はマウス位置を基準にする
-            MouseGetPos(&mX, &mY)
-            targetX := mX + 15
-            targetY := mY + 15
-        }
-
-        ; 画面外へのはみ出し防止
-        this._EnsureInScreen(&targetX, &targetY, realW, realH)
-
-        this.GuiObj.Show("x" . targetX . " y" . targetY)
+        this.GuiObj.Show("x" . centerX . " y" . centerY)
 
         ; フォーカス処理
         if (this.EditObjs.Length >= this.TabObj.Value) {
