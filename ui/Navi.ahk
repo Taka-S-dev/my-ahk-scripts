@@ -803,6 +803,7 @@ class Navi {
     /**
      * 選択ファイルをNaviと同階層(ui)の一時フォルダにコピーし、既定アプリで開く
      * ファイル名に TEMP_YYYYMMDD-HHMMSS_ の接頭辞を付与
+     * ショートカット(.lnk)の場合は、ショートカットの先のファイルをコピー
      */
     static _OpenTempCopy(path) {
         tempDir := A_ScriptDir . this.TEMP_DIR_SUBPATH
@@ -826,11 +827,32 @@ class Navi {
             SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
             return
         }
-        SplitPath(path, &fileName)
+
+        ; ショートカットファイルの場合は先のファイルを取得
+        actualPath := path
+        SplitPath(path, , , &ext)
+        if (StrLower(ext) == "lnk") {
+            try {
+                FileGetShortcut(path, &targetPath)
+                if (targetPath != "" && FileExist(targetPath)) {
+                    actualPath := targetPath
+                } else {
+                    ToolTip("ショートカットの先が見つかりません")
+                    SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+                    return
+                }
+            } catch as e {
+                ToolTip("ショートカットの解決に失敗: " . e.Message)
+                SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+                return
+            }
+        }
+
+        SplitPath(actualPath, &fileName)
         ts := FormatTime(, "yyyyMMdd-HHmmss") ; YYYYMMDD-HHMMSS
         dest := tempDir . "\" . this.TEMP_PREFIX . ts . "_" . fileName
         try {
-            FileCopy(path, dest, true)
+            FileCopy(actualPath, dest, true)
             Run('"' . dest . '"')
             ToolTip("Temp copy opened: " . dest)
             SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
