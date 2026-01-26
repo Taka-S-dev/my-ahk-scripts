@@ -205,3 +205,22 @@ HotstringManager.Init()
 #HotIf GetKeyState(MOD_KEY, "P")
 r:: WrapPalette.Execute()
 #HotIf
+
+; ============================================================
+; Global Explorer Enhancements
+; ============================================================
+; ------------------------------------------------------------
+; エクスプローラーでテンポラリコピーオープン
+; ------------------------------------------------------------
+; 使用する場合は、以下のコメントアウト（/* と */）を外してください。
+; これにより、エクスプローラーがアクティブな時だけ以下のショートカットが有効になります。
+/*
+#Include lib\TempCopy.ahk
+
+; エクスプローラーで無変換 + T → 選択中のファイルをテンポラリコピーで開く（無選択時はテンポラリフォルダを開く）
+; 対応: Windows Explorer, Tablacus Explorer
+; 他のファイルマネージャーを追加する場合は、Window Spy (AutoHotkey付属) でウィンドウクラスを調べて追加してください
+#HotIf (WinActive("ahk_class CabinetWClass") || WinActive("ahk_class ExploreWClass") || WinActive("ahk_class TablacusExplorer")) && GetKeyState(MOD_KEY, "P")
+t:: TempCopy.Open(TempCopy.GetSelectedPath())
+#HotIf
+*/
