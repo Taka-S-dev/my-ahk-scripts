@@ -61,6 +61,10 @@ class Navi {
     static FilesShown := Map()
     static lastSelectedId := 0  ; パンくず更新用
     static DetailListGuiObj := ""  ; 詳細リストウィンドウ
+    static _AllFolderNames := []  ; 全ルート名リスト（フィルタ前）
+    static FilteredNames := []    ; フィルタ後のルート名リスト
+    static _FolderMap := Map()    ; ルート名→パスマップ
+    static DropdownGui := ""      ; フィルタードロップダウンGUI
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -122,15 +126,22 @@ class Navi {
         try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", 0x1501, "ptr", 1, "wstr",
             "Add root: full path + Enter", "ptr")
         quickEdit.SetFont("s8 c808080")
-        this.GuiObj.Add("Text", "xm c808080", "Add root: paste full path and press Enter")
         ; フォーカス状態をトラック
         quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
         quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
         this.QuickPathHwnd := quickEdit.Hwnd
 
-        rootDDL := this.GuiObj.Add("DropDownList", "xm w280 Choose" . chooseIdx . " vRootDDL", folderNames)
-        btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h28 -Tabstop", "編集")
-        this.GuiObj.Add("Checkbox", "x+50 yp+5 vPinCheck -Tabstop", "ピン留め")
+        ; ルートボタン（クリックでオーバーレイ選択ウィンドウを開く）
+        rootBtnText := (this.lastRoot != "") ? this.lastRoot : "ルートを選択..."
+        rootBtn := this.GuiObj.Add("Button", "xm w280 h26 vRootBtn", rootBtnText)
+        this.GuiObj._rootBtnHwnd := rootBtn.Hwnd  ; Enter判定用にhwndを保存
+        btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h26 -Tabstop", "編集")
+        this.GuiObj._btnEditHwnd := btnEdit.Hwnd
+        pinCheck := this.GuiObj.Add("Checkbox", "x+50 yp+4 vPinCheck -Tabstop", "ピン留め")
+        this.GuiObj._pinCheckHwnd := pinCheck.Hwnd
+        this._AllFolderNames := folderNames
+        this.FilteredNames := folderNames.Clone()
+        this._FolderMap := folderMap
 
         ; パンくずリスト（現在のパス表示 & クリックで階層メニュー）
         this.GuiObj.SetFont("s8", "Segoe UI")
@@ -145,11 +156,7 @@ class Navi {
         sb := this.GuiObj.Add("StatusBar")
         sb.SetText(" [Space]メニュー  [Enter]開く  [Ctrl+D]詳細  [F1]ヘルプ")
 
-        rootDDL.OnEvent("Change", (*) => (
-            this.lastRoot := rootDDL.Text,
-            this._RefreshTree(tv, folderMap[rootDDL.Text])
-        ))
-
+        rootBtn.OnEvent("Click", (*) => this._OpenDropdown())
         btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this.Execute("e"))
@@ -163,7 +170,8 @@ class Navi {
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
         Hotkey("^d", (*) => this.ShowDetailList(), "On")
         Hotkey("F1", (*) => this._ShowHelp(), "On")
-        Hotkey("Esc", (*) => this._DestroyGui(), "On")
+        Hotkey("Esc", (*) => this._HandleEsc(), "On")
+        Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
         HotIf()
 
         ; パンくず更新用タイマー開始
@@ -171,7 +179,8 @@ class Navi {
         SetTimer(this._BreadcrumbWatcher.Bind(this), this.BREADCRUMB_WATCH_MS)
 
         if (folderNames.Length > 0) {
-            this._RefreshTree(tv, folderMap[rootDDL.Text])
+            selectedRoot := (this.lastRoot != "" && folderMap.Has(this.lastRoot)) ? this.lastRoot : folderNames[1]
+            this._RefreshTree(tv, folderMap[selectedRoot])
             if (this.lastPath != "") {
                 this._FocusPath(tv, this.lastPath)
             }
@@ -256,7 +265,6 @@ class Navi {
                 fullPath := this._GetTVFullPath(tvObj, id)
                 ; 操作したパスとルート名をメモリに保存
                 this.lastPath := fullPath
-                this.lastRoot := this.GuiObj["RootDDL"].Text
             }
         }
         if (fullPath == "") {
@@ -326,6 +334,7 @@ class Navi {
         if (this.GuiObj && WinExist(this.GuiObj)) {
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
+            this._CloseDropdown()
             this.GuiObj.Destroy()
             this.GuiObj := ""
         }
@@ -337,25 +346,25 @@ class Navi {
     static _ShowHelp() {
         helpText := "
         (
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-              Navi - ショートカット一覧
-        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                  Navi - ショートカット一覧
+            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        【基本操作】
-          Space         アクションメニューを表示
-          Enter         エクスプローラーで開く
-          Esc           ウィンドウを閉じる
+            【基本操作】
+              Space         アクションメニューを表示
+              Enter         エクスプローラーで開く
+              Esc           ウィンドウを閉じる
 
-        【表示切替】
-          Ctrl+Enter    ファイル表示トグル
-          Ctrl+D        詳細リスト表示
+            【表示切替】
+              Ctrl+Enter    ファイル表示トグル
+              Ctrl+D        詳細リスト表示
 
-        【その他】
-          Ctrl+P        ピン留めトグル
-          F1            このヘルプを表示
+            【その他】
+              Ctrl+P        ピン留めトグル
+              F1            このヘルプを表示
         )"
 
-        MsgBox(helpText, "Navi ショートカット", "Iconi 4096")
+    MsgBox(helpText, "Navi ショートカット", "Iconi 4096")
     }
 
     static _ExecuteAction(key, path) {
@@ -384,15 +393,18 @@ class Navi {
         lv.ModifyCol(1, 120), lv.ModifyCol(2, 350), lv.ModifyCol(3, 50)
         this._LoadLVFolders(lv)
         btnAdd := editGui.Add("Button", "xm w70", "追加"), btnMod := editGui.Add("Button", "x+5 w70", "修正"), btnDel :=
-        editGui.Add("Button", "x+5 w70", "削除")
+            editGui.Add("Button", "x+5 w70", "削除")
         btnUp := editGui.Add("Button", "x+20 w40", "↑"), btnDown := editGui.Add("Button", "x+5 w40", "↓")
         btnSave := editGui.Add("Button", "x+220 w110 Default", "保存/再起動")
         btnAdd.OnEvent("Click", (*) => this._ShowEntryGui(editGui, lv)), btnMod.OnEvent("Click", (*) => this._ShowEntryGui(
             editGui, lv, lv.GetNext())), btnDel.OnEvent("Click", (*) => this._DeleteItem(lv, editGui))
         btnUp.OnEvent("Click", (*) => this._MoveItem(lv, -1)), btnDown.OnEvent("Click", (*) => this._MoveItem(lv, 1)),
-        btnSave.OnEvent("Click", (*) => this._SaveList(lv))
+            btnSave.OnEvent("Click", (*) => this._SaveList(lv))
         lv.OnEvent("DoubleClick", (obj, info) => (info ? this._ShowEntryGui(editGui, lv, info) : 0))
         editGui.OnEvent("Close", (*) => this._CleanupEditGui(parentGui, editGui))
+        HotIfWinActive("ahk_id " editGui.Hwnd)
+        Hotkey("Esc", (*) => this._CleanupEditGui(parentGui, editGui), "On")
+        HotIf()
         editGui.Show("Hide"), editGui.GetPos(, , &ew, &eh)
         editGui.Show("x" . px + (pw - ew) // 2 . " y" . py + (ph - eh) // 2)
     }
@@ -584,12 +596,15 @@ class Navi {
         return path
     }
 
-    static _RefreshTree(tv, rootPath) {
+    static _RefreshTree(tv, rootPath, setFocus := true) {
         tv.Delete()
         if (!DirExist(rootPath)) {
             return
         }
-        rootID := tv.Add(rootPath, 0, "Expand Select"), this._LoadSub(tv, rootPath, rootID), tv.Focus()
+        rootID := tv.Add(rootPath, 0, "Expand Select")
+        this._LoadSub(tv, rootPath, rootID)
+        if (setFocus)
+            tv.Focus()
     }
 
     static _LoadSub(tv, path, parentID) {
@@ -679,7 +694,7 @@ class Navi {
         pathParts := []
         currID := id
         while (currID != 0) {
-            pathParts.InsertAt(1, {id: currID, name: tv.GetText(currID)})
+            pathParts.InsertAt(1, { id: currID, name: tv.GetText(currID) })
             currID := tv.GetParent(currID)
         }
 
@@ -744,7 +759,7 @@ class Navi {
         ; INIへ書き込み（表示=1）
         IniWrite(path . "|1", this.IniPath, "Folders", name)
 
-        ; DDLの先頭に表示させる（新しいリストを作り直す）
+        ; リストの先頭に表示させる（新しいリストを作り直す）
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
 
@@ -754,11 +769,16 @@ class Navi {
                 newNames.Push(n)
         }
 
-        ddl := this.GuiObj["RootDDL"]
+        ; クラス状態を更新
+        this._AllFolderNames := newNames
+        this.FilteredNames := newNames.Clone()
+        this._FolderMap := folderMap
+        this._FolderMap[name] := path
+
+        ; UIを更新
+        rootBtn := this.GuiObj["RootBtn"]
         tv := this.GuiObj["FolderTree"]
-        ddl.Delete()
-        ddl.Add(newNames)
-        ddl.Text := name
+        rootBtn.Text := name
 
         this.lastRoot := name
         this.lastPath := path
@@ -789,8 +809,32 @@ class Navi {
             this._QuickRegisterFromEdit()
             return
         }
+        if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
+            ; ルートボタンがフォーカスならオーバーレイを開く
+            this._OpenDropdown()
+            return
+        }
+        if (this.GuiObj.HasOwnProp("_btnEditHwnd") && currFocus = this.GuiObj._btnEditHwnd) {
+            ; 編集ボタンがフォーカスなら編集GUIを開く
+            this._ShowEditGui(this.GuiObj)
+            return
+        }
+        if (this.GuiObj.HasOwnProp("_pinCheckHwnd") && currFocus = this.GuiObj._pinCheckHwnd) {
+            ; ピン留めチェックボックスがフォーカスならトグル
+            this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value
+            return
+        }
         ; それ以外は従来通りエクスプローラー実行
         this.Execute("e")
+    }
+
+    static _HandleRootBtnDown() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        currFocus := 0
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd)
+            this.GuiObj["FolderTree"].Focus()
     }
 
     static ToggleFilesUnderSelection() {
@@ -1037,9 +1081,6 @@ class Navi {
 
         ; 操作したパスとルート名をメモリに保存（ツリーと同じように）
         this.lastPath := fullPath
-        if (this.GuiObj && WinExist(this.GuiObj)) {
-            this.lastRoot := this.GuiObj["RootDDL"].Text
-        }
 
         this._ExecuteAction(key, fullPath)
 
@@ -1090,19 +1131,194 @@ class Navi {
         TempCopy.Open(path)
     }
 
+    /**
+     * オーバーレイのリスト選択変更（クリック時）: ユーザーに見せるだけ。確定はEnter/ダブルクリック。
+     */
+    static _OnDropdownListChange() {
+        ; ユーザーがリストをクリックした際はダブルクリックを待つ（何もしない）
+    }
+
+    /**
+     * ルート選択オーバーレイを開く（rootBtnクリックで起動）
+     */
+    static _OpenDropdown() {
+        if (this.DropdownGui && WinExist(this.DropdownGui))
+            return  ; すでに開いている
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+
+        ; 全ルートをFilteredNamesにリセット
+        this.FilteredNames := this._AllFolderNames.Clone()
+
+        ; オーバーレイGUIを作成
+        ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルート選択")
+        ddGui.MarginX := 8
+        ddGui.MarginY := 8
+        ddGui.SetFont("s10", "Segoe UI")
+
+        filterEdit := ddGui.Add("Edit", "xm w260 vOverlayFilter")
+        try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", 0x1501, "ptr", 1,
+            "wstr", "名前でフィルター...", "ptr")
+
+        ddList := ddGui.Add("ListBox", "xm w260 r8 vDDList", this.FilteredNames)
+
+        ; lastRootを選択
+        for i, n in this.FilteredNames {
+            if (n == this.lastRoot) {
+                ddList.Choose(i)
+                break
+            }
+        }
+
+        ddGui.SetFont("s8")
+        ddGui.Add("Text", "xm w260 c808080", "↑↓: 移動  /  Enter: 選択  /  Esc: キャンセル")
+
+        this.DropdownGui := ddGui
+
+        filterEdit.OnEvent("Change", (*) => this._OverlayFilterChange())
+        ddList.OnEvent("Change", (*) => this._OnDropdownListChange())
+        ddList.OnEvent("DoubleClick", (*) => this._ConfirmDropdown())
+        ddGui.OnEvent("Close", (*) => this._CloseDropdown())
+        ; WM_ACTIVATE (0x0006): wParam=0 でウィンドウが非アクティブになった時にオーバーレイを閉じる
+        local ddHwnd := ddGui.Hwnd
+        local self := this
+        wmActivate(wParam, lParam, msg, hwnd) {
+            if (hwnd = ddHwnd && wParam = 0) {
+                OnMessage(0x0006, wmActivate, 0)  ; 登録解除
+                SetTimer(() => self._CloseDropdown(), -50)
+            }
+        }
+        OnMessage(0x0006, wmActivate)
+
+        HotIfWinActive("ahk_id " ddGui.Hwnd)
+        Hotkey("Enter", (*) => this._ConfirmDropdown(), "On")
+        Hotkey("Escape", (*) => this._CloseDropdown(), "On")
+        Hotkey("~Down", (*) => this._OverlayNavDown(), "On")
+        Hotkey("~Up", (*) => this._OverlayNavUp(), "On")
+        HotIf()
+
+        ; rootBtnの位置にオーバーレイを配置
+        this.GuiObj.GetPos(&gx, &gy)
+        this.GuiObj["RootBtn"].GetPos(&bx, &by, &bw, &bh)
+        ddGui.Show("x" . (gx + bx) . " y" . (gy + by) . " w280 AutoSize")
+    }
+
+    /**
+     * オーバーレイを閉じる（再入防止付き）
+     */
+    static _CloseDropdown() {
+        if !(this.DropdownGui && WinExist(this.DropdownGui))
+            return
+        local ddGui := this.DropdownGui
+        this.DropdownGui := ""  ; 先にクリアして再入防止
+        try ddGui.Destroy()
+    }
+
+    /**
+     * オーバーレイ選択を確定 → rootBtnを更新、ツリーを再描画してフォーカス移動
+     */
+    static _ConfirmDropdown() {
+        selectedTxt := ""
+        if (this.DropdownGui && WinExist(this.DropdownGui)) {
+            ddList := this.DropdownGui["DDList"]
+            selectedTxt := ddList.Text
+        }
+        this._CloseDropdown()
+        if (selectedTxt != "" && this._FolderMap.Has(selectedTxt) && this.GuiObj && WinExist(this.GuiObj)) {
+            this.lastRoot := selectedTxt
+            this.GuiObj["RootBtn"].Text := selectedTxt
+            tv := this.GuiObj["FolderTree"]
+            this._RefreshTree(tv, this._FolderMap[selectedTxt])
+        } else if (this.GuiObj && WinExist(this.GuiObj)) {
+            this.GuiObj.Activate()
+            this.GuiObj["FolderTree"].Focus()
+        }
+    }
+
+    /**
+     * Escキー: オーバーレイが開いていれば閉じる（選択変更なし）、なければNaviを閉じる
+     */
+    static _HandleEsc() {
+        if (this.DropdownGui && WinExist(this.DropdownGui)) {
+            this._CloseDropdown()
+            if (this.GuiObj && WinExist(this.GuiObj))
+                this.GuiObj.Activate()
+        } else {
+            this._DestroyGui()
+        }
+    }
+
+    /**
+     * オーバーレイのフィルターEdit変更: FilteredNamesを更新してリストに反映
+     */
+    static _OverlayFilterChange() {
+        if !(this.DropdownGui && WinExist(this.DropdownGui))
+            return
+        query := this.DropdownGui["OverlayFilter"].Value
+        this.FilteredNames := []
+        for name in this._AllFolderNames {
+            if (query = "" || InStr(name, query, false))
+                this.FilteredNames.Push(name)
+        }
+        ddList := this.DropdownGui["DDList"]
+        ddList.Delete()
+        if (this.FilteredNames.Length > 0) {
+            ddList.Add(this.FilteredNames)
+            ddList.Choose(1)
+        }
+    }
+
+    /**
+     * オーバーレイのFilterEdit上でDown: リスト選択を1つ下に移動（ラップあり）
+     */
+    static _OverlayNavDown() {
+        if !(this.DropdownGui && WinExist(this.DropdownGui))
+            return
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        catch
+            return
+        if (currFocus != this.DropdownGui["OverlayFilter"].Hwnd)
+            return  ; ListBoxにフォーカスがあれば~でネイティブ処理
+        ddList := this.DropdownGui["DDList"]
+        cur := ddList.Value
+        total := this.FilteredNames.Length
+        if (total = 0)
+            return
+        ddList.Choose((cur <= 0 || cur >= total) ? 1 : cur + 1)
+    }
+
+    /**
+     * オーバーレイのFilterEdit上でUp: リスト選択を1つ上に移動（ラップあり）
+     */
+    static _OverlayNavUp() {
+        if !(this.DropdownGui && WinExist(this.DropdownGui))
+            return
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        catch
+            return
+        if (currFocus != this.DropdownGui["OverlayFilter"].Hwnd)
+            return
+        ddList := this.DropdownGui["DDList"]
+        cur := ddList.Value
+        total := this.FilteredNames.Length
+        if (total = 0)
+            return
+        ddList.Choose((cur <= 1) ? total : cur - 1)
+    }
+
     static _InitDefaultActions() {
         this.RegisterAction("e", "&E: Explorer", (path) => Run('explorer.exe "' . path . '"'))
         this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
             (this.ExplorerPath == "explorer.exe")
                 ? Run('explorer.exe "' . path . '"')
-                : (FileExist(this.ExplorerPath) ? Run('"' . this.ExplorerPath . '" "' . path . '"') : 0)
+            : (FileExist(this.ExplorerPath) ? Run('"' . this.ExplorerPath . '" "' . path . '"') : 0)
         ))
         this.RegisterShellAction("v", "&V: VS Code", A_ComSpec . ' /c code "{path}"', "Hide")
         this.RegisterShellAction("c", "&C: Command Prompt", A_ComSpec . ' /K cd /d "{path}"')
         this.RegisterShellAction("p", "&P: PowerShell",
             'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"')
         this.RegisterAction("k", "&K: Copy Path", (path) => (A_Clipboard := path, ToolTip("Path Copied: " . path),
-        SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)))
+            SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)))
         ; ファイル/フォルダ名のみをコピー
         this.RegisterAction("n", "&N: Copy Name", (path) => (
             SplitPath(path, &fn),
