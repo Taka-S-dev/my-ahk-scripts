@@ -1191,7 +1191,7 @@ class Navi {
         OnMessage(0x0006, wmActivate)
 
         HotIfWinActive("ahk_id " ddGui.Hwnd)
-        Hotkey("Enter", (*) => this._ConfirmDropdown(), "On")
+        Hotkey("~Enter", (*) => this._ConfirmDropdown(), "On")
         Hotkey("Escape", (*) => this._CloseDropdown(), "On")
         Hotkey("~Down", (*) => this._OverlayNavDown(), "On")
         Hotkey("~Up", (*) => this._OverlayNavUp(), "On")
@@ -1218,6 +1218,17 @@ class Navi {
      * オーバーレイ選択を確定 → rootBtnを更新、ツリーを再描画してフォーカス移動
      */
     static _ConfirmDropdown() {
+        ; IME変換中のEnterは無視（日本語フィルタ確定操作を妨げない）
+        if (this.DropdownGui && WinExist(this.DropdownGui)) {
+            filterHwnd := this.DropdownGui["OverlayFilter"].Hwnd
+            hIMC := DllCall("imm32\ImmGetContext", "ptr", filterHwnd, "ptr")
+            if (hIMC) {
+                composing := DllCall("imm32\ImmGetCompositionStringW", "ptr", hIMC, "uint", 0x0008, "ptr", 0, "ptr", 0) > 0
+                DllCall("imm32\ImmReleaseContext", "ptr", filterHwnd, "ptr", hIMC)
+                if (composing)
+                    return
+            }
+        }
         selectedTxt := ""
         if (this.DropdownGui && WinExist(this.DropdownGui)) {
             ddList := this.DropdownGui["DDList"]
@@ -1230,7 +1241,7 @@ class Navi {
             tv := this.GuiObj["FolderTree"]
             this._RefreshTree(tv, this._FolderMap[selectedTxt])
         } else if (this.GuiObj && WinExist(this.GuiObj)) {
-            this.GuiObj.Activate()
+            WinActivate("ahk_id " this.GuiObj.Hwnd)
             this.GuiObj["FolderTree"].Focus()
         }
     }
