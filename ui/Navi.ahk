@@ -198,6 +198,7 @@ class Navi {
         Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
         Hotkey("^d", (*) => this.ShowDetailList(), "On")
+        Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
         Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
@@ -305,16 +306,17 @@ class Navi {
         }
 
         if (fullPath != "" && (DirExist(fullPath) || FileExist(fullPath))) {
-            this._ExecuteAction(key, fullPath)
+            ; 外部アプリ起動前にGUIを先に閉じる
+            ; （ExplorerなどがAlwaysOnTopのNavi裏に隠れたり、ウィンドウアクティベーション競合を防ぐ）
             if (this.GuiObj && WinExist(this.GuiObj)) {
-                ; 検索アクション(f:Local)はクローズしない
+                ; actGui破棄後の黒塗り描画崩れを常に回復
+                WinRedraw(this.GuiObj)
                 k := StrLower(key)
-                if (k != "f") {
-                    if (!this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
-                        this._DestroyGui()
-                    }
+                if (k != "f" && !this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
+                    this._DestroyGui()
                 }
             }
+            this._ExecuteAction(key, fullPath)
             if (key != "k" && StrLower(key) != "f") {
                 ToolTip("実行 [" . key . "]: " . fullPath)
                 SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
@@ -364,6 +366,11 @@ class Navi {
     static _DestroyGui() {
         ; パンくず監視タイマーを停止
         SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
+        ; フィルタータイマーを停止（GUI破棄後に _ApplyTreeFilter が発火するのを防ぐ）
+        if (this._treeFilterCallback != "") {
+            SetTimer(this._treeFilterCallback, 0)
+            this._treeFilterCallback := ""
+        }
         if (this.GuiObj && WinExist(this.GuiObj)) {
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
@@ -391,6 +398,7 @@ class Navi {
             【表示切替】
               Ctrl+Enter    ファイル表示トグル
               Ctrl+D        詳細リスト表示
+              Ctrl+F        フォルダフィルターにフォーカス
 
             【その他】
               Ctrl+P        ピン留めトグル
@@ -761,7 +769,7 @@ class Navi {
                     parentID := addedPaths[key]
                 } else {
                     isMatch := (i == parts.Length)
-                    opts := isMatch ? "Bold" : ""
+                    opts := isMatch ? "Bold" : "Expand"
                     if (isMatch && firstMatch) {
                         opts .= " Select"
                         firstMatch := false
@@ -782,12 +790,16 @@ class Navi {
                     continue
                 shown := []
                 count := 0
-                loop files, folderKey . "\*", "F" {
-                    if InStr(A_LoopFileAttrib, "H")
-                        continue
-                    shown.Push(tv.Add(A_LoopFileName, nodeID, "Icon2"))
-                    if (++count >= fileMax)
-                        break
+                try {
+                    loop files, folderKey . "\*", "F" {
+                        if InStr(A_LoopFileAttrib, "H")
+                            continue
+                        shown.Push(tv.Add(A_LoopFileName, nodeID, "Icon2"))
+                        if (++count >= fileMax)
+                            break
+                    }
+                } catch {
+                    return  ; GUI が破棄された場合は安全に中断
                 }
                 if (shown.Length > 0)
                     this.FilesShown[nodeID] := shown
