@@ -64,11 +64,18 @@ class TempCopy {
             return
         }
 
-        ; パスが空または何も選択されていない場合、テンポラリフォルダを開く
-        if (path == "" || DirExist(path)) {
+        ; パスが空の場合、テンポラリフォルダを開く
+        if (path == "") {
             Run('explorer.exe "' . tempDir . '"')
             ToolTip("Temp folder opened: " . tempDir)
             SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+            return
+        }
+
+        ; フォルダが渡された場合はファイルのみ対象であることを通知して終了
+        if (DirExist(path)) {
+            ToolTip("TempCopy はファイルのみ対象です")
+            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
             return
         }
 

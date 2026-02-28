@@ -49,7 +49,6 @@ class Navi {
     ; --- パンくずリスト用の定数 ---
     static BREADCRUMB_COLOR := "505050"      ; パンくずテキスト色
     static BREADCRUMB_HEIGHT := 20           ; パンくずの高さ
-    static BREADCRUMB_MAX_LEN := 70          ; パス表示の最大文字数
     static BREADCRUMB_WATCH_MS := 100        ; 選択監視タイマー間隔
 
     ; --- セッション内メモリ ---
@@ -65,6 +64,13 @@ class Navi {
     static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
     static DropdownGui := ""      ; フィルタードロップダウンGUI
+    static _treeFilterCallback := ""  ; ツリーフィルターデバウンス用コールバック参照
+    static _indexBuildCallback := ""  ; インデックス先読み構築タイマー用コールバック参照
+    static _FolderIndex := []         ; ツリーフィルター用フォルダパスキャッシュ
+    static _IndexedRoot := ""         ; キャッシュが対応するルートパス
+    static _ILHandle := 0             ; TreeView 用 ImageList ハンドル
+    static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
+    static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -106,8 +112,8 @@ class Navi {
         }
         this.GuiObj := ""
 
-        this.GuiObj := Gui("+AlwaysOnTop", "Navi - フォルダランチャー")
-        this.GuiObj.SetFont("s10", "Segoe UI")
+        this.GuiObj := Gui("+AlwaysOnTop +Resize", "Navi")
+        this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
@@ -125,7 +131,7 @@ class Navi {
         ; プレースホルダ
         try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", 0x1501, "ptr", 1, "wstr",
             "Add root: full path + Enter", "ptr")
-        quickEdit.SetFont("s8 c808080")
+        quickEdit.SetFont("s9 c808080", "Yu Gothic UI")
         ; フォーカス状態をトラック
         quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
         quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
@@ -133,28 +139,51 @@ class Navi {
 
         ; ルートボタン（クリックでオーバーレイ選択ウィンドウを開く）
         rootBtnText := (this.lastRoot != "") ? this.lastRoot : "ルートを選択..."
-        rootBtn := this.GuiObj.Add("Button", "xm w280 h26 vRootBtn", rootBtnText)
+        rootBtn := this.GuiObj.Add("Button", "xm w260 h26 vRootBtn", rootBtnText)
         this.GuiObj._rootBtnHwnd := rootBtn.Hwnd  ; Enter判定用にhwndを保存
         btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h26 -Tabstop", "編集")
         this.GuiObj._btnEditHwnd := btnEdit.Hwnd
-        pinCheck := this.GuiObj.Add("Checkbox", "x+50 yp+4 vPinCheck -Tabstop", "ピン留め")
+        pinCheck := this.GuiObj.Add("Checkbox", "x+8 yp+4 vPinCheck -Tabstop", "ピン留め")
         this.GuiObj._pinCheckHwnd := pinCheck.Hwnd
+        autoFilesCheck := this.GuiObj.Add("Checkbox", "x+5 yp vAutoFilesCheck -Tabstop", "ファイル表示")
+        autoFilesCheck.Value := (IniRead(this.IniPath, "Settings", "AutoShowFiles", "0") == "1")
+        autoFilesCheck.OnEvent("Click", (*) => IniWrite(
+            this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles"))
+        this.GuiObj._autoFilesCheckHwnd := autoFilesCheck.Hwnd
         this._AllFolderNames := folderNames
         this.FilteredNames := folderNames.Clone()
         this._FolderMap := folderMap
 
         ; パンくずリスト（現在のパス表示 & クリックで階層メニュー）
-        this.GuiObj.SetFont("s8", "Segoe UI")
-        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . this.BREADCRUMB_HEIGHT . " vBreadcrumb c" . this.BREADCRUMB_COLOR . " +0x100", "")  ; +0x100 = SS_NOTIFY for click
+        this.GuiObj.SetFont("s9", "Yu Gothic UI")
+        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . this.BREADCRUMB_HEIGHT . " vBreadcrumb c" . this.BREADCRUMB_COLOR . " +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
         breadcrumb.OnEvent("Click", (*) => this._OnBreadcrumbClick())
-        this.GuiObj.SetFont("s10", "Segoe UI")
+        this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
-        tv := this.GuiObj.Add("TreeView", "xm w455 r18 vFolderTree")
+        ; ツリーフィルター入力欄
+        treeFilter := this.GuiObj.Add("Edit", "xm w455 vTreeFilter -Tabstop", "")
+        try DllCall("user32\SendMessageW", "ptr", treeFilter.Hwnd, "uint", 0x1501, "ptr", 1,
+            "wstr", "フォルダをフィルター...", "ptr")
+        treeFilter.OnEvent("Change", (*) => this._OnTreeFilterChange())
+        this.GuiObj._treeFilterHwnd := treeFilter.Hwnd
+
+        tv := this.GuiObj.Add("TreeView", "xm w455 r17 vFolderTree")
+        this._SetupTreeIcons(tv)
 
         ; ステータスバーによる操作案内
-        this.GuiObj.SetFont("s7")
+        this.GuiObj.SetFont("s8", "Yu Gothic UI")
         sb := this.GuiObj.Add("StatusBar")
         sb.SetText(" [Space]メニュー  [Enter]開く  [Ctrl+D]詳細  [F1]ヘルプ")
+        this.GuiObj._sbRef := sb
+
+        ; リサイズ計算用に TreeView・RootBtn の位置を記録
+        tv.GetPos(, &_tvY_)
+        this._tvY := _tvY_
+        this.GuiObj["RootBtn"].GetPos(, , &_rbW_)
+        this._rootBtnRightGap := 455 - _rbW_
+
+        ; ウィンドウリサイズイベント登録
+        this.GuiObj.OnEvent("Size", (g, mm, w, h) => this._OnResize(mm, w, h))
 
         rootBtn.OnEvent("Click", (*) => this._OpenDropdown())
         btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
@@ -164,7 +193,7 @@ class Navi {
 
         ; ホットキー設定（Naviアクティブ時のみ）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("Space", (*) => this.ShowActionMenu(), "On")
+        Hotkey("Space", (*) => this._HandleSpace(), "On")
         Hotkey("Enter", (*) => this._HandleEnter(), "On")
         Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
@@ -180,7 +209,11 @@ class Navi {
 
         if (folderNames.Length > 0) {
             selectedRoot := (this.lastRoot != "" && folderMap.Has(this.lastRoot)) ? this.lastRoot : folderNames[1]
+            this.lastRoot := selectedRoot  ; フィルター等で参照できるよう確実にセット
             this._RefreshTree(tv, folderMap[selectedRoot])
+            ; ツリーフィルター用インデックスをバックグラウンド的に構築（初回フィルタを高速化）
+            local rootForIndex := folderMap[selectedRoot]
+            SetTimer(() => this._BuildFolderIndex(rootForIndex), -800)
             if (this.lastPath != "") {
                 this._FocusPath(tv, this.lastPath)
             }
@@ -222,7 +255,7 @@ class Navi {
         actGui.MarginX := 10
         actGui.MarginY := 15
 
-        actGui.SetFont("s11 w700 cWhite", "Segoe UI")
+        actGui.SetFont("s11 w700 cWhite", "Yu Gothic UI")
         folderName := (InStr(fullPath, "\")) ? StrSplit(fullPath, "\")[-1] : fullPath
         actGui.Add("Text", "Center w" . this.MENU_BTN_W, "Selected: " . folderName)
 
@@ -388,7 +421,7 @@ class Navi {
         parentGui.GetPos(&px, &py, &pw, &ph)
         parentGui.Opt("+Disabled")
         editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルートディレクトリ管理")
-        editGui.SetFont("s10", "Segoe UI")
+        editGui.SetFont("s10", "Yu Gothic UI")
         lv := editGui.Add("ListView", "r15 w550 Grid Multi vFolderList", ["名称", "パス", "表示"])
         lv.ModifyCol(1, 120), lv.ModifyCol(2, 350), lv.ModifyCol(3, 50)
         this._LoadLVFolders(lv)
@@ -412,7 +445,7 @@ class Navi {
     static _ShowEntryGui(editGui, lv, row := 0) {
         editGui.GetPos(&ex, &ey, &ew, &eh), editGui.Opt("+Disabled")
         entryGui := Gui("+Owner" . editGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", row ? "項目の修正" : "項目の追加")
-        entryGui.SetFont("s10", "Segoe UI")
+        entryGui.SetFont("s10", "Yu Gothic UI")
         entryGui.Add("Text", "xm", "名称:"), nameEdit := entryGui.Add("Edit", "xm w400 vName", row ? lv.GetText(row, 1) :
             "")
         entryGui.Add("Text", "xm", "パス:"), pathEdit := entryGui.Add("Edit", "xm w350 vPath", row ? lv.GetText(row, 2) :
@@ -596,15 +629,188 @@ class Navi {
         return path
     }
 
+    /**
+     * TreeView にシェルアイコン（フォルダ/ファイル）を設定する
+     * SHGetStockIconInfo でストックアイコンを取得（ファイル関連付けに左右されない）
+     * ImageList[0]=フォルダ → "Icon1"、ImageList[1]=ファイル → "Icon2"
+     */
+    static _SetupTreeIcons(tv) {
+        SHGSI_ICON      := 0x100
+        SHGSI_SMALLICON := 0x1
+        SIID_DOCNOASSOC := 0   ; 汎用ファイルアイコン（関連付けなし）
+        SIID_FOLDER     := 3   ; 標準フォルダアイコン
+
+        ; SHSTOCKICONINFO: cbSize(4) [+4 pad on 64bit] + hIcon(ptr) + iSysImageIndex(4) + iIcon(4) + szPath(MAX_PATH*2)
+        ; 64bit: 4+4pad+8+4+4+520=544 / 32bit: 4+4+4+4+520=536
+        sii_size     := (A_PtrSize = 8) ? 544 : 536
+        hIcon_offset := A_PtrSize  ; 64bit=8(cbSize+padding), 32bit=4(cbSize)
+
+        hIL := IL_Create(2)
+
+        ; フォルダアイコン（Index 1 = "Icon1"）
+        sii := Buffer(sii_size, 0)
+        NumPut("uint", sii_size, sii, 0)
+        DllCall("shell32\SHGetStockIconInfo", "uint", SIID_FOLDER,
+            "uint", SHGSI_ICON | SHGSI_SMALLICON, "ptr", sii)
+        hIcon := NumGet(sii, hIcon_offset, "ptr")
+        DllCall("comctl32\ImageList_AddIcon", "ptr", hIL, "ptr", hIcon)
+        DllCall("user32\DestroyIcon", "ptr", hIcon)
+
+        ; 汎用ファイルアイコン（Index 2 = "Icon2"）
+        sii2 := Buffer(sii_size, 0)
+        NumPut("uint", sii_size, sii2, 0)
+        DllCall("shell32\SHGetStockIconInfo", "uint", SIID_DOCNOASSOC,
+            "uint", SHGSI_ICON | SHGSI_SMALLICON, "ptr", sii2)
+        hIcon2 := NumGet(sii2, hIcon_offset, "ptr")
+        DllCall("comctl32\ImageList_AddIcon", "ptr", hIL, "ptr", hIcon2)
+        DllCall("user32\DestroyIcon", "ptr", hIcon2)
+
+        tv.SetImageList(hIL)
+        this._ILHandle := hIL
+    }
+
+    /**
+     * ルート配下のフォルダパスを再帰的にメモリへキャッシュする
+     */
+    static _BuildFolderIndex(rootPath) {
+        this._FolderIndex := []
+        this._IndexedRoot := rootPath
+        loop files, rootPath . "\*", "DR" {
+            if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H"))
+                continue
+            this._FolderIndex.Push(A_LoopFilePath)
+        }
+    }
+
+    /**
+     * ツリーフィルター入力変更: 300ms デバウンスで _ApplyTreeFilter を呼ぶ
+     */
+    static _OnTreeFilterChange() {
+        if (this._treeFilterCallback != "")
+            SetTimer(this._treeFilterCallback, 0)
+        query := this.GuiObj["TreeFilter"].Value
+        cb := () => this._ApplyTreeFilter(query)
+        this._treeFilterCallback := cb
+        SetTimer(cb, -300)
+    }
+
+    /**
+     * ツリーフィルター適用: query が空なら通常ツリーに戻す、あれば再帰検索してツリー再構築
+     */
+    static _ApplyTreeFilter(query) {
+        this._treeFilterCallback := ""
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        tv := this.GuiObj["FolderTree"]
+        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+        if (rootPath == "")
+            return
+        if (Trim(query) == "") {
+            this._RefreshTree(tv, rootPath, false)
+            return
+        }
+        ; スペース区切り=AND、"|"区切り=OR でターム分割
+        terms := []
+        for t in StrSplit(query, " ") {
+            if (Trim(t) != "")
+                terms.Push(StrSplit(Trim(t), "|"))  ; 各要素は OR 候補の配列
+        }
+        ; キャッシュが古ければ再構築
+        if (this._IndexedRoot != rootPath)
+            this._BuildFolderIndex(rootPath)
+        ; キャッシュからメモリ内検索（スペース=AND、"|"=OR）
+        results := []
+        for fullPath in this._FolderIndex {
+            matched := true
+            for orGroup in terms {
+                groupMatched := false
+                for alt in orGroup {
+                    if (alt != "" && InStr(fullPath, alt, false)) {
+                        groupMatched := true
+                        break
+                    }
+                }
+                if !groupMatched {
+                    matched := false
+                    break
+                }
+            }
+            if matched
+                results.Push(fullPath)
+        }
+        ; ツリー再構築
+        tv.Delete()
+        this.FilesShown := Map()
+        if (results.Length == 0) {
+            tv.Add("(一致なし)", 0)
+            return
+        }
+        rootID := tv.Add(rootPath, 0, "Expand Icon1")
+        addedPaths := Map()
+        addedPaths[StrLower(rootPath)] := rootID
+        firstMatch := true
+        for fullPath in results {
+            rel := SubStr(fullPath, StrLen(rootPath) + 2)
+            parts := StrSplit(rel, "\")
+            parentID := rootID
+            currentPath := rootPath
+            for i, part in parts {
+                currentPath .= "\" . part
+                key := StrLower(currentPath)
+                if addedPaths.Has(key) {
+                    parentID := addedPaths[key]
+                } else {
+                    isMatch := (i == parts.Length)
+                    opts := isMatch ? "Bold" : ""
+                    if (isMatch && firstMatch) {
+                        opts .= " Select"
+                        firstMatch := false
+                    }
+                    nodeID := tv.Add(part, parentID, opts . " Icon1")
+                    addedPaths[key] := nodeID
+                    parentID := nodeID
+                }
+            }
+        }
+        ; ファイル表示モードがONならフィルタ結果の各フォルダにもファイルを表示
+        if (this.GuiObj["AutoFilesCheck"].Value) {
+            fileMax := 200
+            try fileMax := Integer(IniRead(this.IniPath, "Settings", "FileMax", "200"))
+            rootKey := StrLower(rootPath)
+            for folderKey, nodeID in addedPaths {
+                if (folderKey == rootKey)
+                    continue
+                shown := []
+                count := 0
+                loop files, folderKey . "\*", "F" {
+                    if InStr(A_LoopFileAttrib, "H")
+                        continue
+                    shown.Push(tv.Add(A_LoopFileName, nodeID, "Icon2"))
+                    if (++count >= fileMax)
+                        break
+                }
+                if (shown.Length > 0)
+                    this.FilesShown[nodeID] := shown
+            }
+        }
+    }
+
     static _RefreshTree(tv, rootPath, setFocus := true) {
         tv.Delete()
+        this.FilesShown := Map()  ; ノードIDが無効化されるためクリア
         if (!DirExist(rootPath)) {
             return
         }
-        rootID := tv.Add(rootPath, 0, "Expand Select")
+        rootID := tv.Add(rootPath, 0, "Expand Select Icon1")
         this._LoadSub(tv, rootPath, rootID)
         if (setFocus)
             tv.Focus()
+        ; ツリー描画完了後 800ms でインデックスを先読み構築（フィルタ初回遅延を隠す）
+        if (this._indexBuildCallback != "")
+            SetTimer(this._indexBuildCallback, 0)
+        cb := () => this._BuildFolderIndex(rootPath)
+        this._indexBuildCallback := cb
+        SetTimer(cb, -800)
     }
 
     static _LoadSub(tv, path, parentID) {
@@ -612,7 +818,7 @@ class Navi {
             if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H")) {
                 continue
             }
-            tv.Add("...loading...", tv.Add(A_LoopFileName, parentID))
+            tv.Add("...loading...", tv.Add(A_LoopFileName, parentID, "Icon1"))
         }
     }
 
@@ -621,7 +827,24 @@ class Navi {
         if (child == 0 || tv.GetText(child) != "...loading...") {
             return
         }
-        tv.Delete(child), this._LoadSub(tv, this._GetTVFullPath(tv, id), id)
+        tv.Delete(child)
+        this._LoadSub(tv, this._GetTVFullPath(tv, id), id)
+        ; ファイル表示モードがONなら展開と同時にファイルも自動表示
+        if (this.GuiObj && this.GuiObj["AutoFilesCheck"].Value && !this.FilesShown.Has(id)) {
+            fullPath := this._GetTVFullPath(tv, id)
+            fileMax := 200
+            try fileMax := Integer(IniRead(this.IniPath, "Settings", "FileMax", "200"))
+            shown := []
+            count := 0
+            loop files, fullPath . "\*", "F" {
+                if InStr(A_LoopFileAttrib, "H")
+                    continue
+                shown.Push(tv.Add(A_LoopFileName, id, "Icon2"))
+                if (++count >= fileMax)
+                    break
+            }
+            this.FilesShown[id] := shown
+        }
     }
 
     static _GetTVFullPath(tv, id) {
@@ -676,11 +899,7 @@ class Navi {
                 return
             }
             fullPath := this._GetTVFullPath(tv, id)
-            displayPath := fullPath
-            if (StrLen(displayPath) > this.BREADCRUMB_MAX_LEN) {
-                displayPath := "..." . SubStr(displayPath, -(this.BREADCRUMB_MAX_LEN - 3))
-            }
-            this.GuiObj["Breadcrumb"].Value := displayPath
+            this.GuiObj["Breadcrumb"].Value := fullPath
         }
     }
 
@@ -824,8 +1043,52 @@ class Navi {
             this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value
             return
         }
+        if (this.GuiObj.HasOwnProp("_autoFilesCheckHwnd") && currFocus = this.GuiObj._autoFilesCheckHwnd) {
+            ; ファイル表示チェックボックスがフォーカスならトグル
+            this.GuiObj["AutoFilesCheck"].Value := !this.GuiObj["AutoFilesCheck"].Value
+            IniWrite(this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles")
+            return
+        }
+        if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
+            ; ツリーフィルター欄がフォーカスの場合: IME変換中なら確定Enterを送る、それ以外はツリーへフォーカス移動
+            hIMC := DllCall("imm32\ImmGetContext", "ptr", this.GuiObj._treeFilterHwnd, "ptr")
+            if (hIMC) {
+                composing := DllCall("imm32\ImmGetCompositionStringW", "ptr", hIMC, "uint", 0x0008, "ptr", 0, "ptr", 0) > 0
+                DllCall("imm32\ImmReleaseContext", "ptr", this.GuiObj._treeFilterHwnd, "ptr", hIMC)
+                if (composing) {
+                    Send "{Enter}"  ; IMEに確定Enterを渡す
+                    return
+                }
+            }
+            this.GuiObj["FolderTree"].Focus()
+            return
+        }
         ; それ以外は従来通りエクスプローラー実行
         this.Execute("e")
+    }
+
+    static _HandleSpace() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        currFocus := 0
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        ; ツリーフィルター欄にフォーカスがある場合はスペースを手動で送る
+        if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
+            Send "{Space}"  ; IMEのスペース変換も通るよう実キーとして送信
+            return
+        }
+        ; ピン留めチェックボックスがフォーカスならトグル
+        if (this.GuiObj.HasOwnProp("_pinCheckHwnd") && currFocus = this.GuiObj._pinCheckHwnd) {
+            this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value
+            return
+        }
+        ; ファイル表示チェックボックスがフォーカスならトグル
+        if (this.GuiObj.HasOwnProp("_autoFilesCheckHwnd") && currFocus = this.GuiObj._autoFilesCheckHwnd) {
+            this.GuiObj["AutoFilesCheck"].Value := !this.GuiObj["AutoFilesCheck"].Value
+            IniWrite(this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles")
+            return
+        }
+        this.ShowActionMenu()
     }
 
     static _HandleRootBtnDown() {
@@ -833,8 +1096,13 @@ class Navi {
             return
         currFocus := 0
         try currFocus := DllCall("user32\GetFocus", "ptr")
-        if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd)
+        if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
+            ; ルートボタン → ツリーフィルター欄へ
+            this.GuiObj["TreeFilter"].Focus()
+        } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
+            ; ツリーフィルター欄 → ツリーへ
             this.GuiObj["FolderTree"].Focus()
+        }
     }
 
     static ToggleFilesUnderSelection() {
@@ -865,7 +1133,7 @@ class Navi {
         loop files, full . "\*", "F" {
             if InStr(A_LoopFileAttrib, "H")
                 continue
-            fid := tv.Add(A_LoopFileName, id)
+            fid := tv.Add(A_LoopFileName, id, "Icon2")
             shown.Push(fid)
             count += 1
             if (count >= fileMax)
@@ -917,7 +1185,7 @@ class Navi {
 
         dlGui := Gui("+Owner" . this.GuiObj.Hwnd . " +Resize", "詳細リスト - " . targetDir)
         this.DetailListGuiObj := dlGui
-        dlGui.SetFont("s10", "Segoe UI")
+        dlGui.SetFont("s10", "Yu Gothic UI")
 
         ; ListViewを作成（名前、種類、サイズ、作成日時、更新日時）
         lv := dlGui.Add("ListView", "r20 w900 Grid Sort", ["名前", "種類", "サイズ", "作成日時", "更新日時"])
@@ -1026,7 +1294,7 @@ class Navi {
         actGui.MarginX := 10
         actGui.MarginY := 15
 
-        actGui.SetFont("s11 w700 cWhite", "Segoe UI")
+        actGui.SetFont("s11 w700 cWhite", "Yu Gothic UI")
         actGui.Add("Text", "Center w" . this.MENU_BTN_W, "Selected: " . itemName)
 
         actGui.SetFont("s10 w400")
@@ -1154,7 +1422,7 @@ class Navi {
         ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルート選択")
         ddGui.MarginX := 8
         ddGui.MarginY := 8
-        ddGui.SetFont("s10", "Segoe UI")
+        ddGui.SetFont("s10", "Yu Gothic UI")
 
         filterEdit := ddGui.Add("Edit", "xm w260 vOverlayFilter")
         try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", 0x1501, "ptr", 1,
@@ -1238,6 +1506,7 @@ class Navi {
         if (selectedTxt != "" && this._FolderMap.Has(selectedTxt) && this.GuiObj && WinExist(this.GuiObj)) {
             this.lastRoot := selectedTxt
             this.GuiObj["RootBtn"].Text := selectedTxt
+            this.GuiObj["TreeFilter"].Value := ""  ; ルート切り替え時にフィルターをクリア
             tv := this.GuiObj["FolderTree"]
             this._RefreshTree(tv, this._FolderMap[selectedTxt])
         } else if (this.GuiObj && WinExist(this.GuiObj)) {
@@ -1247,13 +1516,41 @@ class Navi {
     }
 
     /**
+     * ウィンドウリサイズ: 幅は全幅コントロールが追従、高さは TreeView が伸縮する
+     * RootBtn 行（編集・ピン留め・ファイル表示）は固定のまま
+     */
+    static _OnResize(minmax, w, h) {
+        if (minmax = 1 || !(this.GuiObj && WinExist(this.GuiObj)))
+            return
+        margin := this.GuiObj.MarginX
+        ctrlW  := w - 2 * margin
+
+        ; 全幅コントロールを幅に追従させる
+        this.GuiObj["QuickPath"].Move(,, ctrlW)
+        this.GuiObj["Breadcrumb"].Move(,, ctrlW)
+        this.GuiObj["TreeFilter"].Move(,, ctrlW)
+
+        ; TreeView は StatusBar の上まで高さを埋める
+        sbH := 28  ; フォールバック値
+        if (this.GuiObj.HasOwnProp("_sbRef"))
+            this.GuiObj._sbRef.GetPos(,, , &sbH)
+        tvH := Max(60, h - this._tvY - sbH)
+        this.GuiObj["FolderTree"].Move(,, ctrlW, tvH)
+    }
+
+    /**
      * Escキー: オーバーレイが開いていれば閉じる（選択変更なし）、なければNaviを閉じる
      */
     static _HandleEsc() {
         if (this.DropdownGui && WinExist(this.DropdownGui)) {
             this._CloseDropdown()
             if (this.GuiObj && WinExist(this.GuiObj))
-                this.GuiObj.Activate()
+                WinActivate("ahk_id " this.GuiObj.Hwnd)
+        } else if (this.GuiObj && WinExist(this.GuiObj) && this.GuiObj["TreeFilter"].Value != "") {
+            ; ツリーフィルターにテキストがあればクリアしてツリーへフォーカス
+            this.GuiObj["TreeFilter"].Value := ""
+            this._ApplyTreeFilter("")
+            this.GuiObj["FolderTree"].Focus()
         } else {
             this._DestroyGui()
         }
@@ -1318,11 +1615,15 @@ class Navi {
     }
 
     static _InitDefaultActions() {
-        this.RegisterAction("e", "&E: Explorer", (path) => Run('explorer.exe "' . path . '"'))
+        this.RegisterAction("e", "&E: Explorer", (path) => (
+            DirExist(path) || SplitPath(path, , &path),
+            Run('explorer.exe "' . path . '"')
+        ))
         this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
+            DirExist(path) || SplitPath(path, , &path),
             (this.ExplorerPath == "explorer.exe")
                 ? Run('explorer.exe "' . path . '"')
-            : (FileExist(this.ExplorerPath) ? Run('"' . this.ExplorerPath . '" "' . path . '"') : 0)
+                : (FileExist(this.ExplorerPath) ? Run('"' . this.ExplorerPath . '" "' . path . '"') : 0)
         ))
         this.RegisterShellAction("v", "&V: VS Code", A_ComSpec . ' /c code "{path}"', "Hide")
         this.RegisterShellAction("c", "&C: Command Prompt", A_ComSpec . ' /K cd /d "{path}"')
