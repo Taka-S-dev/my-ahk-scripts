@@ -1,10 +1,11 @@
-﻿; ==============================================================================
+; ==============================================================================
 ; Module:       WrapPalette.ahk
 ; Description:  選択したテキストを登録済みのパーツで囲むGUIツール
 ;               - トリガキーによる即実行（1文字のショートカット）
 ;               - 複数行パーツ対応、HTMLタグやコードスニペットも快適に編集
+;               - 行頭・行末の付加（引用符 > など）をパーツごとに設定可能
 ;               - 既存パーツからの引用、トリガー重複チェック、複数選択削除
-; Version:      1.0.0
+; Version:      1.1.0
 ; License:      MIT
 ;
 ; Usage Example:
@@ -27,11 +28,12 @@ class WrapPalette {
 
     ; 編集画面のサイズ
     static EDIT_WIDTH := 630
-    static EDIT_HEIGHT := 480
+    static EDIT_HEIGHT := 600
     static EDIT_GROUPBOX_WIDTH := 600
-    static EDIT_GROUPBOX_HEIGHT := 240
+    static EDIT_GROUPBOX_HEIGHT := 265
     static EDIT_INPUT_WIDTH := 220
     static EDIT_INPUT_HEIGHT := 180
+    static PREVIEW_GB_HEIGHT := 90
 
     ; 確認ダイアログのサイズ
     static DIALOG_WIDTH := 500
@@ -40,6 +42,14 @@ class WrapPalette {
     ; クリップボード待機時間（秒）
     static CLIP_WAIT_SHORT := 0.3
     static CLIP_WAIT_LONG := 0.5
+
+    ; 編集画面のヘルプ（? クリックで一括表示）
+    static TIP_NAME := "パーツの識別名。一覧に表示され、INIのセクション名になります。"
+    static TIP_TRIGGER := "一覧でこのキーを押すと、このパーツを即実行します。1文字のみ。"
+    static TIP_LINE_PREFIX := "各行の先頭に付ける文字。例: > で引用、| で表の列。空でも可。"
+    static TIP_LINE_SUFFIX := "各行の末尾に付ける文字。空でも可。"
+    static TIP_PARTS := "選択テキストの前（左）と後（右）に挿入する文字。複数行可。行頭・行末の付加のあと、左＋本文＋右で結合されます。"
+    static TIP_QUOTE := "既存パーツの左・右を読み込んで編集の土台にします。"
 
     ; ========================================
     ; 状態管理
@@ -187,28 +197,56 @@ class WrapPalette {
         dR := (targetName != "") ? WrapPalette._UnescapeNewlines(IniRead(WrapPalette.IniPath, targetName, "right", "")) :
             ""
         dT := (targetName != "") ? IniRead(WrapPalette.IniPath, targetName, "trigger", "") : ""
+        dPrefix := (targetName != "") ? IniRead(WrapPalette.IniPath, targetName, "linePrefix", "") : ""
+        dSuffix := (targetName != "") ? IniRead(WrapPalette.IniPath, targetName, "lineSuffix", "") : ""
 
-        ; 基本情報
-        EditGui.Add("Text", "xm+10 ym+15 w120", "登録名:")
-        EName := EditGui.Add("Edit", "x+10 yp-3 w320 h24", targetName)
-        EditGui.Add("Text", "xm+10 y+15 w120", "トリガ:")
-        ETrig := EditGui.Add("Edit", "x+10 yp-3 w60 Center Limit1", dT)
+        ; 登録名
+        EditGui.Add("Text", "xm+10 ym+15 w80", "登録名:")
+        EName := EditGui.Add("Edit", "x+5 yp-3 w430 h24", targetName)
+        EditGui.Add("Button", "x+8 yp w24 h24", "?").OnEvent("Click", (*) => WrapPalette._ShowHelp(EditGui))
 
-        ; パーツ構成
+        ; トリガ
+        EditGui.Add("Text", "xm+10 y+12 w80", "トリガ:")
+        ETrig := EditGui.Add("Edit", "x+5 yp-3 w60 Center Limit1", dT)
+
+        ; パーツ構成 GroupBox（行頭付加・行末付加を内包）
         EditGui.Add("GroupBox",
             "xm+10 y+20 w" . WrapPalette.EDIT_GROUPBOX_WIDTH . " h" . WrapPalette.EDIT_GROUPBOX_HEIGHT,
             "パーツ構成")
+
+        ; 行頭付加・行末付加（GroupBox 内、左右Editの上）
+        EditGui.Add("Text", "xp+15 yp+30 w80", "行頭付加:")
+        EPrefix := EditGui.Add("Edit", "x+5 yp-3 w160", dPrefix)
+        EditGui.Add("Text", "x+15 yp+3 w80", "行末付加:")
+        ESuffix := EditGui.Add("Edit", "x+5 yp-3 w160", dSuffix)
+
+        ; 左右パーツ
         EditL := EditGui.Add("Edit",
-            "xp+15 yp+40 w" . WrapPalette.EDIT_INPUT_WIDTH . " h" . WrapPalette.EDIT_INPUT_HEIGHT . " Multi vscroll",
+            "xm+25 y+15 w" . WrapPalette.EDIT_INPUT_WIDTH . " h" . WrapPalette.EDIT_INPUT_HEIGHT . " Multi vscroll",
             dL)
         EditGui.Add("Text", "x+15 yp+85 w100 Center", "+ 原文 +")
         EditR := EditGui.Add("Edit",
             "x+15 yp-85 w" . WrapPalette.EDIT_INPUT_WIDTH . " h" . WrapPalette.EDIT_INPUT_HEIGHT . " Multi vscroll",
             dR)
 
+        ; プレビュー GroupBox
+        EditGui.Add("GroupBox",
+            "xm+10 y+25 w" . WrapPalette.EDIT_GROUPBOX_WIDTH . " h" . WrapPalette.PREVIEW_GB_HEIGHT, "プレビュー")
+        Preview := EditGui.Add("Edit", "xp+10 yp+22 w580 h60 Multi ReadOnly", "")
+
+        ; 変更時にプレビューを自動更新
+        UpdatePreview := (*) => Preview.Value := WrapPalette._TransformText(
+            WrapPalette.CurrentText != "" ? WrapPalette.CurrentText : "サンプルテキスト`r`n2行目`r`n3行目",
+            EditL.Value, EditR.Value, EPrefix.Value, ESuffix.Value)
+        EditL.OnEvent("Change", UpdatePreview)
+        EditR.OnEvent("Change", UpdatePreview)
+        EPrefix.OnEvent("Change", UpdatePreview)
+        ESuffix.OnEvent("Change", UpdatePreview)
+        UpdatePreview()
+
         ; 既存パーツから引用
         EditGui.SetFont("s9")
-        EditGui.Add("Text", "xm+10 y+35 cGray", "既存パーツから引用：")
+        EditGui.Add("Text", "xm+10 y+20 cGray", "既存パーツから引用：")
         DL_L := EditGui.Add("DropDownList", "xm+10 y+10 w290", Names)
         DR_L := EditGui.Add("DropDownList", "x+20 w290", Names)
 
@@ -219,7 +257,7 @@ class WrapPalette {
 
         ; ボタン
         EditGui.Add("Button", "xm+10 y+25 w290 h40 Default", "保存して戻る").OnEvent("Click", (*) =>
-            WrapPalette.SaveAndReturn(EName.Value, EditL.Value, EditR.Value, ETrig.Value, EditGui, targetName))
+            WrapPalette.SaveAndReturn(EName.Value, EditL.Value, EditR.Value, ETrig.Value, EPrefix.Value, ESuffix.Value, EditGui, targetName))
 
         BtnBack := EditGui.Add("Button", "x+20 w290 h40", "戻る")
         OnBack := (*) => WrapPalette.BackToSelector(EditGui)
@@ -240,7 +278,7 @@ class WrapPalette {
      * パーツを保存してセレクタに戻る
      * トリガの重複チェックを実施
      */
-    static SaveAndReturn(N, L, R, T, G, OriginalName := "") {
+    static SaveAndReturn(N, L, R, T, Prefix, Suffix, G, OriginalName := "") {
         if (N == "")
             return
 
@@ -272,6 +310,8 @@ class WrapPalette {
         IniWrite(WrapPalette._EscapeNewlines(L), WrapPalette.IniPath, N, "left")
         IniWrite(WrapPalette._EscapeNewlines(R), WrapPalette.IniPath, N, "right")
         IniWrite(T, WrapPalette.IniPath, N, "trigger")
+        IniWrite(Prefix, WrapPalette.IniPath, N, "linePrefix")
+        IniWrite(Suffix, WrapPalette.IniPath, N, "lineSuffix")
 
         G.GetPos(&sx, &sy)
         WrapPalette.LastX := sx
@@ -305,10 +345,14 @@ class WrapPalette {
             return
         WrapPalette.IsCommitted := true
 
-        ; パーツ読み込み（改行をアンエスケープ）
+        ; 設定の読み込み
         L := WrapPalette._UnescapeNewlines(IniRead(WrapPalette.IniPath, Name, "left", ""))
         R := WrapPalette._UnescapeNewlines(IniRead(WrapPalette.IniPath, Name, "right", ""))
-        out := L . WrapPalette.CurrentText . R
+        prefix := IniRead(WrapPalette.IniPath, Name, "linePrefix", "")
+        suffix := IniRead(WrapPalette.IniPath, Name, "lineSuffix", "")
+
+        ; 加工エンジンの呼び出し
+        out := WrapPalette._TransformText(WrapPalette.CurrentText, L, R, prefix, suffix)
 
         ; GUI閉じる
         if (WrapPalette.MainGui)
@@ -550,6 +594,60 @@ class WrapPalette {
     static _UnescapeNewlines(text) {
         ; |\n| を `r`n (CRLF) に変換
         return StrReplace(text, "|\n|", "`r`n")
+    }
+
+    ; ========================================
+    ; ヘルプ（? クリックで一括表示・最前面）
+    ; ========================================
+    /**
+     * 各項目の説明をまとめて最前面のGuiで表示
+     */
+    static _ShowHelp(ownerGui) {
+        text := "【登録名】`n" . WrapPalette.TIP_NAME
+            . "`n`n【トリガ】`n" . WrapPalette.TIP_TRIGGER
+            . "`n`n【行頭】`n" . WrapPalette.TIP_LINE_PREFIX
+            . "`n`n【行末】`n" . WrapPalette.TIP_LINE_SUFFIX
+            . "`n`n【パーツ構成】`n" . WrapPalette.TIP_PARTS
+            . "`n`n【既存パーツから引用】`n" . WrapPalette.TIP_QUOTE
+        HelpGui := Gui("+Owner" . ownerGui.Hwnd . " +AlwaysOnTop -MinimizeBox", "ヘルプ")
+        HelpGui.SetFont("s10", "Segoe UI")
+        HelpGui.Add("Text", "xm+15 ym+15 w450 Wrap", text)
+        HelpGui.Add("Button", "xm+15 y+20 w80 Default", "OK").OnEvent("Click", (*) => HelpGui.Destroy())
+        HelpGui.OnEvent("Close", (*) => HelpGui.Destroy())
+        HelpGui.OnEvent("Escape", (*) => HelpGui.Destroy())
+        HelpGui.Show()
+        WinActivate("ahk_id " . HelpGui.Hwnd)
+    }
+
+    ; ========================================
+    ; 加工エンジン
+    ; ========================================
+    /**
+     * 原文に行頭・行末の付加を行い、左右パーツで囲んだ結果を返す
+     * @param text 元テキスト
+     * @param L 左パーツ
+     * @param R 右パーツ
+     * @param prefix 行頭に付ける文字（空の場合は付加しない）
+     * @param suffix 行末に付ける文字（空の場合は付加しない）
+     * @return 加工後のテキスト（L + body + R）
+     */
+    static _TransformText(text, L, R, prefix, suffix) {
+        ; 行頭・行末の付加（引用符など）
+        if (prefix != "" || suffix != "") {
+            if (text == "")
+                body := text
+            else {
+                lines := StrSplit(text, "`n", "`r")
+                body := ""
+                for i, line in lines {
+                    if (i > 1)
+                        body .= "`r`n"
+                    body .= prefix . line . suffix
+                }
+            }
+        } else
+            body := text
+        return L . body . R
     }
 
 }
