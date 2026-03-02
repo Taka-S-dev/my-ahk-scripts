@@ -35,10 +35,10 @@ class Navi {
 
     ; --- [追加] アクションメニュー用の定数 ---
     static MENU_BG_COLOR := "262626"  ; メニューの背景色
-    static MENU_WIDTH := 250       ; メニューの幅
-    static MENU_BTN_W := 230       ; ボタンの幅
-    static MENU_BTN_H := 38        ; ボタンの高さ
-    static MENU_OFFSET_Y := 320    ; 中央配置の計算用オフセット
+    static MENU_WIDTH := 210       ; メニューの幅
+    static MENU_BTN_W := 190       ; ボタンの幅
+    static MENU_BTN_H := 26        ; ボタンの高さ
+    static MENU_OFFSET_Y := 240    ; 中央配置の計算用オフセット
 
     ; --- 位置決定用の定数（魔法数の明示化） ---
     static CARET_OFFSET_X := 5     ; キャレットからのXオフセット
@@ -254,13 +254,13 @@ class Navi {
         actGui := Gui("+Owner" . this.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border")
         actGui.BackColor := this.MENU_BG_COLOR
         actGui.MarginX := 10
-        actGui.MarginY := 15
+        actGui.MarginY := 8
 
-        actGui.SetFont("s11 w700 cWhite", "Yu Gothic UI")
         folderName := (InStr(fullPath, "\")) ? StrSplit(fullPath, "\")[-1] : fullPath
-        actGui.Add("Text", "Center w" . this.MENU_BTN_W, "Selected: " . folderName)
+        actGui.SetFont("s8 w400 cA0A0A0", "Yu Gothic UI")
+        actGui.Add("Text", "Center w" . this.MENU_BTN_W, folderName)
 
-        actGui.SetFont("s10 w400")
+        actGui.SetFont("s9 w400 cWhite")
         ; レジストリに登録されたアクションからボタンを生成
         keys := []
         for k, _ in this.Actions
@@ -284,7 +284,7 @@ class Navi {
             )).Bind(k))
         }
 
-        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+12", "&X: Cancel")
+        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+6", "&X: Cancel")
         btnCancel.OnEvent("Click", (*) => (this.GuiObj.Opt("-Disabled"), actGui.Destroy()))
         actGui.OnEvent("Escape", (*) => (this.GuiObj.Opt("-Disabled"), actGui.Destroy()))
 
@@ -645,33 +645,33 @@ class Navi {
     static _SetupTreeIcons(tv) {
         SHGSI_ICON      := 0x100
         SHGSI_SMALLICON := 0x1
-        SIID_DOCNOASSOC := 0   ; 汎用ファイルアイコン（関連付けなし）
-        SIID_FOLDER     := 3   ; 標準フォルダアイコン
+        SIID_DOCNOASSOC  := 0   ; 汎用ファイルアイコン（関連付けなし）
+        SIID_FOLDER      := 3   ; 標準フォルダアイコン
+        SIID_FOLDEROPEN  := 4   ; 開いたフォルダ（ハイライトフォルダ用）
+        SIID_FIND        := 22  ; 検索アイコン（ハイライトファイル用）
 
         ; SHSTOCKICONINFO: cbSize(4) [+4 pad on 64bit] + hIcon(ptr) + iSysImageIndex(4) + iIcon(4) + szPath(MAX_PATH*2)
         ; 64bit: 4+4pad+8+4+4+520=544 / 32bit: 4+4+4+4+520=536
         sii_size     := (A_PtrSize = 8) ? 544 : 536
         hIcon_offset := A_PtrSize  ; 64bit=8(cbSize+padding), 32bit=4(cbSize)
 
-        hIL := IL_Create(2)
+        ; Icon1=フォルダ, Icon2=ファイル, Icon3=ハイライトフォルダ, Icon4=ハイライトファイル
+        hIL := IL_Create(4)
 
-        ; フォルダアイコン（Index 1 = "Icon1"）
-        sii := Buffer(sii_size, 0)
-        NumPut("uint", sii_size, sii, 0)
-        DllCall("shell32\SHGetStockIconInfo", "uint", SIID_FOLDER,
-            "uint", SHGSI_ICON | SHGSI_SMALLICON, "ptr", sii)
-        hIcon := NumGet(sii, hIcon_offset, "ptr")
-        DllCall("comctl32\ImageList_AddIcon", "ptr", hIL, "ptr", hIcon)
-        DllCall("user32\DestroyIcon", "ptr", hIcon)
+        _AddIcon(siid) {
+            sii := Buffer(sii_size, 0)
+            NumPut("uint", sii_size, sii, 0)
+            DllCall("shell32\SHGetStockIconInfo", "uint", siid,
+                "uint", SHGSI_ICON | SHGSI_SMALLICON, "ptr", sii)
+            hIcon := NumGet(sii, hIcon_offset, "ptr")
+            DllCall("comctl32\ImageList_AddIcon", "ptr", hIL, "ptr", hIcon)
+            DllCall("user32\DestroyIcon", "ptr", hIcon)
+        }
 
-        ; 汎用ファイルアイコン（Index 2 = "Icon2"）
-        sii2 := Buffer(sii_size, 0)
-        NumPut("uint", sii_size, sii2, 0)
-        DllCall("shell32\SHGetStockIconInfo", "uint", SIID_DOCNOASSOC,
-            "uint", SHGSI_ICON | SHGSI_SMALLICON, "ptr", sii2)
-        hIcon2 := NumGet(sii2, hIcon_offset, "ptr")
-        DllCall("comctl32\ImageList_AddIcon", "ptr", hIL, "ptr", hIcon2)
-        DllCall("user32\DestroyIcon", "ptr", hIcon2)
+        _AddIcon(SIID_FOLDER)      ; Icon1
+        _AddIcon(SIID_DOCNOASSOC)  ; Icon2
+        _AddIcon(SIID_FOLDEROPEN)  ; Icon3 ハイライトフォルダ
+        _AddIcon(SIID_FIND)        ; Icon4 ハイライトファイル
 
         tv.SetImageList(hIL)
         this._ILHandle := hIL
@@ -1304,12 +1304,12 @@ class Navi {
         actGui := Gui("+Owner" . dlGui.Hwnd . " -Caption +AlwaysOnTop +Border")
         actGui.BackColor := this.MENU_BG_COLOR
         actGui.MarginX := 10
-        actGui.MarginY := 15
+        actGui.MarginY := 8
 
-        actGui.SetFont("s11 w700 cWhite", "Yu Gothic UI")
-        actGui.Add("Text", "Center w" . this.MENU_BTN_W, "Selected: " . itemName)
+        actGui.SetFont("s8 w400 cA0A0A0", "Yu Gothic UI")
+        actGui.Add("Text", "Center w" . this.MENU_BTN_W, itemName)
 
-        actGui.SetFont("s10 w400")
+        actGui.SetFont("s9 w400 cWhite")
         ; レジストリに登録されたアクションからボタンを生成
         keys := []
         for k, _ in this.Actions
@@ -1333,7 +1333,7 @@ class Navi {
             )).Bind(k))
         }
 
-        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+12", "&X: Cancel")
+        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+6", "&X: Cancel")
         btnCancel.OnEvent("Click", (*) => (dlGui.Opt("-Disabled"), actGui.Destroy()))
         actGui.OnEvent("Escape", (*) => (dlGui.Opt("-Disabled"), actGui.Destroy()))
 

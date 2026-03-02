@@ -27,6 +27,13 @@ class NaviSearch {
     static JumpLabel := ""
     static LastNavi := ""
     static _ParentWatchFn := ""
+    static Results := []           ; 検索結果のフルパス一覧
+    static JumpListView := ""      ; 一体型ウィンドウのListViewへの参照
+    static _HighlightedPaths := [] ; HighlightedIds と同順のパス一覧（リスト同期用）
+    static _HighlightedIdSet := Map()  ; カスタムドロー用 O(1) ルックアップ
+    static _CustomDrawHandler := ""    ; WM_NOTIFY ハンドラー参照
+    static _CustomDrawTvHwnd := 0      ; 対象TreeViewのHwnd
+    static HIGHLIGHT_COLOR := 0x0000A5FF ; ハイライト色(COLORREF) = オレンジ R255 G165 B0
 
     ; 調整可能な設定値
     static MAX_RESULTS := 1000          ; 検索結果の最大件数
@@ -468,12 +475,15 @@ class NaviSearch {
         this.SearchActive := false
         if (showResults) {
             t := this.Task
+            this.Results := (Type(t) = "Map" && t.Has("results")) ? t["results"] : []
             nv := t["navi"]
             if (nv.GuiObj && WinExist(nv.GuiObj)) {
                 tv := nv.GuiObj["FolderTree"]
                 this.HighlightPathsInTree(nv, tv, t["basePath"], t["results"])
                 this._EnsureJumpGui(nv)
             }
+        } else {
+            this.Results := []
         }
         this.Task := ""
         this.CancelRequested := false
@@ -579,12 +589,9 @@ class NaviSearch {
     static HighlightPathsInTree(navi, tv, basePath, paths) {
         if !tv
             return
-        try {
-            for id in this.HighlightedIds {
-                try tv.Modify(id, "-Bold")
-            }
-        }
         this.HighlightedIds := []
+        this._HighlightedPaths := []
+        this._HighlightedIdSet := Map()
         this.HighlightedIdx := 0
 
         shownCount := 0
@@ -595,18 +602,20 @@ class NaviSearch {
                 continue
             if (DirExist(p)) {
                 if (id := this.EnsurePathExpanded(navi, tv, p)) {
-                    try tv.Modify(id, "Bold")
-                    this.HighlightedIds.Push(id), shownCount += 1
+                    tv.Modify(id, "Expand")
+                    try navi._OnItemExpand(tv, id)
+                    this.HighlightedIds.Push(id), this._HighlightedPaths.Push(p), shownCount += 1
                 }
             } else if (FileExist(p)) {
                 SplitPath(p, &fname, &dir)
                 if (idDir := this.EnsurePathExpanded(navi, tv, dir)) {
+                    tv.Modify(idDir, "Expand")
+                    try navi._OnItemExpand(tv, idDir)
                     this.EnsureFilesShown(navi, tv, idDir, dir)
                     cid := tv.GetChild(idDir)
                     while (cid) {
                         if (tv.GetText(cid) = fname) {
-                            try tv.Modify(cid, "Bold")
-                            this.HighlightedIds.Push(cid), shownCount += 1
+                            this.HighlightedIds.Push(cid), this._HighlightedPaths.Push(p), shownCount += 1
                             break
                         }
                         cid := tv.GetNext(cid)
@@ -614,6 +623,13 @@ class NaviSearch {
                 }
             }
         }
+        ; IdSet 構築（カスタムドロー用 O(1) ルックアップ）
+        this._HighlightedIdSet := Map()
+        for id in this.HighlightedIds
+            this._HighlightedIdSet[id] := true
+        ; NM_CUSTOMDRAW ハンドラー登録 → 文字色変更
+        this._EnsureCustomDraw(tv)
+        tv.Redraw()
         ToolTip("ハイライト: " . shownCount . "件")
         SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
         ; 最初のヒットへジャンプ
@@ -666,7 +682,7 @@ class NaviSearch {
         loop files, dirPath . "\*", "F" {
             if InStr(A_LoopFileAttrib, "H")
                 continue
-            fid := tv.Add(A_LoopFileName, idDir)
+            fid := tv.Add(A_LoopFileName, idDir, "Icon2")
             shown.Push(fid)
             count += 1
             if (count >= fileMax)
@@ -713,57 +729,169 @@ class NaviSearch {
         ToolTip(idx . " / " . total . " 件目")
         SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
         this._UpdateJumpLabel()
+        ; リストが展開中なら対応行を選択
+        try {
+            lv := this.JumpListView
+            if (IsObject(lv) && lv.Visible) {
+                path := this._HighlightedPaths[idx]
+                for i, p in this.Results {
+                    if (p = path) {
+                        lv.Modify(0, "-Select")
+                        lv.Modify(i, "Select Vis")
+                        break
+                    }
+                }
+            }
+        }
     }
 
     static _EnsureJumpGui(navi) {
         if !(navi.GuiObj && WinExist(navi.GuiObj))
             return
-        ; 既存のJumpGuiがあれば更新して終了
+        ; 既存のJumpGuiがあれば破棄して新しい結果で再生成
         try {
             jg := this.JumpGui
             if (Type(jg) = "Gui" && jg.Hwnd && WinExist("ahk_id " jg.Hwnd)) {
-                this._UpdateJumpLabel()
-                ; 常に最前面を維持
-                WinSetAlwaysOnTop(1, "ahk_id " jg.Hwnd)
-                return
+                this._RemoveJumpGuiHotkeys()
+                jg.Destroy()
             }
         }
-        ; Ownerを設定してNaviより常に前面に表示
-        g := Gui("+Owner" . navi.GuiObj.Hwnd . " +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "検索ヒット")
+        this.JumpGui := ""
+        this.JumpLabel := ""
+        results := this.Results
+        g := Gui("+Owner" . navi.GuiObj.Hwnd . " +Resize +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "検索ヒット")
         g.SetFont("s9", "Segoe UI")
-        prev := g.Add("Button", "xm w" . this.BTN_W_SMALL, "前へ")
-        next := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "次へ")
-        clr  := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "解除")
+        ; ボタン行
+        prev    := g.Add("Button", "xm w" . this.BTN_W_SMALL, "前へ")
+        next    := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "次へ")
+        clr     := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "解除")
+        listBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "リスト▽")
         this.JumpLabel := g.Add("Text", "x+" . this.GAP_X_LARGE . " w" . this.LABEL_W_HITS, "")
         closeBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "閉じる")
-        ; ショートカットヒント（2行目）
+        ; ショートカットヒント
         g.SetFont("s7", "Segoe UI")
         g.Add("Text", "xm c808080", "Shift+F3 / F3")
         g.SetFont("s9", "Segoe UI")
+        ; コンパクト時の高さを計測
+        g.Show("Hide AutoSize")
+        g.GetPos(, , &gw, &compactH)
+        ; リスト部分（展開時に表示）
+        lvW := gw - 20
+        lv := g.Add("ListView", "xm w" . lvW . " r15 -Multi", ["名前", "パス"])
+        lv.ModifyCol(1, 150)
+        lv.ModifyCol(2, lvW - 154)
+        for p in results {
+            SplitPath(p, &fname, &fdir)
+            lv.Add("", fname, fdir)
+        }
+        g.SetFont("s8", "Segoe UI")
+        hintLbl := g.Add("Text", "xm c808080", "クリック: TreeViewで選択")
+        g.SetFont("s9", "Segoe UI")
+        ; 展開時の高さ・ListView位置を計測してからリストを非表示に
+        g.Show("Hide AutoSize")
+        g.GetPos(, , , &fullH)
+        lv.GetPos(, &lvY0, , &lvH0)   ; ListView の初期 Y・高さ
+        lv.Visible := false
+        hintLbl.Visible := false
+        ; ジャンプ処理
+        _JumpTo(obj, row) {
+            if (row = 0)
+                return
+            p := results[row]
+            if !(navi.GuiObj && WinExist(navi.GuiObj))
+                return
+            tv := navi.GuiObj["FolderTree"]
+            if (DirExist(p)) {
+                id := NaviSearch.EnsurePathExpanded(navi, tv, p)
+                if (id)
+                    tv.Modify(id, "Select Vis")
+            } else if (FileExist(p)) {
+                SplitPath(p, &fn, &fd)
+                idDir := NaviSearch.EnsurePathExpanded(navi, tv, fd)
+                if (idDir) {
+                    NaviSearch.EnsureFilesShown(navi, tv, idDir, fd)
+                    found := false
+                    cid := tv.GetChild(idDir)
+                    while (cid) {
+                        if (tv.GetText(cid) = fn) {
+                            tv.Modify(cid, "Select Vis")
+                            found := true
+                            break
+                        }
+                        cid := tv.GetNext(cid)
+                    }
+                    if (!found) {
+                        fid := tv.Add(fn, idDir, "Icon2")
+                        tv.Modify(fid, "Select Vis")
+                    }
+                }
+            }
+        }
+        lv.OnEvent("Click", _JumpTo)
+        lv.OnEvent("DoubleClick", _JumpTo)
+        ; 右クリックメニュー
+        _OnContextMenu(obj, item, isRightClick, x, y) {
+            if (item = 0)
+                return
+            p := results[item]
+            SplitPath(p, , &fd)
+            m := Menu()
+            m.Add("フルパスをコピー", (*) => (A_Clipboard := p))
+            m.Add("フォルダをコピー", (*) => (A_Clipboard := fd))
+            m.Show()
+        }
+        lv.OnEvent("ContextMenu", _OnContextMenu)
+        NaviSearch.JumpListView := lv
+        ; リスト展開トグル
+        listShown := false
+        _ToggleList(*) {
+            if (listShown) {
+                lv.Visible := false
+                hintLbl.Visible := false
+                listShown := false
+                listBtn.Text := "リスト▽"
+                g.Show("h" . compactH)
+            } else {
+                lv.Visible := true
+                hintLbl.Visible := true
+                listShown := true
+                listBtn.Text := "リスト△"
+                g.Show("h" . fullH)
+            }
+        }
+        ; リサイズ時に ListView を追従させる
+        _OnSize(gObj, minMax, w, h) {
+            if (minMax = -1 || !listShown)
+                return
+            newLvW := w - 20
+            newLvH := Max(lvH0 + (h - fullH), 50)
+            lv.Move(, , newLvW, newLvH)
+            hintLbl.Move(, lvY0 + newLvH)
+            lv.ModifyCol(2, Max(newLvW - 154, 50))
+        }
+        ; イベント登録
         prev.OnEvent("Click", (*) => NaviSearch.Jump(navi, -1))
         next.OnEvent("Click", (*) => NaviSearch.Jump(navi, +1))
         clr.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
-        closeBtn.OnEvent("Click", (*) => (NaviSearch._DestroyJumpGui()))
-        g.OnEvent("Escape", (*) => NaviSearch._DestroyJumpGui())
-        ; 検索ヒットウィンドウでもF3/Shift+F3で移動可能に
+        listBtn.OnEvent("Click", _ToggleList)
+        closeBtn.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
+        g.OnEvent("Escape", (*) => NaviSearch.ClearHighlights(navi))
+        g.OnEvent("Size", _OnSize)
         g.OnEvent("Close", (*) => this._RemoveJumpGuiHotkeys())
-        ; Naviウィンドウの外側下部に配置（WinGetPosで正確なスクリーン座標を取得）
-        g.Show("Hide AutoSize")
-        g.GetPos(, , &gw, &gh)
+        ; 位置決め（Naviウィンドウの下部外側、左揃え）
         WinGetPos(&px, &py, &pw, &ph, "ahk_id " navi.GuiObj.Hwnd)
-        ; Naviウィンドウの下部外側、左揃え
         x := px
         y := py + ph + this.UI_MARGIN
-        g.Show("x" . x . " y" . y)
+        g.Show("x" . x . " y" . y . " h" . compactH)
         ; 親は無効化しない（ツリー操作を阻害しない）
         this.LastNavi := navi
         this.JumpGui := g
-        ; 親GUIクローズ時に検索ウィンドウも自動クローズ
+        ; 親GUIクローズ時に自動クローズ
         try navi.GuiObj.OnEvent("Close", (*) => (NaviSearch._DestroyJumpGui()), 1)
-        ; 親の存在監視タイマー（包括的なクローズ）
+        ; 親の存在監視タイマー
         this._StartParentWatch()
         this._UpdateJumpLabel()
-        ; 検索ヒットウィンドウ用のホットキーを登録
+        ; ホットキー登録
         this._SetupJumpGuiHotkeys(navi, g)
     }
 
@@ -808,6 +936,7 @@ class NaviSearch {
         try this.JumpGui.Destroy()
         this.JumpGui := ""
         this.JumpLabel := ""
+        this.JumpListView := ""
         this._StopParentWatch()
         ; 親GUIの再有効化
         try {
@@ -851,17 +980,52 @@ class NaviSearch {
         }
     }
 
+    ; NM_CUSTOMDRAW ハンドラーを登録（未登録なら）
+    static _EnsureCustomDraw(tv) {
+        this._CustomDrawTvHwnd := tv.Hwnd
+        if (this._CustomDrawHandler != "")
+            return
+        handler := (w, l, m, h) => NaviSearch._OnWMNotify(w, l, m, h)
+        OnMessage(0x004E, handler)
+        this._CustomDrawHandler := handler
+    }
+
+    ; WM_NOTIFY → NM_CUSTOMDRAW ハンドラー
+    static _OnWMNotify(wParam, lParam, msg, hwnd) {
+        ; 対象TreeView以外は無視
+        if (NumGet(lParam, 0, "ptr") != NaviSearch._CustomDrawTvHwnd)
+            return
+        ; NMHDR.code  offset = A_PtrSize*2 (64bit:16 / 32bit:8)
+        if (NumGet(lParam, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
+            return
+        ; NMCUSTOMDRAW.dwDrawStage  offset (64bit:24 / 32bit:12)
+        stageOff := (A_PtrSize = 8) ? 24 : 12
+        stage    := NumGet(lParam, stageOff, "uint")
+        if (stage = 0x1) {  ; CDDS_PREPAINT
+            return NaviSearch._HighlightedIdSet.Count > 0 ? 0x20 : 0  ; CDRF_NOTIFYITEMDRAW / CDRF_DODEFAULT
+        }
+        if (stage = 0x10001) {  ; CDDS_ITEMPREPAINT
+            ; NMCUSTOMDRAW.dwItemSpec (HTREEITEM)  offset (64bit:56 / 32bit:36)
+            specOff := (A_PtrSize = 8) ? 56 : 36
+            itemId  := NumGet(lParam, specOff, "ptr")
+            if (NaviSearch._HighlightedIdSet.Has(itemId)) {
+                ; NMTVCUSTOMDRAW.clrText  offset (64bit:80 / 32bit:48)
+                clrOff := (A_PtrSize = 8) ? 80 : 48
+                NumPut("uint", NaviSearch.HIGHLIGHT_COLOR, lParam, clrOff)
+                return 0  ; CDRF_DODEFAULT（変更した色で描画）
+            }
+        }
+    }
+
     static ClearHighlights(navi) {
         if !(navi.GuiObj && WinExist(navi.GuiObj))
             return
         tv := navi.GuiObj["FolderTree"]
-        try {
-            for id in this.HighlightedIds {
-                try tv.Modify(id, "-Bold")
-            }
-        }
         this.HighlightedIds := []
+        this._HighlightedPaths := []
+        this._HighlightedIdSet := Map()
         this.HighlightedIdx := 0
+        try tv.Redraw()
         this._DestroyJumpGui()
         ToolTip("ハイライトをクリア")
         SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
