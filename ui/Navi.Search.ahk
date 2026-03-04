@@ -72,6 +72,17 @@ class NaviSearch {
     static TOOLTIP_SAVE_DURATION := 1500 ; 設定保存時のツールチップ表示時間
     static TOOLTIP_HELP_DURATION := 8000 ; ヘルプツールチップの表示時間
 
+    ; fd バックエンド
+    static UseFd       := true  ; false にするとタイマーループにフォールバック
+    static FdPath      := ""    ; _FindFd() の結果キャッシュ（"NOT_FOUND" = 見つからず）
+    static _FdPid      := 0     ; 実行中の fd プロセス ID
+    static _FdTmpFile  := ""    ; fd 出力を受け取る一時ファイルパス
+    static _FdLinesRead := 0    ; fd 出力で処理済みの行数
+    static FD_POLL_MS  := 50    ; fd ポーリング間隔（ミリ秒）
+    static _SortCol        := 1     ; 最後にソートした列（1=名前, 2=パス）
+    static _SortDesc       := false ; 降順フラグ
+    static _LastTypeFilter := "all" ; 前回の検索対象フィルター（セッション間で記憶）
+
     ; 内部タスク構造:
     ; {
     ;   navi, basePath, tokens, stack: [走査待ちディレクトリ],
@@ -89,11 +100,12 @@ class NaviSearch {
         ; 設定を読み込み（除外リスト、タイムアウト等）
         this._LoadSettings()
         ; モーダル・最前面の検索入力ダイアログ
-        q := this._PromptQuery(navi, basePath)
-        if (q = "")
+        result := this._PromptQuery(navi, basePath)
+        if (result = "")
             return
-        ; タイプフィルター（d: = ディレクトリのみ, f: = ファイルのみ）
-        typeFilter := "all"
+        q          := result["q"]
+        typeFilter := result["typeFilter"]
+        ; クエリ内の d:/f: プレフィックスによる上書き（後方互換性）
         if (SubStr(q, 1, 2) = "d:") {
             typeFilter := "dir"
             q := Trim(SubStr(q, 3))
@@ -124,8 +136,17 @@ class NaviSearch {
         )
         this._ShowProgress(navi)
         this.EnsureHotkeys(navi)
-        ; タイマーループ開始
-        SetTimer(NaviSearch._Tick.Bind(NaviSearch), this.TIMER_TICK_MS)
+        ; バックエンド選択: fd が利用可能かつ有効ならfd バックエンドを使用
+        fdPath := ""
+        if (this.UseFd)
+            fdPath := this._FindFd()
+        ; 検索開始前に JumpGui を開く（リアルタイム表示用）
+        if (navi.GuiObj && WinExist(navi.GuiObj))
+            this._EnsureJumpGui(navi)
+        if (fdPath != "")
+            this._RunWithFd(navi, basePath, q, typeFilter, incGroups, notAlts)
+        else
+            SetTimer(NaviSearch._Tick.Bind(NaviSearch), this.TIMER_TICK_MS)
     }
 
     ; タイマーループ: ディレクトリを分割して逐次処理
@@ -140,9 +161,13 @@ class NaviSearch {
             this._Finish(false)
             return
         }
-        ; タイムアウト、キャンセル、または十分な結果数に達した場合（TimeoutMs=0は無制限）
-        if (this.CancelRequested
-            || (this.TimeoutMs > 0 && A_TickCount - t["startedAt"] >= this.TimeoutMs)
+        ; キャンセル時はツリー更新なしで終了
+        if (this.CancelRequested) {
+            this._Finish(false)
+            return
+        }
+        ; タイムアウトまたは十分な結果数に達した場合（TimeoutMs=0は無制限）
+        if ((this.TimeoutMs > 0 && A_TickCount - t["startedAt"] >= this.TimeoutMs)
             || (t["results"].Length >= this.MAX_RESULTS)) {
             this._Finish(true)
             return
@@ -167,6 +192,7 @@ class NaviSearch {
                         ok := this._NameMatches(name, t["tokens"]["include"], t["tokens"]["not"])
                         if (ok) {
                             t["results"].Push(A_LoopFileFullPath)
+                            this._AppendToJumpList(A_LoopFileFullPath)
                             if (t["results"].Length >= this.MAX_RESULTS) {
                                 this._Finish(true)
                                 return
@@ -193,6 +219,7 @@ class NaviSearch {
                     ok := this._NameMatches(name, t["tokens"]["include"], t["tokens"]["not"])
                     if (ok) {
                         t["results"].Push(A_LoopFileFullPath)
+                        this._AppendToJumpList(A_LoopFileFullPath)
                         if (t["results"].Length >= this.MAX_RESULTS) {
                             this._Finish(true)
                             return
@@ -287,6 +314,361 @@ class NaviSearch {
         return false
     }
 
+    ; fd.exe のパスを返す（見つからなければ ""）。結果はキャッシュ
+    static _FindFd() {
+        if (this.FdPath != "")
+            return (this.FdPath = "NOT_FOUND") ? "" : this.FdPath
+
+        ; 1) SearchPath API で PATH から検索（cmd.exe を起動しないためフラッシュなし）
+        buf := Buffer(2048, 0)   ; 1024 wide chars
+        len := DllCall("SearchPath",
+            "ptr",  0, "str", "fd.exe", "ptr", 0,
+            "uint", 1024, "ptr", buf, "ptr", 0, "uint")
+        if (len > 0) {
+            path := StrGet(buf)
+            if (FileExist(path)) {
+                this.FdPath := path
+                return path
+            }
+        }
+
+        ; 2) WinGet パッケージフォルダをスキャン
+        wingetBase := EnvGet("LOCALAPPDATA") . "\Microsoft\WinGet\Packages"
+        if DirExist(wingetBase) {
+            loop files, wingetBase . "\sharkdp.fd_*\*\fd.exe", "R" {
+                this.FdPath := A_LoopFileFullPath
+                return A_LoopFileFullPath
+            }
+        }
+
+        this.FdPath := "NOT_FOUND"
+        return ""
+    }
+
+    ; fd バックエンドで検索を開始（Run + 一時ファイルで非表示・UTF-8対応）
+    static _RunWithFd(navi, basePath, q, typeFilter, incGroups, notAlts) {
+        fdPath  := this._FindFd()
+        tmpFile := A_Temp . "\navi_fd_" . A_TickCount . ".txt"
+
+        ; fd コマンド組み立て（一時ファイルへリダイレクト）
+        fdCmd := '"' . fdPath . '" --no-ignore-vcs --color never'
+        if (typeFilter = "file")
+            fdCmd .= " --type f"
+        else if (typeFilter = "dir")
+            fdCmd .= " --type d"
+        else  ; "all": fdのバージョンによってはデフォルトがファイルのみのため明示
+            fdCmd .= " --type f --type d"
+        for excl in this.ExcludeDirs
+            fdCmd .= ' --exclude "' . excl . '"'
+        ; 末尾バックスラッシュをエスケープ（C:\ → C:\\ ）
+        ; C ランタイムは \" をエスケープされたクォートとして解析するため
+        ; "C:\" の \" がクォートを食いつぶしパス引数が壊れる。\\ にすれば "C:\\" → C:\ になる
+        safeBase := (SubStr(basePath, -1) = "\") ? basePath . "\" : basePath
+        fdCmd .= ' . "' . safeBase . '"'
+        ; fd.exe を直接起動（cmd.exe を介さないのでウィンドウフラッシュなし）
+        ; fd は UTF-8 をネイティブ出力するため chcp 不要
+        pid := this._RunNoWindowToFile(fdCmd, tmpFile)
+        if (pid = 0) {
+            this._FallbackToTick()
+            return
+        }
+        this._FdPid      := pid
+        this._FdTmpFile  := tmpFile
+        this._FdLinesRead := 0
+        this.Task := Map(
+            "navi",           navi,
+            "basePath",       basePath,
+            "tokens",         Map("include", incGroups, "not", notAlts),
+            "typeFilter",     typeFilter,
+            "stack",          [],
+            "results",        [],
+            "startedAt",      A_TickCount,
+            "processedDirs",  0,
+            "processedItems", 0,
+            "skippedDirs",    0,
+            "isFd",           true
+        )
+        SetTimer(NaviSearch._FdTick.Bind(NaviSearch), this.FD_POLL_MS)
+    }
+
+    ; fd ポーリングタイマー（プロセス終了を監視して一時ファイルを読み込む）
+    static _FdTick(*) {
+        if !(this.SearchActive) {
+            SetTimer(, 0)
+            return
+        }
+        t  := this.Task
+        nv := t["navi"]
+        if !(nv.GuiObj && WinExist(nv.GuiObj)) {
+            SetTimer(, 0)
+            this._KillFd()
+            this._Finish(false)
+            return
+        }
+        if (this.CancelRequested) {
+            SetTimer(, 0)
+            this._KillFd()
+            this._Finish(false)
+            return
+        }
+        if (this.TimeoutMs > 0 && A_TickCount - t["startedAt"] >= this.TimeoutMs) {
+            SetTimer(, 0)
+            this._KillFd()
+            this._Finish(true)
+            return
+        }
+        isDone := !ProcessExist(this._FdPid)
+        ; 実行中・完了に関わらず新しい行を処理する
+        raw := ""
+        try {
+            raw := FileRead(this._FdTmpFile, "UTF-8")
+        }
+        if (raw != "") {
+            tokens    := t["tokens"]
+            incGroups := tokens["include"]
+            notAlts   := tokens["not"]
+            results   := t["results"]
+            lines     := StrSplit(raw, "`n")
+            ; 実行中は最後の行をスキップ（書き込み中の可能性）
+            maxLine := isDone ? lines.Length : Max(lines.Length - 1, 0)
+            loop {
+                lineIdx := this._FdLinesRead + 1
+                if (lineIdx > maxLine)
+                    break
+                p := Trim(lines[lineIdx], " `r`n")
+                this._FdLinesRead += 1
+                if (p = "")
+                    continue
+                ; fdがディレクトリパスに末尾バックスラッシュを付加する場合の対処
+                if (SubStr(p, -1) = "\" && StrLen(p) > 3)
+                    p := SubStr(p, 1, -1)
+                SplitPath(p, &fileName)
+                if (this._NameMatches(StrLower(fileName), incGroups, notAlts)) {
+                    results.Push(p)
+                    this._AppendToJumpList(p)
+                    if (results.Length >= this.MAX_RESULTS) {
+                        isDone := true
+                        break
+                    }
+                }
+                t["processedItems"] += 1
+            }
+        }
+        this._UpdateProgress()
+        if (!isDone)
+            return
+        ; --- 完了 ---
+        SetTimer(, 0)
+        try FileDelete(this._FdTmpFile)
+        this._FdPid     := 0
+        this._FdTmpFile := ""
+        this._Finish(true)
+    }
+
+    ; fd.exe を直接起動し stdout をファイルにリダイレクト（cmd.exe フラッシュなし）
+    ; STARTF_USESTDHANDLES で継承可能ハンドルを渡す。戻り値: PID（失敗時 0）
+    static _RunNoWindowToFile(cmd, outFile) {
+        ; 出力ファイルを継承可能ハンドルで作成
+        ; SECURITY_ATTRIBUTES: nLength / lpSecurityDescriptor / bInheritHandle
+        saSize := (A_PtrSize = 8) ? 24 : 12
+        sa := Buffer(saSize, 0)
+        NumPut("uint", saSize, sa, 0)
+        NumPut("uint", 1, sa, (A_PtrSize = 8) ? 16 : 8)   ; bInheritHandle = TRUE
+        hFile := DllCall("CreateFile",
+            "str",  outFile,
+            "uint", 0x40000000,   ; GENERIC_WRITE
+            "uint", 0x1,          ; FILE_SHARE_READ
+            "ptr",  sa,
+            "uint", 2,            ; CREATE_ALWAYS
+            "uint", 0x80,         ; FILE_ATTRIBUTE_NORMAL
+            "ptr",  0, "ptr")
+        if (hFile = -1 || hFile = 0)
+            return 0
+
+        ; STARTUPINFO のサイズとフィールドオフセット（32/64 ビット対応）
+        siSize    := (A_PtrSize = 8) ? 104 : 68
+        flagsOff  := (A_PtrSize = 8) ? 60  : 44
+        showOff   := (A_PtrSize = 8) ? 64  : 48
+        stdInOff  := (A_PtrSize = 8) ? 80  : 56
+        stdOutOff := (A_PtrSize = 8) ? 88  : 60
+        stdErrOff := (A_PtrSize = 8) ? 96  : 64
+
+        si := Buffer(siSize, 0)
+        NumPut("uint",   siSize, si, 0)
+        NumPut("uint",   0x101,  si, flagsOff)   ; STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES
+        NumPut("ushort", 0,      si, showOff)    ; SW_HIDE
+        NumPut("ptr",    0,      si, stdInOff)   ; hStdInput  = NULL
+        NumPut("ptr",    hFile,  si, stdOutOff)  ; hStdOutput = outFile
+        NumPut("ptr",    hFile,  si, stdErrOff)  ; hStdError  = outFile（エラーも同ファイルへ）
+
+        pi := Buffer(A_PtrSize * 2 + 8, 0)
+        ok := DllCall("CreateProcess",
+            "ptr",  0,
+            "str",  cmd,
+            "ptr",  0, "ptr", 0,
+            "int",  true,           ; bInheritHandles = TRUE
+            "uint", 0x08000000,     ; CREATE_NO_WINDOW
+            "ptr",  0, "ptr", 0,
+            "ptr",  si, "ptr", pi)
+        DllCall("CloseHandle", "ptr", hFile)   ; 親側ハンドルを閉じる
+        if (!ok)
+            return 0
+        DllCall("CloseHandle", "ptr", NumGet(pi, 0,           "ptr"))
+        DllCall("CloseHandle", "ptr", NumGet(pi, A_PtrSize,   "ptr"))
+        return NumGet(pi, A_PtrSize * 2, "uint")   ; dwProcessId
+    }
+
+    ; CREATE_NO_WINDOW でプロセスを起動（ウィンドウフラッシュなし）、PID を返す
+    static _RunNoWindow(cmd) {
+        si := Buffer(96, 0)
+        NumPut("uint", 96, si, 0)           ; cb = sizeof(STARTUPINFO)
+        NumPut("uint", 0x1, si, 44)         ; dwFlags = STARTF_USESHOWWINDOW
+        NumPut("ushort", 0, si, 48)         ; wShowWindow = SW_HIDE
+        pi := Buffer(A_PtrSize * 2 + 8, 0)
+        ok := DllCall("CreateProcess",
+            "ptr",  0,
+            "str",  cmd,
+            "ptr",  0, "ptr", 0,
+            "int",  false,
+            "uint", 0x08000000,             ; CREATE_NO_WINDOW
+            "ptr",  0, "ptr", 0,
+            "ptr",  si, "ptr", pi)
+        if (!ok)
+            return 0
+        DllCall("CloseHandle", "ptr", NumGet(pi, 0,           "ptr"))
+        DllCall("CloseHandle", "ptr", NumGet(pi, A_PtrSize,   "ptr"))
+        return NumGet(pi, A_PtrSize * 2, "uint")   ; dwProcessId
+    }
+
+    ; fd プロセスと一時ファイルを強制終了・削除
+    static _KillFd() {
+        try ProcessClose(this._FdPid)
+        try FileDelete(this._FdTmpFile)
+        this._FdPid     := 0
+        this._FdTmpFile := ""
+    }
+
+    ; fd 起動失敗時にタイマーループへフォールバック
+    static _FallbackToTick() {
+        t := this.Task
+        if (Type(t) = "Map") {
+            t["stack"] := [t["basePath"]]
+            t["isFd"]  := false
+        }
+        SetTimer(NaviSearch._Tick.Bind(NaviSearch), this.TIMER_TICK_MS)
+    }
+
+    ; JumpGui のリストに1件追加（リアルタイム表示用）
+    static _AppendToJumpList(path) {
+        lv := this.JumpListView
+        if !IsObject(lv)
+            return
+        SplitPath(path, &fname, &fdir)
+        lv.Add("", fname, fdir)
+    }
+
+    ; ListView をソート（col=2 のときは パス→名前 の複合キーで同フォルダ内を名前順に）
+    static _SortJumpList(lv, col := 1, desc := false) {
+        n := lv.GetCount()
+        if (n = 0)
+            return
+        ; ソート前の選択アイテムのパスを保存
+        selRow := lv.GetNext(0)
+        selPath := ""
+        if (selRow > 0) {
+            selFname := lv.GetText(selRow, 1)
+            selFdir  := lv.GetText(selRow, 2)
+            selPath  := (selFdir != "" ? selFdir . "\" . selFname : selFname)
+        }
+        sep := Chr(1)   ; ASCII SOH — Windows パスには含まれない
+        raw := ""
+        loop n {
+            fname := lv.GetText(A_Index, 1)
+            fdir  := lv.GetText(A_Index, 2)
+            key   := col = 2 ? StrLower(fdir . A_Tab . fname) : StrLower(fname)
+            raw   .= key . sep . fname . sep . fdir . "`n"
+        }
+        raw := RTrim(raw, "`n")
+        Sort(raw, desc ? "R" : "")
+        lv.Delete()
+        newSelRow := 0
+        rowNum := 0
+        for sortLine in StrSplit(raw, "`n") {
+            if (sortLine = "")
+                continue
+            rowNum += 1
+            p := StrSplit(sortLine, sep)
+            if (p.Length >= 3) {
+                lv.Add("", p[2], p[3])
+                if (selPath != "" && newSelRow = 0) {
+                    path := (p[3] != "" ? p[3] . "\" . p[2] : p[2])
+                    if (path = selPath)
+                        newSelRow := rowNum
+                }
+            }
+        }
+        ; ソート後に同じアイテムを再選択してカーソル位置を維持
+        if (newSelRow > 0) {
+            lv.Modify(newSelRow, "Select Vis")
+            this.HighlightedIdx := newSelRow
+        } else {
+            this.HighlightedIdx := 0
+        }
+    }
+
+    ; NTFS互換ソート（CompareStringOrdinal による ordinal 比較）
+    ; AHKのSort()はロケール依存で '_'(95) を英字より前に置くため、
+    ; NTFS Bツリーと同じ ordinal 比較を DllCall で実現する
+    ; ツリー表示順ソート: 同一親内でフォルダ先・ファイル後、名前はNTFS ordinal順
+    ; treeキー: フォルダ成分は Chr(1) 前置き（先）、ファイル末尾は Chr(2) 前置き（後）
+    static _SortByNtfsOrder(lv, basePath := "") {
+        n := lv.GetCount()
+        if (n = 0)
+            return
+        base := (basePath != "" ? basePath . "\" : "")
+        baseLen := StrLen(base)
+        rows := []
+        loop n {
+            f := lv.GetText(A_Index, 1)
+            d := lv.GetText(A_Index, 2)
+            p := (d != "" ? d . "\" . f : f)
+            isDir := DirExist(p) ? 1 : 0
+            ; ベースパス以降の相対パスをパーツ分割してtreeキーを構築
+            rel := (baseLen > 0 && InStr(p, base) = 1) ? SubStr(p, baseLen + 1) : p
+            parts := StrSplit(rel, "\")
+            key := ""
+            for i, part in parts {
+                if (i = parts.Length && !isDir)
+                    key .= Chr(2) . part        ; ファイル末尾: \ なし（ordinal比較でフォルダより後、かつ opennt < opennt-* になる）
+                else
+                    key .= Chr(1) . part . "\"  ; フォルダ成分: Chr(1) でファイルより先
+            }
+            rows.Push({f: f, d: d, key: key})
+        }
+        ; 挿入ソート（AHK v2.0.19はSort()でArrayをサポートしないため手動実装）
+        loop rows.Length - 1 {
+            i := A_Index + 1
+            cur := rows[i]
+            j := i - 1
+            while (j >= 1) {
+                r := DllCall("CompareStringOrdinal",
+                    "wstr", rows[j].key, "int", -1,
+                    "wstr", cur.key, "int", -1, "int", true, "int")
+                if (r <= 2)  ; CSTR_LESS_THAN(1) or CSTR_EQUAL(2)
+                    break
+                rows[j + 1] := rows[j]
+                j--
+            }
+            rows[j + 1] := cur
+        }
+        try lv.Delete()
+        for row in rows {
+            try lv.Add("", row.f, row.d)
+            catch
+                break  ; GUIが破棄された場合は中断
+        }
+    }
+
     ; 設定をINIから読み込み（初回のみ）
     static _LoadSettings() {
         if (this.ExcludeDirs.Length > 0)
@@ -310,6 +692,14 @@ class NaviSearch {
             timeoutSec := this.DEFAULT_TIMEOUT_SEC
         }
         this.TimeoutMs := (timeoutSec <= 0) ? 0 : timeoutSec * 1000
+        ; UseFd 設定（デフォルト: true）
+        try {
+            useFdVal := IniRead(this.IniPath, "Search", "UseFd", "1")
+        } catch {
+            useFdVal := "1"
+        }
+        this.UseFd := (useFdVal != "0")
+        this.FdPath := ""  ; キャッシュリセット
     }
 
     ; 除外リストをINIに保存
@@ -340,6 +730,10 @@ class NaviSearch {
         timeoutEdit := eg.Add("Edit", "x+" . this.GAP_X_MED . " yp-3 w" . this.SETTINGS_TIMEOUT_W . " vTimeout Number", currentTimeout)
         eg.Add("Text", "x+" . this.GAP_X_MED . " yp+3 c808080", "秒")
 
+        ; fd バックエンド
+        useFdCb := eg.Add("CheckBox", "xm", "fd を使用して高速検索（fd.exe が必要）")
+        useFdCb.Value := this.UseFd ? 1 : 0
+
         ; 除外ディレクトリ
         eg.Add("Text", "xm", "除外ディレクトリ（1行に1つ）:")
         editBox := eg.Add("Edit", "xm w" . this.SETTINGS_DIALOG_W . " h" . this.SETTINGS_EDIT_H . " vExcludeList", currentList)
@@ -347,7 +741,7 @@ class NaviSearch {
         btnReset := eg.Add("Button", "x+" . this.GAP_X_MED . " w" . this.SETTINGS_BTN_W, "初期値に戻す")
         btnClose := eg.Add("Button", "x+" . this.GAP_X_MED . " w" . this.SETTINGS_BTN_W, "閉じる")
 
-        btnSave.OnEvent("Click", (*) => this._SaveSettingsFromEditor(eg, editBox, timeoutEdit))
+        btnSave.OnEvent("Click", (*) => this._SaveSettingsFromEditor(eg, editBox, timeoutEdit, useFdCb))
         btnReset.OnEvent("Click", (*) => (
             editBox.Value := StrReplace(this.DEFAULT_EXCLUDE_DIRS, ",", "`n"),
             timeoutEdit.Value := this.DEFAULT_TIMEOUT_SEC
@@ -365,7 +759,7 @@ class NaviSearch {
     }
 
     ; 設定を編集ダイアログから保存
-    static _SaveSettingsFromEditor(eg, editBox, timeoutEdit) {
+    static _SaveSettingsFromEditor(eg, editBox, timeoutEdit, useFdCb) {
         ; 除外ディレクトリ
         raw := editBox.Value
         this.ExcludeDirs := []
@@ -387,6 +781,11 @@ class NaviSearch {
         this.TimeoutMs := (timeoutSec <= 0) ? 0 : timeoutSec * 1000
         try IniWrite(timeoutSec, this.IniPath, "Search", "TimeoutSec")
 
+        ; UseFd
+        this.UseFd := (useFdCb.Value = 1)
+        try IniWrite(useFdCb.Value, this.IniPath, "Search", "UseFd")
+        this.FdPath := ""  ; キャッシュリセット
+
         ToolTip("設定を保存しました")
         SetTimer(() => ToolTip(), -this.TOOLTIP_SAVE_DURATION)
     }
@@ -401,12 +800,12 @@ class NaviSearch {
   |           OR検索（例: txt|log）
   !           除外（例: !backup）
   *.ext       拡張子（例: *.js *.txt）
-  d:          ディレクトリのみ（例: d: src）
-  f:          ファイルのみ（例: f: *.json）
+  d:          フォルダのみ（ラジオボタンと同等）
+  f:          ファイルのみ（ラジオボタンと同等）
 
 【例】
-  d: test         testを含むディレクトリ
-  f: *.js|*.ts    .js または .ts ファイル
+  test            testを含むファイル/フォルダ
+  *.js|*.ts       .js または .ts ファイル
   config !backup  configを含むがbackupを除外
         )"
         ToolTip(help)
@@ -414,6 +813,7 @@ class NaviSearch {
     }
 
     ; --- 検索入力ダイアログ（Navi付近に最前面表示） ---
+    ; 戻り値: Map("q", クエリ文字列, "typeFilter", "all"|"file"|"dir") / キャンセル時は ""
     static _PromptQuery(navi, basePath) {
         title := "Navi - ローカル検索"
         g := Gui("+AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", title)
@@ -424,11 +824,29 @@ class NaviSearch {
         helpText.OnEvent("Click", (*) => this._ShowSearchHelp())
         g.Add("Text", "xm c808080", "Base: " . basePath)
         inputEdit := g.Add("Edit", "xm w" . this.EDIT_W . " vQ")
+        ; 検索対象ラジオボタン
+        g.Add("Text", "xm", "対象:")
+        rbAll  := g.Add("Radio", "x+6 yp-1 Group", "すべて")
+        rbFile := g.Add("Radio", "x+10 yp", "ファイルのみ")
+        rbDir  := g.Add("Radio", "x+10 yp", "フォルダのみ")
+        ; 前回の選択を復元
+        if (this._LastTypeFilter = "file")
+            rbFile.Value := 1
+        else if (this._LastTypeFilter = "dir")
+            rbDir.Value := 1
+        else
+            rbAll.Value := 1
         btnOK := g.Add("Button", "xm w" . this.BTN_W_LARGE . " Default", "OK")
         btnCancel := g.Add("Button", "x+" . this.GAP_X_MED . " w" . this.BTN_W_LARGE, "キャンセル")
         btnExclude := g.Add("Button", "x+" . this.GAP_X_MED . " w" . this.BTN_W_LARGE, "設定")
         res := ""
-        btnOK.OnEvent("Click", (*) => (res := Trim(inputEdit.Value), g.Destroy()))
+        selectedType := this._LastTypeFilter  ; デフォルト（キャンセル時は使わない）
+        ; OK押下時: GUIが破棄される前にラジオボタンの値を読み取る
+        btnOK.OnEvent("Click", (*) => (
+            res := Trim(inputEdit.Value),
+            selectedType := rbFile.Value ? "file" : rbDir.Value ? "dir" : "all",
+            g.Destroy()
+        ))
         btnCancel.OnEvent("Click", (*) => (res := "", g.Destroy()))
         btnExclude.OnEvent("Click", (*) => this._ShowExcludeEditor(g))
         g.OnEvent("Escape", (*) => (res := "", g.Destroy()))
@@ -466,21 +884,68 @@ class NaviSearch {
             if (navi.GuiObj && WinExist(navi.GuiObj))
                 navi.GuiObj.Opt("-Disabled +AlwaysOnTop")
         }
-        return res
+        if (res = "")
+            return ""
+        ; selectedType は OK ボタン押下時（GUI破棄前）に設定済み
+        this._LastTypeFilter := selectedType
+        return Map("q", res, "typeFilter", selectedType)
     }
 
     static _Finish(showResults) {
         SetTimer(, 0)
+        this._KillFd()
         this._HideProgress()
         this.SearchActive := false
-        if (showResults) {
+        if (showResults && !this.CancelRequested) {
+            ; SearchActive=false にした後 Sleep(0) でメッセージキューをフラッシュする。
+            ; _FdTick が <16ms で完了すると AHK は Close コールバックを割り込ませないため
+            ; WM_CLOSE がキューに残っている場合がある。Sleep(0) で処理させてから再確認する。
+            ; ClearHighlights は SearchActive=false を見て _Finish(false) を呼ばないため
+            ; 二重呼び出しも発生しない。
+            Sleep(0)
+            if (this.CancelRequested) {
+                this.Results := []
+                this.Task := ""
+                this.CancelRequested := false
+                return
+            }
             t := this.Task
             this.Results := (Type(t) = "Map" && t.Has("results")) ? t["results"] : []
             nv := t["navi"]
             if (nv.GuiObj && WinExist(nv.GuiObj)) {
                 tv := nv.GuiObj["FolderTree"]
                 this.HighlightPathsInTree(nv, tv, t["basePath"], t["results"])
-                this._EnsureJumpGui(nv)
+                lv := this.JumpListView
+                if IsObject(lv) && lv.GetCount() > 0 {
+                    ; NTFS互換ソートでツリーの表示順（大文字比較）に合わせる
+                    this._SortByNtfsOrder(lv, t["basePath"])
+                    lv.Modify(1, "Select Vis")
+                    this.HighlightedIdx := 1
+                    ; ツリーもソート後の先頭行パスに合わせる
+                    fname := lv.GetText(1, 1)
+                    fdir  := lv.GetText(1, 2)
+                    p0 := (fdir != "" ? fdir . "\" . fname : fname)
+                    if (FileExist(p0)) {
+                        SplitPath(p0, &fn0, &fd0)
+                        idDir0 := this.EnsurePathExpanded(nv, tv, fd0)
+                        if (idDir0) {
+                            this.EnsureFilesShown(nv, tv, idDir0, fd0)
+                            cid0 := tv.GetChild(idDir0)
+                            while (cid0) {
+                                if (tv.GetText(cid0) = fn0) {
+                                    tv.Modify(cid0, "Select Vis")
+                                    break
+                                }
+                                cid0 := tv.GetNext(cid0)
+                            }
+                        }
+                    } else if (DirExist(p0)) {
+                        id0 := this.EnsurePathExpanded(nv, tv, p0)
+                        if (id0)
+                            tv.Modify(id0, "Select Vis")
+                    }
+                }
+                this._UpdateJumpLabel()
             }
         } else {
             this.Results := []
@@ -491,31 +956,12 @@ class NaviSearch {
 
     ; プログレスUIの表示とキャンセル機能
     static _ShowProgress(navi) {
-        ; マルチモニタでの座標ずれ回避のためオーナーは付けない（絶対座標で配置）
-        this.ProgressGui := Gui("+AlwaysOnTop -Caption +ToolWindow +Border")
-        this.ProgressGui.SetFont("s9", "Segoe UI")
-        this.ProgressLabel := this.ProgressGui.Add("Text", "xm ym w" . this.LABEL_W_PROGRESS, "検索中...")
-        btn := this.ProgressGui.Add("Button", "x+" . this.GAP_X_LARGE . " yp w" . this.BTN_W_SMALL, "中止")
-        btn.OnEvent("Click", (*) => (NaviSearch.CancelRequested := true))
-        ; 位置決め（Naviの「ルートディレクトリ管理」と同じロジックで親GUI中央に配置）
+        ; 進捗はJumpGui内のJumpLabelで表示（独立ウィンドウ廃止）
+        this.LastNavi := navi
+        ; Naviを無効化（検索中にアクションが実行されるのを防ぐ）
         if (navi.GuiObj && WinExist(navi.GuiObj)) {
-            navi.GuiObj.GetPos(&px, &py, &pw, &ph)
-            ; いったん隠してレイアウト確定→正確なサイズ取得
-            this.ProgressGui.Show("Hide AutoSize")
-            this.ProgressGui.GetPos(, , &gw, &gh)
-            x := px + (pw - gw) // 2
-            y := py + (ph - gh) // 2
-            this.ProgressGui.Show("x" . x . " y" . y)
-            ; 親を無効化して簡易モーダル化
             try navi.GuiObj.Opt("+Disabled")
-            this.LastNavi := navi
-        } else {
-            this.ProgressGui.Show("Hide AutoSize")
-            this.ProgressGui.GetPos(, , &gw, &gh)
-            this.ProgressGui.Show()
-        }
-        ; Naviアクティブ時は Esc でキャンセル
-        if (navi.GuiObj && WinExist(navi.GuiObj)) {
+            ; Esc でキャンセル
             HotIfWinActive("ahk_id " navi.GuiObj.Hwnd)
             Hotkey("Esc", ((*) => (NaviSearch.CancelRequested := true)), "On")
             HotIf()
@@ -524,20 +970,22 @@ class NaviSearch {
     }
 
     static _UpdateProgress() {
-        if !this.ProgressGui
+        jl := this.JumpLabel
+        if !IsObject(jl)
             return
         t := this.Task
+        if !(Type(t) = "Map")
+            return
         elapsed := A_TickCount - t["startedAt"]
         skipped := t["skippedDirs"]
         ; ASCIIプログレスバー（タイムアウトまでの進捗、0=無制限時はスピナー）
         if (this.TimeoutMs > 0)
-            progressBar := this._MakeProgressBar(elapsed, this.TimeoutMs)
+            indicator := this._MakeProgressBar(elapsed, this.TimeoutMs)
         else
-            progressBar := this._MakeSpinner(elapsed)
-        msg := progressBar . " hits:" . t["results"].Length
-             . " dirs:" . t["processedDirs"]
-             . (skipped > 0 ? " skip:" . skipped : "")
-        this.ProgressLabel.Text := msg
+            indicator := this._MakeSpinner(elapsed)
+        try jl.Text := indicator . " " . t["results"].Length . "件"
+                     . " dirs:" . t["processedDirs"]
+                     . (skipped > 0 ? " skip:" . skipped : "")
     }
 
     ; ASCIIプログレスバー生成（タイムアウトまでの進捗を視覚化）
@@ -563,9 +1011,6 @@ class NaviSearch {
     }
 
     static _HideProgress() {
-        try this.ProgressGui.Destroy()
-        this.ProgressGui := ""
-        this.ProgressLabel := ""
         ; 親GUIの再有効化 & NaviのEsc（閉じる）を復活
         try {
             t := this.Task
@@ -593,6 +1038,9 @@ class NaviSearch {
         this._HighlightedPaths := []
         this._HighlightedIdSet := Map()
         this.HighlightedIdx := 0
+
+        ; 一括操作中の再描画を止めてスクロールを抑制
+        SendMessage(0x000B, 0, 0, tv)  ; WM_SETREDRAW false
 
         shownCount := 0
         for p in paths {
@@ -627,27 +1075,55 @@ class NaviSearch {
         this._HighlightedIdSet := Map()
         for id in this.HighlightedIds
             this._HighlightedIdSet[id] := true
-        ; NM_CUSTOMDRAW ハンドラー登録 → 文字色変更
+        ; NM_CUSTOMDRAW ハンドラー登録
         this._EnsureCustomDraw(tv)
-        tv.Redraw()
+        ; 最初の結果へスクロール位置を合わせてから再描画を再開（Results基準）
+        this.HighlightedIdx := 0
+        if (this.Results.Length > 0) {
+            this.HighlightedIdx := 1
+            p0 := this.Results[1]
+            if (DirExist(p0)) {
+                id0 := this.EnsurePathExpanded(navi, tv, p0)
+                if (id0)
+                    try tv.Modify(id0, "Select Vis")
+            } else if (FileExist(p0)) {
+                SplitPath(p0, &fn0, &fd0)
+                idDir0 := this.EnsurePathExpanded(navi, tv, fd0)
+                if (idDir0) {
+                    this.EnsureFilesShown(navi, tv, idDir0, fd0)
+                    cid0 := tv.GetChild(idDir0)
+                    while (cid0) {
+                        if (tv.GetText(cid0) = fn0) {
+                            tv.Modify(cid0, "Select Vis")
+                            break
+                        }
+                        cid0 := tv.GetNext(cid0)
+                    }
+                }
+            }
+        }
+        ; 再描画を再開して1回だけ描画（WM_SETREDRAW true + RedrawWindow）
+        SendMessage(0x000B, 1, 0, tv)
+        DllCall("user32\RedrawWindow", "ptr", tv.Hwnd, "ptr", 0, "ptr", 0,
+            "uint", 0x0085)  ; RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN
         ToolTip("ハイライト: " . shownCount . "件")
         SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
-        ; 最初のヒットへジャンプ
-        if (shownCount > 0) {
-            this.HighlightedIdx := 1
-            try tv.Modify(this.HighlightedIds[1], "Select Vis")
-        }
     }
 
     static EnsurePathExpanded(navi, tv, targetPath) {
         if (!DirExist(targetPath) && !FileExist(targetPath))
             return 0
+        ; 全ルートを走査して対象パスを含むルートを特定（複数ルート対応）
         currentID := tv.GetNext(0, "Full")
+        while (currentID != 0) {
+            rootPath := tv.GetText(currentID)
+            if (InStr(targetPath, rootPath) = 1)
+                break
+            currentID := tv.GetNext(currentID)
+        }
         if (currentID == 0)
             return 0
         rootPath := tv.GetText(currentID)
-        if (!InStr(targetPath, rootPath))
-            return 0
         relPath := LTrim(StrReplace(targetPath, rootPath, ""), "\")
         parts := StrSplit(relPath, "\")
         for part in parts {
@@ -708,41 +1184,62 @@ class NaviSearch {
     static Jump(navi, delta) {
         if !(navi.GuiObj && WinExist(navi.GuiObj))
             return
-        tv := navi.GuiObj["FolderTree"]
-        total := this.HighlightedIds.Length
-        if (total = 0) {
+        lv := this.JumpListView
+        if !IsObject(lv) || lv.GetCount() = 0 {
             ToolTip("ヒットなし")
             SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
             return
         }
-        idx := this.HighlightedIdx
-        if (idx = 0)
-            idx := 1
-        idx += delta
-        if (idx < 1)
-            idx := total
-        else if (idx > total)
-            idx := 1
-        this.HighlightedIdx := idx
-        id := this.HighlightedIds[idx]
-        try tv.Modify(id, "Select Vis")
-        ToolTip(idx . " / " . total . " 件目")
-        SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
-        this._UpdateJumpLabel()
-        ; リストが展開中なら対応行を選択
-        try {
-            lv := this.JumpListView
-            if (IsObject(lv) && lv.Visible) {
-                path := this._HighlightedPaths[idx]
-                for i, p in this.Results {
-                    if (p = path) {
-                        lv.Modify(0, "-Select")
-                        lv.Modify(i, "Select Vis")
+        total  := lv.GetCount()
+        cur    := lv.GetNext(0)
+        if (cur = 0)
+            cur := (delta > 0) ? 0 : total + 1
+        newRow := cur + delta
+        if (newRow < 1)
+            newRow := total
+        else if (newRow > total)
+            newRow := 1
+        lv.Modify(0, "-Select")
+        lv.Modify(newRow, "Select Vis")
+        this.HighlightedIdx := newRow
+        ; _JumpTo と同じ TreeView 遷移
+        fname := lv.GetText(newRow, 1)
+        fdir  := lv.GetText(newRow, 2)
+        p     := (fdir != "" ? fdir . "\" . fname : fname)
+        tv    := navi.GuiObj["FolderTree"]
+        navigated := false
+        if (DirExist(p)) {
+            id := this.EnsurePathExpanded(navi, tv, p)
+            if (id) {
+                tv.Modify(id, "Select Vis")
+                navigated := true
+            }
+        } else if (FileExist(p)) {
+            SplitPath(p, &fn, &fd)
+            idDir := this.EnsurePathExpanded(navi, tv, fd)
+            if (idDir) {
+                this.EnsureFilesShown(navi, tv, idDir, fd)
+                found := false
+                cid := tv.GetChild(idDir)
+                while (cid) {
+                    if (tv.GetText(cid) = fn) {
+                        tv.Modify(cid, "Select Vis")
+                        found := true
                         break
                     }
+                    cid := tv.GetNext(cid)
                 }
+                if (!found) {
+                    fid := tv.Add(fn, idDir, "Icon2")
+                    tv.Modify(fid, "Select Vis")
+                }
+                navigated := true
             }
         }
+        tipSuffix := navigated ? "" : "（ツリー外）"
+        ToolTip(newRow . " / " . total . " 件目" . tipSuffix)
+        SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
+        this._UpdateJumpLabel()
     }
 
     static _EnsureJumpGui(navi) {
@@ -758,14 +1255,13 @@ class NaviSearch {
         }
         this.JumpGui := ""
         this.JumpLabel := ""
-        results := this.Results
         g := Gui("+Owner" . navi.GuiObj.Hwnd . " +Resize +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "検索ヒット")
         g.SetFont("s9", "Segoe UI")
         ; ボタン行
         prev    := g.Add("Button", "xm w" . this.BTN_W_SMALL, "前へ")
         next    := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "次へ")
         clr     := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "解除")
-        listBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "リスト▽")
+        listBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "リスト△")
         this.JumpLabel := g.Add("Text", "x+" . this.GAP_X_LARGE . " w" . this.LABEL_W_HITS, "")
         closeBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "閉じる")
         ; ショートカットヒント
@@ -780,24 +1276,21 @@ class NaviSearch {
         lv := g.Add("ListView", "xm w" . lvW . " r15 -Multi", ["名前", "パス"])
         lv.ModifyCol(1, 150)
         lv.ModifyCol(2, lvW - 154)
-        for p in results {
-            SplitPath(p, &fname, &fdir)
-            lv.Add("", fname, fdir)
-        }
         g.SetFont("s8", "Segoe UI")
         hintLbl := g.Add("Text", "xm c808080", "クリック: TreeViewで選択")
         g.SetFont("s9", "Segoe UI")
-        ; 展開時の高さ・ListView位置を計測してからリストを非表示に
+        ; 展開時の高さ・ListView位置を計測（リストは表示状態で計測）
         g.Show("Hide AutoSize")
         g.GetPos(, , , &fullH)
         lv.GetPos(, &lvY0, , &lvH0)   ; ListView の初期 Y・高さ
-        lv.Visible := false
-        hintLbl.Visible := false
-        ; ジャンプ処理
+        ; ジャンプ処理（ListView列から直接パスを再構築）
         _JumpTo(obj, row) {
             if (row = 0)
                 return
-            p := results[row]
+            NaviSearch.HighlightedIdx := row  ; 次へ/前へと同期
+            fname := lv.GetText(row, 1)
+            fdir  := lv.GetText(row, 2)
+            p := (fdir != "" ? fdir . "\" . fname : fname)
             if !(navi.GuiObj && WinExist(navi.GuiObj))
                 return
             tv := navi.GuiObj["FolderTree"]
@@ -829,21 +1322,39 @@ class NaviSearch {
         }
         lv.OnEvent("Click", _JumpTo)
         lv.OnEvent("DoubleClick", _JumpTo)
-        ; 右クリックメニュー
+        ; 右クリックメニュー（ListView列から直接パスを再構築）
         _OnContextMenu(obj, item, isRightClick, x, y) {
-            if (item = 0)
+            if (item = 0 || item > lv.GetCount())
                 return
-            p := results[item]
-            SplitPath(p, , &fd)
+            fname := lv.GetText(item, 1)
+            fdir  := lv.GetText(item, 2)
+            p := (fdir != "" ? fdir . "\" . fname : fname)
             m := Menu()
             m.Add("フルパスをコピー", (*) => (A_Clipboard := p))
-            m.Add("フォルダをコピー", (*) => (A_Clipboard := fd))
+            m.Add("フォルダをコピー", (*) => (A_Clipboard := fdir))
             m.Show()
         }
         lv.OnEvent("ContextMenu", _OnContextMenu)
+        ; 列ヘッダークリックで並び替え（パス列は パス+名前 の複合キー）
+        _OnColClick(ctrl, col) {
+            ; 名前列（col=1）は常に昇順。パス列（col=2）のみ再クリックで降順トグル
+            if (col = 1) {
+                NaviSearch._SortCol  := col
+                NaviSearch._SortDesc := false
+            } else {
+                if (NaviSearch._SortCol = col)
+                    NaviSearch._SortDesc := !NaviSearch._SortDesc
+                else {
+                    NaviSearch._SortCol  := col
+                    NaviSearch._SortDesc := false
+                }
+            }
+            NaviSearch._SortJumpList(ctrl, col, NaviSearch._SortDesc)
+        }
+        lv.OnEvent("ColClick", _OnColClick)
         NaviSearch.JumpListView := lv
-        ; リスト展開トグル
-        listShown := false
+        ; リスト展開トグル（デフォルト: 展開表示）
+        listShown := true
         _ToggleList(*) {
             if (listShown) {
                 lv.Visible := false
@@ -877,12 +1388,12 @@ class NaviSearch {
         closeBtn.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Escape", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Size", _OnSize)
-        g.OnEvent("Close", (*) => this._RemoveJumpGuiHotkeys())
+        g.OnEvent("Close", (*) => NaviSearch.ClearHighlights(navi))
         ; 位置決め（Naviウィンドウの下部外側、左揃え）
         WinGetPos(&px, &py, &pw, &ph, "ahk_id " navi.GuiObj.Hwnd)
         x := px
         y := py + ph + this.UI_MARGIN
-        g.Show("x" . x . " y" . y . " h" . compactH)
+        g.Show("x" . x . " y" . y . " h" . fullH)
         ; 親は無効化しない（ツリー操作を阻害しない）
         this.LastNavi := navi
         this.JumpGui := g
@@ -925,8 +1436,9 @@ class NaviSearch {
             jg := this.JumpGui
             if !(Type(jg) = "Gui" && jg.Hwnd && WinExist("ahk_id " jg.Hwnd))
                 return
-            total := this.HighlightedIds.Length
-            idx := this.HighlightedIdx
+            lv    := this.JumpListView
+            total := IsObject(lv) ? lv.GetCount() : 0
+            idx   := IsObject(lv) ? lv.GetNext(0) : 0
             this.JumpLabel.Text := (total ? idx : 0) . " / " . total . " 件"
         }
     }
@@ -1018,6 +1530,11 @@ class NaviSearch {
     }
 
     static ClearHighlights(navi) {
+        this.CancelRequested := true  ; 検索中なら中止
+        ; 検索中なら次のティックを待たず即座に停止（タイマー/fd を同期的に終了）
+        ; こうしないと _FdTick が先に _Finish(true) を呼んでツリーを更新してしまう
+        if (this.SearchActive)
+            this._Finish(false)
         if !(navi.GuiObj && WinExist(navi.GuiObj))
             return
         tv := navi.GuiObj["FolderTree"]
