@@ -76,8 +76,7 @@ class Navi {
     static _FdIndexFile     := ""    ; fd 出力先一時ファイル
     static _FdIndexRoot     := ""    ; 非同期構築中のルートパス
     static _FdPollCb        := ""    ; fd 完了ポーリングタイマーコールバック
-    static _FdIndexQuery    := ""    ; fd 完了後に実行するフィルタクエリ
-    static _FdIndexQuerySet := false ; _FdIndexQuery が有効かどうか
+    static _OnIndexReadyCb  := ""    ; fd 完了後に呼ぶコールバック
     static _FilterMatchIdSet := Map() ; マッチノードID集合（カスタムドロー用）
     static _FilterTvHwnd     := 0     ; フィルタカスタムドロー対象 TreeView の Hwnd
     static _FilterDrawHandler := ""   ; WM_NOTIFY ハンドラー参照
@@ -85,6 +84,7 @@ class Navi {
     static _ILHandle := 0             ; TreeView 用 ImageList ハンドル
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
     static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
+    static _BreadcrumbHwnd := 0       ; パンくずコントロールのHwnd（カーソル変更用）
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -172,6 +172,8 @@ class Navi {
         this.GuiObj.SetFont("s9", "Yu Gothic UI")
         breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . this.BREADCRUMB_HEIGHT . " vBreadcrumb c" . this.BREADCRUMB_COLOR . " +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
         breadcrumb.OnEvent("Click", (*) => this._OnBreadcrumbClick())
+        this._BreadcrumbHwnd := breadcrumb.Hwnd
+        OnMessage(0x0020, Navi._OnSetCursor.Bind(Navi))  ; WM_SETCURSOR
         this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
         ; ツリーフィルター入力欄
@@ -774,15 +776,56 @@ class Navi {
         this._FdIndexFile := ""
         this._IndexedRoot := this._FdIndexRoot
         this._FdIndexRoot := ""
-        ; 保留クエリがあれば適用（_FilterPending より _FdIndexQuery を優先）
-        if (this._FdIndexQuerySet) {
-            query := this._FdIndexQuery
-            this._FdIndexQuery    := ""
-            this._FdIndexQuerySet := false
-            this._FilterPendingSet := false
-            this._FilterPending    := ""
-            SetTimer(() => this._ApplyTreeFilter(query), -1)
+        ; 保留コールバックがあれば実行（フィルタ再適用など）
+        if (this._OnIndexReadyCb != "") {
+            cb := this._OnIndexReadyCb
+            this._OnIndexReadyCb := ""
+            SetTimer(cb, -1)
         }
+    }
+
+    /**
+     * fd プロセスと関連状態をすべてリセットする
+     * ルート切り替え時や初期化時に呼ぶ
+     */
+    static _CancelFdIndex() {
+        if (this._FdIndexPid != 0) {
+            try ProcessClose(this._FdIndexPid)
+            try FileDelete(this._FdIndexFile)
+            this._FdIndexPid  := 0
+            this._FdIndexFile := ""
+            this._FdIndexRoot := ""
+        }
+        if (this._FdPollCb != "")
+            SetTimer(this._FdPollCb, 0)
+        this._FdPollCb      := ""
+        this._OnIndexReadyCb := ""
+    }
+
+    /**
+     * rootPath のフォルダインデックスを確保する
+     * - 既に準備済み → true を返す（インデックス利用可能）
+     * - fd 非同期構築中/開始 → onReady を完了後コールバックに登録して false を返す
+     * - fd が使えない場合 → 同期構築して true を返す
+     */
+    static _EnsureIndex(rootPath, onReady) {
+        if (this._IndexedRoot == rootPath)
+            return true
+        if (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath) {
+            ; 同じルートの fd 非同期構築が進行中: コールバックを保留
+            this._OnIndexReadyCb := onReady
+            return false
+        }
+        useFd := (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
+        fdPath := useFd ? NaviSearch._FindFd() : ""
+        if (fdPath != "" && this._StartFolderIndexFd(rootPath, fdPath)) {
+            ; fd 非同期開始: 完了時に _PollFdIndex がコールバックを実行する
+            this._OnIndexReadyCb := onReady
+            return false
+        }
+        ; フォールバック: 同期 loop files（fd が使えない場合）
+        this._BuildFolderIndex(rootPath)
+        return true
     }
 
     /**
@@ -790,16 +833,9 @@ class Navi {
      * fd が使えれば非同期で、なければ同期フォールバック
      */
     static _PrefetchFolderIndex(rootPath) {
-        if (this._IndexedRoot == rootPath)
-            return  ; キャッシュが既に最新
-        if (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath)
-            return  ; 同じルートの非同期構築が既に進行中
-        useFd := (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
-        fdPath := useFd ? NaviSearch._FindFd() : ""
-        if (fdPath != "")
-            this._StartFolderIndexFd(rootPath, fdPath)
-        else
-            this._BuildFolderIndex(rootPath)
+        if (this._IndexedRoot == rootPath || (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath))
+            return  ; 既に準備済みか構築中
+        this._EnsureIndex(rootPath, () => "")
     }
 
     /**
@@ -840,9 +876,8 @@ class Navi {
                 return
             if (Trim(query) == "") {
                 this._FilterMatchIdSet := Map()
-                ; フィルタクリア時は fd 完了後の再適用を防ぐため保留クエリをすべてリセット
-                this._FdIndexQuery    := ""
-                this._FdIndexQuerySet := false
+                ; フィルタクリア時は fd 完了後の再適用を防ぐため保留コールバックをリセット
+                this._OnIndexReadyCb := ""
                 this._RefreshTree(tv, rootPath, false)
                 return
             }
@@ -854,24 +889,13 @@ class Navi {
             }
             ; キャッシュが古ければ再構築
             if (this._IndexedRoot != rootPath) {
-                if (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath) {
-                    ; 同じルートの fd 非同期構築が進行中: クエリを保留して完了を待つ
-                    this._FdIndexQuery    := query
-                    this._FdIndexQuerySet := true
+                ; fd 完了後コールバック: フィルタを再スケジュール（_FilterPendingSet は return 前にリセット済み）
+                onReady := () => SetTimer(() => this._ApplyTreeFilter(query), -1)
+                if !this._EnsureIndex(rootPath, onReady) {
+                    ; fd 非同期待ち: 完了後に _OnIndexReadyCb が再実行する
                     this._FilterPendingSet := false
                     return
                 }
-                useFd := (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
-                fdPath := useFd ? NaviSearch._FindFd() : ""
-                if (fdPath != "" && this._StartFolderIndexFd(rootPath, fdPath)) {
-                    ; fd 非同期開始: 完了時に _PollFdIndex がクエリを実行する
-                    this._FdIndexQuery    := query
-                    this._FdIndexQuerySet := true
-                    this._FilterPendingSet := false
-                    return
-                }
-                ; フォールバック: 同期 loop files（fd が使えない場合）
-                this._BuildFolderIndex(rootPath)
             }
             ; キャッシュからメモリ内検索（スペース=AND、"|"=OR）
             ; 最後のタームはフォルダ名にマッチ、それ以前のタームはパス全体にマッチ
@@ -898,10 +922,11 @@ class Navi {
                 if matched
                     results.Push(fullPath)
             }
-            ; ツリー再構築
+            ; ツリー再構築（ノードIDが再利用されるため検索ハイライトの古いIDをリセット）
             tv.Delete()
             this.FilesShown := Map()
             this._FilterMatchIdSet := Map()
+            NaviSearch._HighlightedIdSet := Map()
             if (results.Length == 0) {
                 tv.Add("(一致なし)", 0)
                 return
@@ -930,11 +955,15 @@ class Navi {
                 for i, part in parts {
                     currentPath .= "\" . part
                     key := StrLower(currentPath)
+                    isMatch := (i == parts.Length)
                     if addedPaths.Has(key) {
-                        parentID := addedPaths[key]
+                        existingID := addedPaths[key]
+                        ; 既存ノードが今回の結果ではマッチノードになる場合は着色対象に追加
+                        if (isMatch && !this._FilterMatchIdSet.Has(existingID))
+                            this._FilterMatchIdSet[existingID] := true
+                        parentID := existingID
                     } else {
-                        isMatch := (i == parts.Length)
-                        opts := isMatch ? "Bold" : "Expand"
+                        opts := isMatch ? "Bold" : ""  ; "Expand" は子追加前に無効なため後処理で行う
                         if (isMatch && firstMatch) {
                             opts .= " Select"
                             firstMatch := false
@@ -949,6 +978,11 @@ class Navi {
                 ; 50件ごとに GUI イベントを処理してUIの応答性を保つ
                 if (Mod(idx, 50) = 0)
                     Sleep(0)
+            }
+            ; 子を持つノードを展開（Add 時点では子がないため "Expand" オプションが無効のため後処理）
+            for _, nodeID in addedPaths {
+                if (nodeID != rootID && tv.GetChild(nodeID) != 0)
+                    tv.Modify(nodeID, "Expand")
             }
             this._EnsureFilterDraw(tv)
             ; ファイル表示モードがONならフィルタ結果の各フォルダにもファイルを表示
@@ -1035,23 +1069,12 @@ class Navi {
         ; ルートが変わった場合: 進行中の fd 構築とフィルタ処理をキャンセルして状態をリセット
         if ((this._IndexedRoot != "" && this._IndexedRoot != rootPath)
             || (this._FdIndexPid != 0 && this._FdIndexRoot != rootPath)) {
-            if (this._FdIndexPid != 0 && this._FdIndexRoot != rootPath) {
-                try ProcessClose(this._FdIndexPid)
-                try FileDelete(this._FdIndexFile)
-                this._FdIndexPid  := 0
-                this._FdIndexFile := ""
-                this._FdIndexRoot := ""
-                if (this._FdPollCb != "")
-                    SetTimer(this._FdPollCb, 0)
-                this._FdPollCb := ""
-            }
+            this._CancelFdIndex()
             ; 実行中の _ApplyTreeFilter ループを次の Sleep(0) チェックで中止させる
             this._FilterCancelled  := true
             this._FilterRunning    := false
             this._FilterPendingSet := false
             this._FilterPending    := ""
-            this._FdIndexQuery     := ""
-            this._FdIndexQuerySet  := false
             this._IndexedRoot      := ""
             this._FolderIndex      := []
         }
@@ -1062,6 +1085,7 @@ class Navi {
         }
         rootID := tv.Add(rootPath, 0, "Expand Select Icon1")
         this._LoadSub(tv, rootPath, rootID)
+        this._ShowFilesIfEnabled(tv, rootID, rootPath)
         if (setFocus)
             tv.Focus()
         ; ツリー描画完了後 800ms でインデックスを先読み構築（フィルタ初回遅延を隠す）
@@ -1089,21 +1113,24 @@ class Navi {
         tv.Delete(child)
         this._LoadSub(tv, this._GetTVFullPath(tv, id), id)
         ; ファイル表示モードがONなら展開と同時にファイルも自動表示
-        if (this.GuiObj && this.GuiObj["AutoFilesCheck"].Value && !this.FilesShown.Has(id)) {
-            fullPath := this._GetTVFullPath(tv, id)
-            fileMax := 200
-            try fileMax := Integer(IniRead(this.IniPath, "Settings", "FileMax", "200"))
-            shown := []
-            count := 0
-            loop files, fullPath . "\*", "F" {
-                if InStr(A_LoopFileAttrib, "H")
-                    continue
-                shown.Push(tv.Add(A_LoopFileName, id, "Icon2"))
-                if (++count >= fileMax)
-                    break
-            }
-            this.FilesShown[id] := shown
+        this._ShowFilesIfEnabled(tv, id, this._GetTVFullPath(tv, id))
+    }
+
+    static _ShowFilesIfEnabled(tv, nodeID, fullPath) {
+        if !(this.GuiObj && this.GuiObj["AutoFilesCheck"].Value && !this.FilesShown.Has(nodeID))
+            return
+        fileMax := 200
+        try fileMax := Integer(IniRead(this.IniPath, "Settings", "FileMax", "200"))
+        shown := []
+        count := 0
+        loop files, fullPath . "\*", "F" {
+            if InStr(A_LoopFileAttrib, "H")
+                continue
+            shown.Push(tv.Add(A_LoopFileName, nodeID, "Icon2"))
+            if (++count >= fileMax)
+                break
         }
+        this.FilesShown[nodeID] := shown
     }
 
     static _GetTVFullPath(tv, id) {
@@ -1162,6 +1189,13 @@ class Navi {
         }
     }
 
+    static _OnSetCursor(wParam, lParam, msg, hwnd) {
+        if (wParam != Navi._BreadcrumbHwnd)
+            return
+        DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))
+        return true  ; デフォルト処理をスキップ
+    }
+
     static _OnBreadcrumbClick() {
         tv := this.GuiObj["FolderTree"]
         id := tv.GetSelection()
@@ -1188,7 +1222,14 @@ class Navi {
                 indent .= "    "
             bcMenu.Add(indent . part.name, ((pid, *) => this._JumpToTreeItem(pid)).Bind(partID))
         }
+        ; Esc ホットキーを一時無効化（メニューの Esc 閉じを AHK が横取りするため）
+        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
+        Hotkey("Esc", "Off")
+        HotIf()
         bcMenu.Show()
+        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
+        Hotkey("Esc", "On")
+        HotIf()
     }
 
     static _JumpToTreeItem(id) {
