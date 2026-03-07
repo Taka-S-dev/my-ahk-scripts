@@ -13,18 +13,19 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 ## デフォルト・キーマップ (Default Keymap)
 
 設定された修飾キー（デフォルト：無変換キー `vk1D`）を基軸（以降 **MOD_KEY** と表記）として使用します。
-| カテゴリ | ホットキー | 動作内容 |
-| :----------------- | :--------------------- | :------------------------------------------------------------ |
-| **フォルダ操作** | `MButton` (中クリック) | フォルダトグラー（表示/最小化）の実行 |
-| **IME 制御** | `vk1D` (無変換 単体空打ち) | **IME OFF**: 英数入力モードへ切り替え ※ModifierKeyHandler 使用時 |
-| | `vk1C` (変換 単押し) | **IME ON**: 日本語入力モードへ切り替え |
-| **ランチャー** | `MOD_KEY + f` | フォルダナビゲーター (Navi.ahk) 起動 |
-| **入力支援** | `MOD_KEY + s` | スニペット選択 (SnippetPicker.ahk) 起動 |
-| | `MOD_KEY + Ctrl + h` | Hotstring Manager (HotstringManager.ahk) 起動 |
-| | `Ctrl + ;` | **日付入力**: Excel 風の操作感で今日の日付を挿入 |
-| **編集・移動** | `MOD_KEY + h/j/k/l` | Vim 風カーソル移動 (左/下/上/右) |
-| | `MOD_KEY + r` | 選択範囲を括弧等で囲む (WrapPalette) ※囲みの文字は自由に登録可能|
-| **メモ・ストック** |`MOD_KEY + m` | テンポラリ・メモ (TempMemo.ahk) 起動 |
+
+| カテゴリ           | ホットキー                 | 動作内容                                                         |
+| :----------------- | :------------------------- | :--------------------------------------------------------------- |
+| **フォルダ操作**   | `MButton` (中クリック)     | フォルダトグラー（表示/最小化）の実行                            |
+| **IME 制御**       | `vk1D` (無変換 単体空打ち) | **IME OFF**: 英数入力モードへ切り替え ※ModifierKeyHandler 使用時 |
+|                    | `vk1C` (変換 単押し)       | **IME ON**: 日本語入力モードへ切り替え                           |
+| **ランチャー**     | `MOD_KEY + f`              | フォルダナビゲーター (Navi.ahk) 起動                             |
+| **入力支援**       | `MOD_KEY + s`              | スニペット選択 (SnippetPicker.ahk) 起動                          |
+|                    | `MOD_KEY + Ctrl + h`       | Hotstring Manager (HotstringManager.ahk) 起動                    |
+|                    | `Ctrl + ;`                 | **日付入力**: Excel 風の操作感で今日の日付を挿入                 |
+| **編集・移動**     | `MOD_KEY + h/j/k/l`        | Vim 風カーソル移動 (左/下/上/右)                                 |
+|                    | `MOD_KEY + r`              | 選択範囲を括弧等で囲む (WrapPalette) ※囲みの文字は自由に登録可能 |
+| **メモ・ストック** | `MOD_KEY + m`              | テンポラリ・メモ (TempMemo.ahk) 起動                             |
 
 ---
 
@@ -235,6 +236,50 @@ XButton1::FolderToggle.Execute()        ; マウスサイドボタンでフォ�
 
 ---
 
+## オプション機能
+
+### AI テキスト処理 (SnapAI.ahk)
+
+選択テキストや手入力のテキストを LLM API に送信し、翻訳・要約・説明などを行うオプションツールです。
+
+> **注意**: このツールは選択テキストを外部 API に送信します。個人情報・社外秘データなど、外部に送信したくない内容を含む場合はご注意ください。デフォルトでは `Main.ahk` に含まれていません。有効化は手動で行ってください。
+
+#### 有効化の手順
+
+1. `Main.ahk` に以下を追記します:
+
+   ```autohotkey
+   ;  AI テキスト処理 (SnapAI)
+   #Include "ui\SnapAI.ahk"
+   SnapAI.Init()
+   t:: SnapAI.Show()           ; 好みのホットキーに変更可
+   ```
+
+2. スクリプト起動後、トレイメニューまたはホットキーから **設定** を開き、API キーとエンドポイントを設定します。
+
+#### 主な機能
+
+- テキストを選択してホットキーを押すと、登録済みプロンプト一覧が表示されます
+- テキスト未選択時は手入力モードが起動し、テキストとプロンプトを自由に入力できます
+- 保存プロンプトを INI ファイルで管理・追加可能
+- 処理中はプログレス GUI を表示し、キャンセルボタンで中断可能（30 秒でタイムアウト）
+- 結果をクリップボードに自動コピーするオプションあり
+
+#### 対応 API
+
+OpenAI 互換のエンドポイントであれば利用可能です。
+
+| サービス          | エンドポイント例                                  |
+| :---------------- | :------------------------------------------------ |
+| OpenAI            | `https://api.openai.com/v1/chat/completions`      |
+| Groq              | `https://api.groq.com/openai/v1/chat/completions` |
+| OpenRouter        | `https://openrouter.ai/api/v1/chat/completions`   |
+| Ollama (ローカル) | `http://localhost:11434/v1/chat/completions`      |
+
+> Ollama などのローカルエンドポイント（`localhost`）の場合、API キーの入力は不要です。
+
+---
+
 ## フォルダ構成
 
 ```text
@@ -255,7 +300,8 @@ XButton1::FolderToggle.Execute()        ; マウスサイドボタンでフォ�
 │   ├── TempMemo.ahk
 │   ├── SnippetPicker.ahk
 │   ├── HotstringManager.ahk
-│   └── WrapPalette.ahk
+│   ├── WrapPalette.ahk
+│   └── SnapAI.ahk          # ※オプション（デフォルト無効）
 └── tests/              # 動作確認・テスト用スクリプト
 ```
 
