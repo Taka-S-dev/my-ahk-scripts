@@ -78,6 +78,7 @@ class NaviSearch {
     static _FdPid      := 0     ; 実行中の fd プロセス ID
     static _FdTmpFile  := ""    ; fd 出力を受け取る一時ファイルパス
     static _FdLinesRead := 0    ; fd 出力で処理済みの行数
+    static _FdTickCb   := ""    ; fd ポーリングタイマーのコールバック参照（停止に使う）
     static FD_POLL_MS  := 50    ; fd ポーリング間隔（ミリ秒）
     static _SortCol        := 1     ; 最後にソートした列（1=名前, 2=パス）
     static _SortDesc       := false ; 降順フラグ
@@ -388,7 +389,9 @@ class NaviSearch {
             "skippedDirs",    0,
             "isFd",           true
         )
-        SetTimer(NaviSearch._FdTick.Bind(NaviSearch), this.FD_POLL_MS)
+        cb := NaviSearch._FdTick.Bind(NaviSearch)
+        this._FdTickCb := cb
+        SetTimer(cb, this.FD_POLL_MS)
     }
 
     ; fd ポーリングタイマー（プロセス終了を監視して一時ファイルを読み込む）
@@ -892,7 +895,9 @@ class NaviSearch {
     }
 
     static _Finish(showResults) {
-        SetTimer(, 0)
+        if (this._FdTickCb != "")
+            SetTimer(this._FdTickCb, 0)
+        this._FdTickCb := ""
         this._KillFd()
         this._HideProgress()
         this.SearchActive := false
@@ -1143,7 +1148,7 @@ class NaviSearch {
                 childID := tv.GetNext(childID)
             }
             if (!found)
-                break
+                return 0  ; パスが途中までしか一致しない場合は 0 を返す
         }
         return currentID
     }
@@ -1389,10 +1394,10 @@ class NaviSearch {
         g.OnEvent("Escape", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Size", _OnSize)
         g.OnEvent("Close", (*) => NaviSearch.ClearHighlights(navi))
-        ; 位置決め（Naviウィンドウの下部外側、左揃え）
+        ; 位置決め（Naviウィンドウの右側外側、上揃え）
         WinGetPos(&px, &py, &pw, &ph, "ahk_id " navi.GuiObj.Hwnd)
-        x := px
-        y := py + ph + this.UI_MARGIN
+        x := px + pw + this.UI_MARGIN
+        y := py
         g.Show("x" . x . " y" . y . " h" . fullH)
         ; 親は無効化しない（ツリー操作を阻害しない）
         this.LastNavi := navi
@@ -1520,6 +1525,9 @@ class NaviSearch {
             ; NMCUSTOMDRAW.dwItemSpec (HTREEITEM)  offset (64bit:56 / 32bit:36)
             specOff := (A_PtrSize = 8) ? 56 : 36
             itemId  := NumGet(lParam, specOff, "ptr")
+            ; フィルタマッチノードは Navi の filter ハンドラーに委譲（優先度: filter > search）
+            if (Navi._FilterMatchIdSet.Has(itemId))
+                return
             if (NaviSearch._HighlightedIdSet.Has(itemId)) {
                 ; NMTVCUSTOMDRAW.clrText  offset (64bit:80 / 32bit:48)
                 clrOff := (A_PtrSize = 8) ? 80 : 48
