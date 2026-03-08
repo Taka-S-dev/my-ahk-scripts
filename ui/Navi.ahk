@@ -18,6 +18,7 @@
 ; ==============================================================================
 #Requires AutoHotkey v2.0
 #Include *i Navi.Search.ahk
+#Include *i Navi.ContextMenu.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -122,7 +123,14 @@ class Navi {
         }
 
         if (this.GuiObj && WinExist(this.GuiObj)) {
-            this.GuiObj.Destroy()
+            if WinActive(this.GuiObj) {
+                this.GuiObj.Minimize()
+            } else {
+                this.GuiObj.Show()
+                WinActivate(this.GuiObj)
+                this.GuiObj["FolderTree"].Focus()
+            }
+            return
         }
         this.GuiObj := ""
 
@@ -218,6 +226,7 @@ class Navi {
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
         Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
+        Hotkey("RButton", (*) => this._HandleRButton(), "On")
         HotIf()
 
         ; パンくず更新用タイマー開始
@@ -327,12 +336,12 @@ class Navi {
                 ; actGui破棄後の黒塗り描画崩れを常に回復
                 WinRedraw(this.GuiObj)
                 k := StrLower(key)
-                if (k != "f" && !this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
+                if (k != "f" && k != "r" && !this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
                     this._DestroyGui()
                 }
             }
             this._ExecuteAction(key, fullPath)
-            if (key != "k" && StrLower(key) != "f") {
+            if (key != "k" && StrLower(key) != "f" && StrLower(key) != "r") {
                 ToolTip("実行 [" . key . "]: " . fullPath)
                 SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
             }
@@ -1943,6 +1952,20 @@ class Navi {
         this.RegisterAction("o", "&O: Open Temp Copy", (path) => this._OpenTempCopy(path))
         ; ローカル再帰検索
         this.RegisterAction("f", "&F: Search (Local)", (path) => NaviSearch.RunLocal(this, path))
+        ; Shell 右クリックメニュー
+        this.RegisterAction("r", "&R: Right-Click Menu", (path) => NaviContextMenu.Show(path))
+    }
+
+    ; 右クリック: TreeView 上のアイテムを選択して Shell コンテキストメニューを表示
+    static _HandleRButton() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        tv := this.GuiObj["FolderTree"]
+        ; 右クリック後に選択が確定するよう 1 tick 待つ
+        SetTimer(() => (
+            id := tv.GetSelection(),
+            id ? NaviContextMenu.Show(Navi._GetTVFullPath(tv, id)) : 0
+        ), -1)
     }
 
     static _LoadUserActions() {

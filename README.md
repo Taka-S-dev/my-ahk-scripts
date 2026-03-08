@@ -67,6 +67,7 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
 ### フォルダナビゲーター (Navi.ahk)
 
 - フォルダツリーを GUI で表示し、キーボードだけで素早く目的のフォルダへ移動
+- **トグル起動**: 起動中に同じホットキー（`MOD_KEY + f`）を押すと最小化、再度押すと復元して TreeView にフォーカスを戻す
 - **フォルダフィルター**: キーワードを入力するだけでツリーをリアルタイム絞り込み
   - **最後のキーワード**はフォルダ名にマッチ、**それ以前のキーワード**はパス全体にマッチ
   - 例: `src` → 「src」という名のフォルダ / `myapp src` → myapp 配下にある src フォルダ
@@ -82,6 +83,10 @@ My-Ahk-Scripts は、AutoHotkey v2 を用いた
   - `C`: コマンドプロンプトを当該ディレクトリで起動
   - `K`: パスをクリップボードにコピー
   - `F`: 選択フォルダ内をキーワード検索（結果をリスト表示）
+  - `R`: Explorer と同等の右クリックメニューを表示（右クリックでも起動）
+    - 「送る」サブメニューに対応（.lnk / .vbs / .bat / .cmd ターゲットを実行可能）
+    - 削除・切り取り・名前の変更はデフォルトで非表示（誤操作防止）
+    - 有効化する場合は `Navi.ContextMenu.ahk` の `HIDE_DANGEROUS_CTX_ITEMS` を `false` に変更
   - ※ファイル選択時に E/T を実行すると親フォルダを開く
 - **ショートカット**:
   - `Ctrl+F`: フォルダフィルターにフォーカス
@@ -297,6 +302,8 @@ OpenAI 互換のエンドポイントであれば利用可能です。
 │   └── TempCopy.ahk            # 一時コピーユーティリティ
 ├── ui/                 # GUI 関連クラス
 │   ├── Navi.ahk
+│   ├── Navi.Search.ahk         # Navi 用ローカル検索モジュール
+│   ├── Navi.ContextMenu.ahk    # Navi 用右クリックメニュー（IContextMenu COM）
 │   ├── TempMemo.ahk
 │   ├── SnippetPicker.ahk
 │   ├── HotstringManager.ahk
