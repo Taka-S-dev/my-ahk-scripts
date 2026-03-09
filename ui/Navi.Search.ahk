@@ -26,6 +26,7 @@ class NaviSearch {
     static JumpGui := ""
     static JumpLabel := ""
     static LastNavi := ""
+    static LastSearchBasePath := ""  ; 再検索用に最後の検索ルートを保持
     static _ParentWatchFn := ""
     static Results := []           ; 検索結果のフルパス一覧
     static JumpListView := ""      ; 一体型ウィンドウのListViewへの参照
@@ -100,6 +101,7 @@ class NaviSearch {
         }
         ; 設定を読み込み（除外リスト、タイムアウト等）
         this._LoadSettings()
+        this.LastSearchBasePath := basePath
         ; モーダル・最前面の検索入力ダイアログ
         result := this._PromptQuery(navi, basePath)
         if (result = "")
@@ -1183,6 +1185,7 @@ class NaviSearch {
         HotIfWinActive("ahk_id " hwnd)
         Hotkey("F3", ((*) => NaviSearch.Jump(navi, +1)), "On")
         Hotkey("+F3", ((*) => NaviSearch.Jump(navi, -1)), "On")
+        Hotkey("F6", ((*) => NaviSearch._FocusJumpGui()), "On")
         HotIf()
     }
 
@@ -1262,13 +1265,13 @@ class NaviSearch {
         this.JumpLabel := ""
         g := Gui("+Owner" . navi.GuiObj.Hwnd . " +Resize +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "検索ヒット")
         g.SetFont("s9", "Segoe UI")
-        ; ボタン行
-        prev    := g.Add("Button", "xm w" . this.BTN_W_SMALL, "前へ")
-        next    := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "次へ")
-        clr     := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "解除")
-        listBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "リスト△")
+        ; ボタン行（再検索のみ Tabstop ON、他は -Tabstop でスキップ）
+        prev      := g.Add("Button", "xm w" . this.BTN_W_SMALL . " -Tabstop", "前へ")
+        next      := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "次へ")
+        listBtn   := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "リスト△")
+        reSearchBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "再検索")
         this.JumpLabel := g.Add("Text", "x+" . this.GAP_X_LARGE . " w" . this.LABEL_W_HITS, "")
-        closeBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "閉じる")
+        closeBtn  := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "閉じる")
         ; ショートカットヒント
         g.SetFont("s7", "Segoe UI")
         g.Add("Text", "xm c808080", "Shift+F3 / F3")
@@ -1388,8 +1391,8 @@ class NaviSearch {
         ; イベント登録
         prev.OnEvent("Click", (*) => NaviSearch.Jump(navi, -1))
         next.OnEvent("Click", (*) => NaviSearch.Jump(navi, +1))
-        clr.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
         listBtn.OnEvent("Click", _ToggleList)
+        reSearchBtn.OnEvent("Click", (*) => NaviSearch.RunLocal(navi, NaviSearch.LastSearchBasePath))
         closeBtn.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Escape", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Size", _OnSize)
@@ -1409,6 +1412,25 @@ class NaviSearch {
         this._UpdateJumpLabel()
         ; ホットキー登録
         this._SetupJumpGuiHotkeys(navi, g)
+        ; Enter で選択行をジャンプ（再検索ボタンにフォーカスがある場合は再検索を優先）
+        _OnEnter(*) {
+            focused := ControlGetFocus("ahk_id " g.Hwnd)
+            if (focused == reSearchBtn.Hwnd)
+                NaviSearch.RunLocal(navi, NaviSearch.LastSearchBasePath)
+            else if (focused == prev.Hwnd)
+                NaviSearch.Jump(navi, -1)
+            else if (focused == next.Hwnd)
+                NaviSearch.Jump(navi, +1)
+            else if (focused == listBtn.Hwnd)
+                _ToggleList()
+            else if (focused == closeBtn.Hwnd)
+                NaviSearch.ClearHighlights(navi)
+            else if (r := lv.GetNext(0))
+                _JumpTo(lv, r)
+        }
+        HotIfWinActive("ahk_id " g.Hwnd)
+        Hotkey("Enter", _OnEnter, "On")
+        HotIf()
     }
 
     ; 検索ヒットウィンドウ用のホットキーを設定
@@ -1417,6 +1439,7 @@ class NaviSearch {
             HotIfWinActive("ahk_id " jumpGui.Hwnd)
             Hotkey("F3", ((*) => NaviSearch.Jump(navi, +1)), "On")
             Hotkey("+F3", ((*) => NaviSearch.Jump(navi, -1)), "On")
+            Hotkey("F6", ((*) => NaviSearch._FocusNaviTree(navi)), "On")
             HotIf()
         }
     }
@@ -1429,6 +1452,8 @@ class NaviSearch {
                 HotIfWinActive("ahk_id " jg.Hwnd)
                 Hotkey("F3", "Off")
                 Hotkey("+F3", "Off")
+                Hotkey("Enter", "Off")
+                Hotkey("F6", "Off")
                 HotIf()
             }
         }
@@ -1446,6 +1471,23 @@ class NaviSearch {
             idx   := IsObject(lv) ? lv.GetNext(0) : 0
             this.JumpLabel.Text := (total ? idx : 0) . " / " . total . " 件"
         }
+    }
+
+    static _FocusJumpGui() {
+        jg := this.JumpGui
+        if !(Type(jg) = "Gui" && jg.Hwnd && WinExist("ahk_id " jg.Hwnd))
+            return
+        WinActivate("ahk_id " jg.Hwnd)
+        lv := this.JumpListView
+        if IsObject(lv)
+            lv.Focus()
+    }
+
+    static _FocusNaviTree(navi) {
+        if !(navi.GuiObj && WinExist(navi.GuiObj))
+            return
+        WinActivate("ahk_id " navi.GuiObj.Hwnd)
+        navi.GuiObj["FolderTree"].Focus()
     }
 
     static _DestroyJumpGui() {
