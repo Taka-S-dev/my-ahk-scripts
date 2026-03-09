@@ -82,7 +82,9 @@ class Navi {
     static _FilterTvHwnd     := 0     ; フィルタカスタムドロー対象 TreeView の Hwnd
     static _FilterDrawHandler := ""   ; WM_NOTIFY ハンドラー参照
     static FILTER_MATCH_COLOR := 0x00CC5500  ; フィルタマッチ着色色 BGR: RGB(0,85,204)=青
-    static _ILHandle := 0             ; TreeView 用 ImageList ハンドル
+    static _ILHandle    := 0           ; TreeView 用 ImageList ハンドル
+    static _IconCache   := Map()       ; 拡張子→ImageList インデックスキャッシュ
+    static _ILNextIdx   := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
     static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
     static _BreadcrumbHwnd := 0       ; パンくずコントロールのHwnd（カーソル変更用）
@@ -163,8 +165,9 @@ class Navi {
         rootBtnText := (this.lastRoot != "") ? this.lastRoot : "ルートを選択..."
         rootBtn := this.GuiObj.Add("Button", "xm w260 h26 vRootBtn", rootBtnText)
         this.GuiObj._rootBtnHwnd := rootBtn.Hwnd  ; Enter判定用にhwndを保存
-        btnEdit := this.GuiObj.Add("Button", "x+5 yp w45 h26 -Tabstop", "編集")
+        btnEdit     := this.GuiObj.Add("Button", "x+5 yp w45 h26 -Tabstop", "編集")
         this.GuiObj._btnEditHwnd := btnEdit.Hwnd
+        btnSettings := this.GuiObj.Add("Button", "x+3 yp w26 h26 -Tabstop", "⚙")
         pinCheck := this.GuiObj.Add("Checkbox", "x+8 yp+4 vPinCheck -Tabstop", "ピン留め")
         this.GuiObj._pinCheckHwnd := pinCheck.Hwnd
         autoFilesCheck := this.GuiObj.Add("Checkbox", "x+5 yp vAutoFilesCheck -Tabstop", "ファイル表示")
@@ -211,6 +214,7 @@ class Navi {
 
         rootBtn.OnEvent("Click", (*) => this._OpenDropdown())
         btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
+        btnSettings.OnEvent("Click", (*) => this._ShowSettingsGui(this.GuiObj))
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this.Execute("e"))
         this.GuiObj.OnEvent("Close", (*) => (this.GuiObj := ""))
@@ -337,7 +341,10 @@ class Navi {
                 WinRedraw(this.GuiObj)
                 k := StrLower(key)
                 if (k != "f" && k != "r" && !this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
-                    this._DestroyGui()
+                    if (IniRead(this.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1")
+                        this.GuiObj.Minimize()
+                    else
+                        this._DestroyGui()
                 }
             }
             this._ExecuteAction(key, fullPath)
@@ -452,7 +459,7 @@ class Navi {
     static _ShowEditGui(parentGui) {
         parentGui.GetPos(&px, &py, &pw, &ph)
         parentGui.Opt("+Disabled")
-        editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルートディレクトリ管理")
+        editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MinimizeBox +Resize", "ルートディレクトリ管理")
         editGui.SetFont("s10", "Yu Gothic UI")
         lv := editGui.Add("ListView", "r15 w550 Grid Multi vFolderList", ["名称", "パス", "表示"])
         lv.ModifyCol(1, 120), lv.ModifyCol(2, 350), lv.ModifyCol(3, 50)
@@ -463,23 +470,75 @@ class Navi {
         btnSave := editGui.Add("Button", "x+220 w110 Default", "保存/再起動")
         btnAdd.OnEvent("Click", (*) => this._ShowEntryGui(editGui, lv)), btnMod.OnEvent("Click", (*) => this._ShowEntryGui(
             editGui, lv, lv.GetNext())), btnDel.OnEvent("Click", (*) => this._DeleteItem(lv, editGui))
-        btnUp.OnEvent("Click", (*) => this._MoveItem(lv, -1)), btnDown.OnEvent("Click", (*) => this._MoveItem(lv, 1)),
-            btnSave.OnEvent("Click", (*) => this._SaveList(lv))
-        lv.OnEvent("DoubleClick", (obj, info) => (info ? this._ShowEntryGui(editGui, lv, info) : 0))
-
-        ; フォルダフィルターオプション
-        editGui.Add("Text", "xm y+12 w550 0x10")  ; 区切り線（SS_ETCHEDHORZ）
-        editGui.Add("Text", "xm y+8", "フォルダフィルター")
-        fdFilterCb := editGui.Add("CheckBox", "xm", "フォルダフィルターを高速化する（fd.exe が必要）")
-        fdFilterCb.Value := (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") != "0") ? 1 : 0
-        fdFilterCb.OnEvent("Click", (*) => IniWrite(fdFilterCb.Value, this.IniPath, "Search", "UseFdForFilter"))
+        btnUp.OnEvent("Click", (*) => this._MoveItem(lv, -1)), btnDown.OnEvent("Click", (*) => this._MoveItem(lv, 1))
+        btnSave.OnEvent("Click", (*) => this._SaveList(lv))
+        lv.OnEvent("Click", (_, row) => (row > 0) ? this._ToggleVisibleOnClick(lv, row) : 0)
+        lv.OnEvent("DoubleClick", (_, info) => (info && !this._IsVisibleColClick(lv)) ? this._ShowEntryGui(editGui, lv, info) : 0)
 
         editGui.OnEvent("Close", (*) => this._CleanupEditGui(parentGui, editGui))
         HotIfWinActive("ahk_id " editGui.Hwnd)
         Hotkey("Esc", (*) => this._CleanupEditGui(parentGui, editGui), "On")
         HotIf()
-        editGui.Show("Hide"), editGui.GetPos(, , &ew, &eh)
-        editGui.Show("x" . px + (pw - ew) // 2 . " y" . py + (ph - eh) // 2)
+        editGui.Show("Hide")
+        editGui.GetPos(, , &initW, &initH)
+        lv.GetPos(, , &initLvW, &initLvH)
+        btnSave.GetPos(&initBtnSaveX, &initBtnSaveY)
+
+        ; パス列をLV幅いっぱいに伸ばす（内側クライアント幅から固定列を除いた残り）
+        rc := Buffer(16, 0)
+        DllCall("user32\GetClientRect", "ptr", lv.Hwnd, "ptr", rc)
+        lvClientW    := NumGet(rc, 8, "int")
+        initPathColW := lvClientW - 120 - 50
+        lv.ModifyCol(2, initPathColW)
+
+        ; 垂直移動が必要なコントロールの初期 Y を収集
+        vertCtrls := [btnAdd, btnMod, btnDel, btnUp, btnDown]
+        vertY := []
+        for ctrl in vertCtrls {
+            ctrl.GetPos(, &cy)
+            vertY.Push(cy)
+        }
+
+        editGui.OnEvent("Size", _OnEditSize)
+        _OnEditSize(_, minMax, w, h) {
+            if (minMax == -1)
+                return
+            dw := w - initW, dh := h - initH
+            lv.Move(, , initLvW + dw, initLvH + dh)
+            lv.ModifyCol(2, initPathColW + dw)
+            btnSave.Move(initBtnSaveX + dw, initBtnSaveY + dh)
+            for i, ctrl in vertCtrls
+                ctrl.Move(, vertY[i] + dh)
+        }
+
+        editGui.Show("x" . px + (pw - initW) // 2 . " y" . py + (ph - initH) // 2)
+    }
+
+    static _ShowSettingsGui(parentGui) {
+        parentGui.GetPos(&px, &py, &pw, &ph)
+        parentGui.Opt("+Disabled")
+        settGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "Navi 設定")
+        settGui.SetFont("s10", "Yu Gothic UI")
+
+        settGui.Add("Text", "xm", "動作")
+        autoMinCb := settGui.Add("CheckBox", "xm y+6", "アクション実行後に自動最小化する（ピン留めON時は無効）")
+        autoMinCb.Value := (IniRead(this.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1") ? 1 : 0
+        autoMinCb.OnEvent("Click", (*) => IniWrite(autoMinCb.Value, this.IniPath, "Settings", "AutoMinimizeOnAction"))
+
+        settGui.Add("Text", "xm y+12 w380 0x10")  ; 区切り線
+        settGui.Add("Text", "xm y+8", "フォルダフィルター")
+        fdFilterCb := settGui.Add("CheckBox", "xm y+6", "フォルダフィルターを高速化する（fd.exe が必要）")
+        fdFilterCb.Value := (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") != "0") ? 1 : 0
+        fdFilterCb.OnEvent("Click", (*) => IniWrite(fdFilterCb.Value, this.IniPath, "Search", "UseFdForFilter"))
+
+        _close := (*) => (settGui.Destroy(), parentGui.Opt("-Disabled +AlwaysOnTop"), parentGui.Show())
+        settGui.OnEvent("Close", _close)
+        HotIfWinActive("ahk_id " settGui.Hwnd)
+        Hotkey("Esc", _close, "On")
+        HotIf()
+        settGui.Show("Hide")
+        settGui.GetPos(, , &sw, &sh)
+        settGui.Show("x" . px + (pw - sw) // 2 . " y" . py + (ph - sh) // 2)
     }
 
     static _ShowEntryGui(editGui, lv, row := 0) {
@@ -557,7 +616,28 @@ class Navi {
         }
         n1 := lv.GetText(row, 1), p1 := lv.GetText(row, 2), v1 := lv.GetText(row, 3)
         n2 := lv.GetText(target, 1), p2 := lv.GetText(target, 2), v2 := lv.GetText(target, 3)
-        lv.Modify(row, , n2, p2, v2), lv.Modify(target, , n1, p1, v1), lv.Modify(target, "Select Focus")
+        lv.Modify(row, , n2, p2, v2), lv.Modify(target, , n1, p1, v1)
+        lv.Modify(row, "-Select"), lv.Modify(target, "Select Focus")
+    }
+
+    static _GetClickSubItem(lv) {
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "ptr", pt)
+        DllCall("user32\ScreenToClient", "ptr", lv.Hwnd, "ptr", pt)
+        hti := Buffer(24, 0)
+        NumPut("int", NumGet(pt, 0, "int"), hti, 0)
+        NumPut("int", NumGet(pt, 4, "int"), hti, 4)
+        SendMessage(0x1039, 0, hti, lv)  ; LVM_SUBITEMHITTEST
+        return NumGet(hti, 16, "int")    ; iSubItem（0始まり）
+    }
+
+    static _ToggleVisibleOnClick(lv, row) {
+        if (this._GetClickSubItem(lv) == 2)  ; 表示列（0始まり）
+            lv.Modify(row, , , , (lv.GetText(row, 3) == "○") ? "×" : "○")
+    }
+
+    static _IsVisibleColClick(lv) {
+        return this._GetClickSubItem(lv) == 2
     }
 
     static _ProcessEntry(editGui, entryGui, lv, row) {
@@ -615,27 +695,28 @@ class Navi {
     }
 
     static _LoadFolders(folderMap, folderNames) {
+        raw := ""
         try {
-            content := FileRead(this.IniPath, "UTF-8")
-            sect := ""
-            for line in StrSplit(content, "`n", "`r") {
-                line := Trim(line)
-                if (line == "" || SubStr(line, 1, 1) == ";") {
-                    continue
-                }
-                if (RegExMatch(line, "\[(.*)\]", &match)) {
-                    sect := match[1]
-                    continue
-                }
-                if (sect == "Folders" && InStr(line, "=")) {
-                    p := StrSplit(line, "=", , 2), vParts := StrSplit(Trim(p[2]), "|")
-                    name := Trim(p[1]), path := vParts[1], isVisible := (vParts.Length > 1) ? vParts[2] : "1"
-                    folderMap[name] := path
-                    if (isVisible == "1") {
-                        folderNames.Push(name)
-                    }
-                }
-            }
+            raw := IniRead(this.IniPath, "Folders")
+        } catch {
+            ; Folders セクションが未作成の場合はデフォルトにフォールバック
+        }
+        for line in StrSplit(raw, "`n", "`r") {
+            line := Trim(line)
+            if (line == "" || !InStr(line, "="))
+                continue
+            p := StrSplit(line, "=", , 2)
+            if (p.Length < 2)
+                continue
+            name := Trim(p[1])
+            if (name == "")
+                continue
+            vParts := StrSplit(Trim(p[2]), "|")
+            path := vParts[1]
+            isVisible := (vParts.Length > 1) ? Trim(vParts[2]) : "1"
+            folderMap[name] := path
+            if (isVisible == "1")
+                folderNames.Push(name)
         }
         if (folderNames.Length == 0 && folderMap.Count == 0) {
             folderNames.Push("Desktop"), folderMap["Desktop"] := A_Desktop
@@ -687,8 +768,11 @@ class Navi {
         sii_size     := (A_PtrSize = 8) ? 544 : 536
         hIcon_offset := A_PtrSize  ; 64bit=8(cbSize+padding), 32bit=4(cbSize)
 
-        ; Icon1=フォルダ, Icon2=ファイル, Icon3=ハイライトフォルダ, Icon4=ハイライトファイル
-        hIL := IL_Create(4)
+        ; Icon1=フォルダ, Icon2=汎用ファイル, Icon3=ハイライトフォルダ, Icon4=ハイライトファイル
+        ; Icon5以降: 拡張子別アイコンを動的追加（初期32スロット、不足時32ずつ拡張）
+        hIL := IL_Create(32, 32)
+        this._IconCache := Map()
+        this._ILNextIdx := 5
 
         _AddIcon(siid) {
             sii := Buffer(sii_size, 0)
@@ -707,6 +791,39 @@ class Navi {
 
         tv.SetImageList(hIL)
         this._ILHandle := hIL
+    }
+
+    /**
+     * ファイル名から TreeView 用アイコン文字列を返す（例: "Icon5"）
+     * SHGetFileInfoW + SHGFI_USEFILEATTRIBUTES で拡張子からシェルアイコンを取得し、
+     * ImageList に追加してキャッシュする。ディスクアクセスなし。
+     */
+    static _GetFileIconStr(fileName) {
+        dotPos := InStr(fileName, ".", , -1)
+        ext := dotPos ? StrLower(SubStr(fileName, dotPos)) : ""
+        if (ext == "" || ext == ".")
+            return "Icon2"
+        if this._IconCache.Has(ext)
+            return "Icon" . this._IconCache[ext]
+
+        sfi_size := A_PtrSize + 4 + 4 + 520 + 160  ; hIcon + iIcon + dwAttributes + szDisplayName + szTypeName
+        sfi := Buffer(sfi_size, 0)
+        DllCall("shell32\SHGetFileInfoW",
+            "wstr", "file" . ext,
+            "uint", 0x80,           ; FILE_ATTRIBUTE_NORMAL
+            "ptr",  sfi,
+            "uint", sfi_size,
+            "uint", 0x111)          ; SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES
+        hIcon := NumGet(sfi, 0, "ptr")
+        if (hIcon == 0) {
+            this._IconCache[ext] := 2
+            return "Icon2"
+        }
+        DllCall("comctl32\ImageList_AddIcon", "ptr", this._ILHandle, "ptr", hIcon)
+        DllCall("user32\DestroyIcon", "ptr", hIcon)
+        idx := this._ILNextIdx++
+        this._IconCache[ext] := idx
+        return "Icon" . idx
     }
 
     /**
@@ -1011,7 +1128,7 @@ class Navi {
                         loop files, folderKey . "\*", "F" {
                             if InStr(A_LoopFileAttrib, "H")
                                 continue
-                            shown.Push(tv.Add(A_LoopFileName, nodeID, "Icon2"))
+                            shown.Push(tv.Add(A_LoopFileName, nodeID, this._GetFileIconStr(A_LoopFileName)))
                             if (++count >= fileMax)
                                 break
                         }
@@ -1135,7 +1252,7 @@ class Navi {
         loop files, fullPath . "\*", "F" {
             if InStr(A_LoopFileAttrib, "H")
                 continue
-            shown.Push(tv.Add(A_LoopFileName, nodeID, "Icon2"))
+            shown.Push(tv.Add(A_LoopFileName, nodeID, this._GetFileIconStr(A_LoopFileName)))
             if (++count >= fileMax)
                 break
         }

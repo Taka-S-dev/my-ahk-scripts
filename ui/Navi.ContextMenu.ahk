@@ -193,6 +193,14 @@ class NaviContextMenu {
         DllCall("ole32\CoTaskMemFree", "ptr", pidlFull)
         DllCall(NumGet(vtFolder, 2 * A_PtrSize, "ptr"), "ptr", pFolder)
         DllCall("ole32\OleUninitialize")
+
+        ; ピン留めOFF時: 自動最小化ON→最小化、OFF→閉じる（通常アクションと同じ挙動）
+        if (cmd > 0 && !Navi.GuiObj["PinCheck"].Value) {
+            if (IniRead(Navi.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1")
+                Navi.GuiObj.Minimize()
+            else
+                Navi._DestroyGui()
+        }
     }
 
     ; -----------------------------------------------------------------------
