@@ -61,10 +61,10 @@ class NaviContextMenu {
     ; -----------------------------------------------------------------------
     ; Windows Shell IContextMenu を呼び出して Explorer と同じ右クリックメニューを表示
     ; -----------------------------------------------------------------------
-    static Show(fullPath) {
-        if !(Navi.GuiObj && WinExist(Navi.GuiObj))
+    static Show(fullPath, navi) {
+        if !(navi.GuiObj && WinExist(navi.GuiObj))
             return
-        hwnd := Navi.GuiObj.Hwnd
+        hwnd := navi.GuiObj.Hwnd
 
         ; Shell インターフェース GUID の初期化
         IID_IShellFolder := Buffer(16)
@@ -136,7 +136,7 @@ class NaviContextMenu {
         HotIf()
 
         ; 選択アイテムの右端をメニュー表示位置に使う
-        tv := Navi.GuiObj["FolderTree"]
+        tv := navi.GuiObj["FolderTree"]
         selId := tv.GetSelection()
         rect := Buffer(16, 0)
         NumPut("uptr", selId, rect, 0)
@@ -195,11 +195,11 @@ class NaviContextMenu {
         DllCall("ole32\OleUninitialize")
 
         ; ピン留めOFF時: 自動最小化ON→最小化、OFF→閉じる（通常アクションと同じ挙動）
-        if (cmd > 0 && !Navi.GuiObj["PinCheck"].Value) {
-            if (IniRead(Navi.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1")
-                Navi.GuiObj.Minimize()
+        if (cmd > 0 && !navi.GuiObj["PinCheck"].Value) {
+            if (IniRead(navi.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1")
+                navi.GuiObj.Minimize()
             else
-                Navi._DestroyGui()
+                navi._DestroyGui()
         }
     }
 

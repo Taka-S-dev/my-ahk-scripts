@@ -3,8 +3,7 @@
 ; Description:  汎用フォルダランチャー & アクティブパス実行ツール
 ;               - フォルダパスのTreeView表示とクイックアクセス
 ;               - 表示・非表示の個別/一括切り替え機能
-;
-; - リストの順序入れ替え（上下移動）
+;               - リストの順序入れ替え（上下移動）
 ;               - 外部ファイラー（Tablacus等）やVSCodeへのパス渡し
 ; Version:      1.0.0
 ; License:      MIT
@@ -24,7 +23,7 @@
 class Navi {
     ; --- クラス定数 ---
     static GUI_WIDTH := 450
-    static GUI_HEIGHT_APPROX := 540
+    static GUI_HEIGHT_APPROX := 565
     static WINDOW_FRAME_WIDTH := 14  ; ウィンドウフレーム補正値（Win10/11標準テーマ）
     static IniPath := A_ScriptDir "\ui\Navi.ini"
     static ExplorerPath := ""
@@ -65,7 +64,10 @@ class Navi {
     static _AllFolderNames := []  ; 全ルート名リスト（フィルタ前）
     static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
-    static DropdownGui := ""      ; フィルタードロップダウンGUI
+    static DropdownGui := ""             ; ルート選択ドロップダウンGUI
+    static ProfileDropdownGui := ""      ; プロファイル選択ドロップダウンGUI
+    static _AllProfileNames   := []      ; 全プロファイル名リスト
+    static _ProfileFilteredNames := []   ; フィルター後プロファイル名リスト
     static _treeFilterCallback := ""  ; ツリーフィルターデバウンス用コールバック参照
     static _indexBuildCallback := ""  ; インデックス先読み構築タイマー用コールバック参照
     static _FolderIndex := []         ; ツリーフィルター用フォルダパスキャッシュ
@@ -88,12 +90,38 @@ class Navi {
     static _MarkFilterActive := false   ; マークフィルタービュー中フラグ
     static MARK_COLOR        := 0x0000AA00  ; マーク着色色 BGR: 緑
     static _LastTreeRootPath := ""      ; 前回の _RefreshTree ルートパス（マーク初期化判定用）
+    static TAB_HISTORY_MAX := 20   ; タブ内ルート履歴の最大保持件数
+    static _Tabs          := []    ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
+    static _CurrentTab    := 1     ; アクティブタブ番号（1-based）
+    static _TabCount      := 1     ; 現在開いているタブ数
+    static TAB_MAX        := 5     ; タブ最大数
+    static TAB_WIDTH      := 85    ; タブ1枠の幅px（(GUI_WIDTH-2*MarginX - (TAB_MAX-1)) / TAB_MAX）
+    static _TabBtnCtrls   := []    ; タブラベルコントロール配列（GuiControl）
+    static _TabULCtrl     := ""    ; アクティブタブ下線インジケーター（Progress コントロール）
+    static _TabSepCtrl    := ""    ; タブ/ヘッダー境界線
+    static TAB_ACTIVE_COLOR := 0x00CC5500  ; アンダーライン色（COLORREF BGR: 青系）
     static _ILHandle    := 0           ; TreeView 用 ImageList ハンドル
     static _IconCache   := Map()       ; 拡張子→ImageList インデックスキャッシュ
     static _ILNextIdx   := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
     static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
     static _BreadcrumbHwnd := 0       ; パンくずコントロールのHwnd（カーソル変更用）
+    static _tvHwnd        := 0        ; TreeView の Hwnd
+    static _quickPathH    := 22       ; QuickPath 欄の高さ（リサイズ計算用）
+    static _tabBarVisible := true     ; タブバー表示状態（1タブ時は非表示）
+    static _tabBarShift   := 25      ; タブバー非表示時にコントロールを上げるpx
+    static _SearchMode       := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
+    static _SearchTypeFilter := "all"  ; 検索対象種別（"all" / "dir" / "file"）
+
+    ; --- Windows API メッセージ定数 ---
+    static WM_SETCURSOR   := 0x0020   ; カーソル形状変更通知
+    static WM_ACTIVATE    := 0x0006   ; ウィンドウアクティブ状態変更
+    static WM_SETTEXT     := 0x000C   ; コントロールテキスト設定（プレースホルダー等）
+    static WM_NOTIFY      := 0x004E   ; コモンコントロール通知（カスタムドロー等）
+    static PBM_SETBARCOLOR := 0x0409  ; プログレスバー前景色設定
+    static PBM_SETBKCOLOR  := 0x040A  ; プログレスバー背景色設定
+    static EM_SETCUEBANNER := 0x1501  ; Edit コントロールのプレースホルダーテキスト設定
+    static TAB_UL_BACKGROUND_COLOR := 0xF0F0F0  ; タブ下線の背景色（ウィンドウ背景と合わせて透過風に）
 
     ; ---- Action registry ----
     static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
@@ -134,6 +162,9 @@ class Navi {
             if WinActive(this.GuiObj) {
                 this.GuiObj.Minimize()
             } else {
+                ; フィルター欄をクリアしてから再表示（モードは維持）
+                this.GuiObj["TreeFilter"].Value := ""
+                this._ApplyTreeFilter("")
                 this.GuiObj.Show()
                 WinActivate(this.GuiObj)
                 this.GuiObj["FolderTree"].Focus()
@@ -147,6 +178,7 @@ class Navi {
 
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
+        this._LoadTabsFromIni()  ; タブ状態を INI から復元（_TabCount が確定するのでタブバー生成前に呼ぶ）
 
         chooseIdx := 1
         for i, name in folderNames {
@@ -156,24 +188,49 @@ class Navi {
             }
         }
 
-        ; クイック登録: フルパス入力→Enterでルート追加（Tab移動ではフォーカスしない）
-        quickEdit := this.GuiObj.Add("Edit", "xm w455 vQuickPath -Tabstop", "")
-        ; プレースホルダ
-        try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", 0x1501, "ptr", 1, "wstr",
-            "Add root: full path + Enter", "ptr")
-        quickEdit.SetFont("s9 c808080", "Yu Gothic UI")
-        ; フォーカス状態をトラック
-        quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
-        quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
-        this.QuickPathHwnd := quickEdit.Hwnd
+        ; --- タブバー（最上部）---
+        this._TabBtnCtrls := []
+        this.GuiObj.SetFont("s8", "Yu Gothic UI")
+        Loop this.TAB_MAX {
+            n    := A_Index
+            w    := this.TAB_WIDTH
+            xOpt := (n = 1) ? "xm w" . w . " h20 +0x101" : "x+1 yp w" . w . " h20 +0x101"
+            lbl  := this.GuiObj.Add("Text", xOpt, this._GetTabLabel(n))
+            this._TabBtnCtrls.Push(lbl)
+            lbl.OnEvent("Click",       this._MakeTabHandler(n))
+            lbl.OnEvent("DoubleClick", this._MakeTabDblClickHandler(n))
+            if (n > this._TabCount)
+                lbl.Visible := false
+        }
+        ; アクティブタブ下線（Progress バーを流用）
+        ulCtrl := this.GuiObj.Add("Progress", "xm y+0 w" . this.TAB_WIDTH . " h3 -Smooth -Border", 100)
+        DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBARCOLOR, "ptr", 0, "uint", this.TAB_ACTIVE_COLOR)
+        DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBKCOLOR,  "ptr", 0, "uint", this.TAB_UL_BACKGROUND_COLOR)
+        this._TabULCtrl := ulCtrl
+        ; タブとヘッダーの境界線（ブラウザ風の区切り線）
+        tabSep := this.GuiObj.Add("Text", "x0 y+0 w471 h2 +0x10")  ; SS_ETCHEDHORZ 全幅（xm8+content455+rm8）
+        this._TabSepCtrl := tabSep
+        ; タブバーの実際の高さを計測（非表示時のシフト量として使用）
+        this._TabBtnCtrls[1].GetPos(, &_tabBarTopY_)
+        this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
-        ; ルートボタン（クリックでオーバーレイ選択ウィンドウを開く）
-        rootBtnText := (this.lastRoot != "") ? this.lastRoot : "ルートを選択..."
-        rootBtn := this.GuiObj.Add("Button", "xm w260 h26 vRootBtn", rootBtnText)
-        this.GuiObj._rootBtnHwnd := rootBtn.Hwnd  ; Enter判定用にhwndを保存
-        btnEdit     := this.GuiObj.Add("Button", "x+5 yp w45 h26 -Tabstop", "編集")
-        this.GuiObj._btnEditHwnd := btnEdit.Hwnd
+        ; --- ヘッダー行（プロファイル・ルート選択・編集・設定・チェックボックス）---
+        rootBtnText := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
+        ; Profile は小さいフォントで控えめに（文脈ラベル的な扱い）
+        this.GuiObj.SetFont("s8", "Yu Gothic UI")
+        btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", this._GetProfileBtnText())
+        this.GuiObj._profileBtnHwnd := btnProfile.Hwnd
+        ; › セパレーターで階層を表現
+        this.GuiObj.SetFont("s10", "Yu Gothic UI")
+        this.GuiObj.Add("Text", "x+3 yp w14 h26 +0x201 vProfileSep", "›")  ; SS_CENTER|SS_NOTIFY
+        ; Root は主役として大きめに
+        rootBtn := this.GuiObj.Add("Button", "x+3 yp w190 h26 vRootBtn", rootBtnText)
+        this.GuiObj._rootBtnHwnd := rootBtn.Hwnd
+        btnEdit     := this.GuiObj.Add("Button", "x+5 yp w40 h26 -Tabstop", "編集")
+        this.GuiObj._btnEditHwnd    := btnEdit.Hwnd
+        this.GuiObj._btnEditCtrl    := btnEdit
         btnSettings := this.GuiObj.Add("Button", "x+3 yp w26 h26 -Tabstop", "⚙")
+        this.GuiObj._btnSettingsCtrl := btnSettings
         pinCheck := this.GuiObj.Add("Checkbox", "x+8 yp+4 vPinCheck -Tabstop", "ピン留め")
         this.GuiObj._pinCheckHwnd := pinCheck.Hwnd
         autoFilesCheck := this.GuiObj.Add("Checkbox", "x+5 yp vAutoFilesCheck -Tabstop", "ファイル表示")
@@ -185,25 +242,54 @@ class Navi {
         this.FilteredNames := folderNames.Clone()
         this._FolderMap := folderMap
 
-        ; パンくずリスト（現在のパス表示 & クリックで階層メニュー）
+        ; --- パンくずリスト ---
         this.GuiObj.SetFont("s9", "Yu Gothic UI")
         breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . this.BREADCRUMB_HEIGHT . " vBreadcrumb c" . this.BREADCRUMB_COLOR . " +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
         breadcrumb.OnEvent("Click", (*) => this._OnBreadcrumbClick())
         this._BreadcrumbHwnd := breadcrumb.Hwnd
-        OnMessage(0x0020, Navi._OnSetCursor.Bind(Navi))  ; WM_SETCURSOR
+        OnMessage(this.WM_SETCURSOR, Navi._OnSetCursor.Bind(Navi))
         this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
-        ; ツリーフィルター入力欄
-        treeFilter := this.GuiObj.Add("Edit", "xm w455 vTreeFilter -Tabstop", "")
-        try DllCall("user32\SendMessageW", "ptr", treeFilter.Hwnd, "uint", 0x1501, "ptr", 1,
-            "wstr", "フォルダをフィルター...", "ptr")
+        ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
+        filterToggle := this.GuiObj.Add("Button", "xm w28 h22 -Tabstop vFilterToggle", "📁")
+        filterToggle.OnEvent("Click", (*) => this._ToggleSearchMode())
+        this.GuiObj._filterToggleHwnd := filterToggle.Hwnd
+        searchTypeBtn := this.GuiObj.Add("Button", "x+3 yp w28 h22 -Tabstop vSearchTypeBtn", "*")
+        searchTypeBtn.OnEvent("Click", (*) => this._CycleSearchType())
+        searchTypeBtn.Visible := false
+        this.GuiObj._searchTypeBtnHwnd := searchTypeBtn.Hwnd
+        ; 初期はフィルターモード: x=39, w=424(右端=TreeViewと同じ463)
+        treeFilter := this.GuiObj.Add("Edit", "x39 yp w424 vTreeFilter -Tabstop", "")
+        ; セッション中に検索モードだった場合は復元
+        if (this._SearchMode) {
+            filterToggle.Text := "🔍"
+            searchTypeBtn.Visible := true
+            searchTypeBtn.Text := (this._SearchTypeFilter = "dir") ? "📁" : (this._SearchTypeFilter = "file") ? "📄" : "*"
+            treeFilter.Move(70,, 393)  ; 幅は後の _OnResize で正確に調整される
+        }
+        cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
+        try DllCall("user32\SendMessageW", "ptr", treeFilter.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
+            "wstr", cue, "ptr")
         treeFilter.OnEvent("Change", (*) => this._OnTreeFilterChange())
         treeFilter.OnEvent("Focus",    (*) => (Navi._TreeFilterFocused := true))
         treeFilter.OnEvent("LoseFocus", (*) => (Navi._TreeFilterFocused := false))
         this.GuiObj._treeFilterHwnd := treeFilter.Hwnd
 
-        tv := this.GuiObj.Add("TreeView", "xm w455 r17 vFolderTree")
+        ; --- TreeView ---
+        tv := this.GuiObj.Add("TreeView", "xm w455 r15 vFolderTree")
         this._SetupTreeIcons(tv)
+        this._tvHwnd := tv.Hwnd
+
+        ; --- クイック登録欄（下部）---
+        quickEdit := this.GuiObj.Add("Edit", "xm w455 vQuickPath -Tabstop", "")
+        try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr",
+            "Add root: full path + Enter", "ptr")
+        quickEdit.SetFont("s9 c808080", "Yu Gothic UI")
+        quickEdit.OnEvent("Focus",    (*) => (Navi.QuickPathFocused := true))
+        quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
+        this.QuickPathHwnd := quickEdit.Hwnd
+        quickEdit.GetPos(,, , &_qpH_)
+        this._quickPathH := _qpH_
 
         ; ステータスバーによる操作案内
         this.GuiObj.SetFont("s8", "Yu Gothic UI")
@@ -216,6 +302,14 @@ class Navi {
         this._tvY := _tvY_
         this.GuiObj["RootBtn"].GetPos(, , &_rbW_)
         this._rootBtnRightGap := 455 - _rbW_
+        ; タブバー非表示時のシフト量を確定（ヘッダーY - タブバー開始Y）
+        btnProfile.GetPos(, &_headerY_)
+        this._tabBarShift   := _headerY_ - _tabBarTopY_
+        this._tabBarVisible := true
+
+        ; タブ1枚のときはタブバーを初期非表示にする
+        if (this._TabCount == 1)
+            this._SetTabBarVisible(false)
 
         ; ウィンドウリサイズイベント登録
         this.GuiObj.OnEvent("Size", (g, mm, w, h) => this._OnResize(mm, w, h))
@@ -223,6 +317,7 @@ class Navi {
         rootBtn.OnEvent("Click", (*) => this._OpenDropdown())
         btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
         btnSettings.OnEvent("Click", (*) => this._ShowSettingsGui(this.GuiObj))
+        btnProfile.OnEvent("Click", (*) => this._OpenProfileDropdown())
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this._HandleActivate())
         this.GuiObj.OnEvent("Close", (*) => (this.GuiObj := ""))
@@ -238,10 +333,22 @@ class Navi {
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
         Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
+        Hotkey("Left",  (*) => this._HandleLeftKey(),  "On")
+        Hotkey("Right", (*) => this._HandleRightKey(), "On")
         Hotkey("RButton", (*) => this._HandleRButton(), "On")
         Hotkey("!m", (*) => this._ToggleMark(), "On")
         Hotkey("^m", (*) => this._ToggleMarkFilter(), "On")
         Hotkey("!+m", (*) => this._ClearAllMarks(), "On")
+        Loop this.TAB_MAX {
+            Hotkey("^" . A_Index, this._MakeTabHandler(A_Index), "On")
+        }
+        Hotkey("^t", (*) => this._NewTab(), "On")
+        Hotkey("^w", (*) => this._CloseTab(), "On")
+        Hotkey("^Tab",   (*) => this._SwitchToTab(Mod(this._CurrentTab, this._TabCount) + 1), "On")
+        Hotkey("^+Tab",  (*) => this._SwitchToTab(Mod(this._CurrentTab - 2 + this._TabCount, this._TabCount) + 1), "On")
+        Hotkey("!Left",  (*) => this._TabNavBack(), "On")
+        Hotkey("!Right", (*) => this._TabNavForward(), "On")
+        Hotkey("^+h", (*) => this._ClearTabHistory(), "On")
         HotIf()
 
         ; パンくず更新用タイマー開始
@@ -249,15 +356,19 @@ class Navi {
         SetTimer(this._BreadcrumbWatcher.Bind(this), this.BREADCRUMB_WATCH_MS)
 
         if (folderNames.Length > 0) {
-            selectedRoot := (this.lastRoot != "" && folderMap.Has(this.lastRoot)) ? this.lastRoot : folderNames[1]
-            this.lastRoot := selectedRoot  ; フィルター等で参照できるよう確実にセット
-            this.GuiObj["RootBtn"].Text := selectedRoot  ; ボタンテキストを確実に同期
-            this._RefreshTree(tv, folderMap[selectedRoot])
-            ; _RefreshTree 内で _indexBuildCallback タイマーが設定されるため、ここでの重複設定は不要
-            if (this.lastPath != "") {
-                this._FocusPath(tv, this.lastPath)
+            ; タブ状態が保存されていれば復元、なければデフォルト初期化
+            if (!this._RestoreCurrentTab(tv)) {
+                selectedRoot := (this.lastRoot != "" && folderMap.Has(this.lastRoot)) ? this.lastRoot : folderNames[1]
+                this.lastRoot := selectedRoot
+                this.GuiObj["RootBtn"].Text := this._TruncRootLabel(selectedRoot)
+                this._RefreshTree(tv, folderMap[selectedRoot])
+                if (this.lastPath != "") {
+                    this._FocusPath(tv, this.lastPath)
+                }
             }
             this._RefreshBreadcrumb()
+            this._UpdateTabBar()
+            this._UpdateStatusBar()
         }
 
         ; マウスカーソルがあるモニタの作業領域中央に配置
@@ -406,6 +517,9 @@ class Navi {
     }
 
     static _DestroyGui() {
+        ; 現在のタブ状態を保存してから破棄（次回起動時に復元できるようにする）
+        this._SaveCurrentTab()
+        this._SaveTabsToIni()
         ; パンくず監視タイマーを停止
         SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
         ; フィルタータイマーを停止（GUI破棄後に _ApplyTreeFilter が発火するのを防ぐ）
@@ -418,6 +532,12 @@ class Navi {
         this._MarkedIdSet      := Map()
         this._MarkFilterActive := false
         this._LastTreeRootPath := ""
+        ; プロファイルドロップダウンを閉じる
+        this._CloseProfileDropdown()
+        ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
+        this._TabBtnCtrls := []
+        this._TabULCtrl  := ""
+        this._TabSepCtrl := ""
         if (this.GuiObj && WinExist(this.GuiObj)) {
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
@@ -452,6 +572,16 @@ class Navi {
               Ctrl+M        マーク済みアイテムのみ表示 / 全体に戻す
               Alt+Shift+M   全マーク解除
 
+            【タブ】
+              Ctrl+T        新規タブ（現在のルートで開く）
+              Ctrl+W        現在のタブを閉じる
+              Ctrl+Tab      次のタブへ
+              Ctrl+Shift+Tab 前のタブへ
+              Ctrl+1-5      タブ直接切り替え
+              Alt+←         タブ内でルート履歴を戻る
+              Alt+→         タブ内でルート履歴を進む
+              Ctrl+Shift+H  現在タブの履歴をクリア
+
             【その他】
               Ctrl+P        ピン留めトグル
               F1            このヘルプを表示
@@ -480,19 +610,45 @@ class Navi {
     static _ShowEditGui(parentGui) {
         parentGui.GetPos(&px, &py, &pw, &ph)
         parentGui.Opt("+Disabled")
-        editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MinimizeBox +Resize", "ルートディレクトリ管理")
+        editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MinimizeBox +Resize", "ルートディレクトリ編集")
         editGui.SetFont("s10", "Yu Gothic UI")
-        lv := editGui.Add("ListView", "r15 w550 Grid Multi vFolderList", ["名称", "パス", "表示"])
+        ; --- プロファイル管理 GroupBox（最上部）---
+        profBox := editGui.Add("GroupBox", "xm w550 h54", "プロファイル管理")
+        profNames := this._GetProfileList()
+        profDDL := editGui.Add("DropDownList", "xm+10 yp+20 w200 vEditProfileDDL", profNames)
+        if (profNames.Length > 0) {
+            currentP := IniRead(this.IniPath, "Settings", "LastProfile", "")
+            currentN := (currentP != "") ? RegExReplace(RegExReplace(currentP, ".*\\", ""), "\.txt$", "") : ""
+            chosen := 1
+            for i, n in profNames {
+                if (n = currentN) {
+                    chosen := i
+                    break
+                }
+            }
+            profDDL.Choose(chosen)
+        }
+        btnProfNew := editGui.Add("Button", "x+6 yp w50 h22 -Tabstop", "新規")
+        btnProfDup := editGui.Add("Button", "x+4 yp w50 h22 -Tabstop", "複製")
+        btnProfDel := editGui.Add("Button", "x+4 yp w50 h22 -Tabstop", "削除")
+        btnProfRen := editGui.Add("Button", "x+4 yp w70 h22 -Tabstop", "名前変更")
+        ; --- ルートリスト ---
+        lv := editGui.Add("ListView", "xm y+22 r15 w550 Grid Multi vFolderList", ["名称", "パス", "表示"])
         lv.ModifyCol(1, 120), lv.ModifyCol(2, 350), lv.ModifyCol(3, 50)
         this._LoadLVFolders(lv)
         btnAdd := editGui.Add("Button", "xm w70", "追加"), btnMod := editGui.Add("Button", "x+5 w70", "修正"), btnDel :=
             editGui.Add("Button", "x+5 w70", "削除")
         btnUp := editGui.Add("Button", "x+20 w40", "↑"), btnDown := editGui.Add("Button", "x+5 w40", "↓")
-        btnSave := editGui.Add("Button", "x+220 w110 Default", "保存/再起動")
+        btnSave := editGui.Add("Button", "xm+440 y+6 w110 Default", "保存")
         btnAdd.OnEvent("Click", (*) => this._ShowEntryGui(editGui, lv)), btnMod.OnEvent("Click", (*) => this._ShowEntryGui(
             editGui, lv, lv.GetNext())), btnDel.OnEvent("Click", (*) => this._DeleteItem(lv, editGui))
         btnUp.OnEvent("Click", (*) => this._MoveItem(lv, -1)), btnDown.OnEvent("Click", (*) => this._MoveItem(lv, 1))
-        btnSave.OnEvent("Click", (*) => this._SaveList(lv))
+        btnSave.OnEvent("Click", (*) => this._SaveList(lv, editGui, parentGui))
+        profDDL.OnEvent("Change", (*) => this._LoadProfileIntoLV(lv, editGui["EditProfileDDL"].Text))
+        btnProfNew.OnEvent("Click", (*) => this._NewProfileDialogFromEdit(editGui))
+        btnProfDup.OnEvent("Click", (*) => this._DupProfileDialogFromEdit(editGui, lv))
+        btnProfDel.OnEvent("Click", (*) => this._DeleteProfileFromEdit(editGui))
+        btnProfRen.OnEvent("Click", (*) => this._RenameProfileFromEdit(editGui))
         lv.OnEvent("Click", (_, row) => (row > 0) ? this._ToggleVisibleOnClick(lv, row) : 0)
         lv.OnEvent("DoubleClick", (_, info) => (info && !this._IsVisibleColClick(lv)) ? this._ShowEntryGui(editGui, lv, info) : 0)
 
@@ -511,8 +667,9 @@ class Navi {
         lvClientW    := NumGet(rc, 8, "int")
         initPathColW := lvClientW - 120 - 50
         lv.ModifyCol(2, initPathColW)
+        profBox.GetPos(,, &initProfBoxW)
 
-        ; 垂直移動が必要なコントロールの初期 Y を収集
+        ; 垂直移動が必要なコントロールの初期 Y を収集（LV下のボタン行のみ）
         vertCtrls := [btnAdd, btnMod, btnDel, btnUp, btnDown]
         vertY := []
         for ctrl in vertCtrls {
@@ -528,6 +685,7 @@ class Navi {
             lv.Move(, , initLvW + dw, initLvH + dh)
             lv.ModifyCol(2, initPathColW + dw)
             btnSave.Move(initBtnSaveX + dw, initBtnSaveY + dh)
+            profBox.Move(,, initProfBoxW + dw)
             for i, ctrl in vertCtrls
                 ctrl.Move(, vertY[i] + dh)
         }
@@ -705,14 +863,25 @@ class Navi {
         editGui.Destroy(), parentGui.Opt("-Disabled +AlwaysOnTop"), parentGui.Show()
     }
 
-    static _SaveList(lv) {
+    static _SaveList(lv, editGui := "", parentGui := "") {
         IniDelete(this.IniPath, "Folders")
         loop lv.GetCount() {
             name := lv.GetText(A_Index, 1), path := lv.GetText(A_Index, 2)
             visible := (lv.GetText(A_Index, 3) == "○") ? "1" : "0"
             IniWrite(path . "|" . visible, this.IniPath, "Folders", name)
         }
-        Reload()
+        ; プロファイルが設定されている場合は自動的にファイルへ書き出す
+        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (lastProfile != "")
+            this._WriteProfileFile(lv, lastProfile)
+        ; GUI が開いていればインプレース更新、なければ再起動
+        if (this.GuiObj && WinExist(this.GuiObj)) {
+            if (editGui != "")
+                this._CleanupEditGui(parentGui, editGui)
+            this._ReloadProfileInPlace()
+        } else {
+            Reload()
+        }
     }
 
     static _LoadFolders(folderMap, folderNames) {
@@ -898,18 +1067,27 @@ class Navi {
      * fd プロセス完了後に結果を読み込み、保留クエリがあれば _ApplyTreeFilter を呼ぶ
      */
     static _PollFdIndex() {
-        if (this._FdIndexPid = 0 || ProcessExist(this._FdIndexPid))
-            return  ; 未起動 or まだ実行中
+        if (this._FdIndexPid = 0 || ProcessExist(this._FdIndexPid)) {
+            ; fd 実行中: ステータスバーにアニメーションドットを表示
+            try {
+            if (this.GuiObj && WinExist(this.GuiObj)) {
+                static dots := [" .", " ..", " ..."]
+                static frame := 0
+                frame := Mod(frame, 3) + 1
+                this.GuiObj._sbRef.SetText(" インデックス構築中" . dots[frame])
+            }
+        }
+            return
+        }
         ; 完了: タイマーを停止
         SetTimer(this._FdPollCb, 0)
         this._FdPollCb := ""
         this._FdIndexPid := 0
-        ; 結果を読み込んでインデックスを構築
+        ; 結果を読み込んでインデックスを構築（Loop Read で行単位処理: 大ファイル対策）
         this._FolderIndex := []
         try {
-            raw := FileRead(this._FdIndexFile, "UTF-8")
-            for line in StrSplit(raw, "`n", "`r") {
-                p := Trim(line)
+            loop read, this._FdIndexFile {
+                p := Trim(A_LoopReadLine)
                 if (p = "")
                     continue
                 if (SubStr(p, -1) = "\" && StrLen(p) > 3)
@@ -923,6 +1101,8 @@ class Navi {
         this._FdIndexFile := ""
         this._IndexedRoot := this._FdIndexRoot
         this._FdIndexRoot := ""
+        ; ステータスバーを通常表示に戻す
+        this._UpdateStatusBar()
         ; 保留コールバックがあれば実行（フィルタ再適用など）
         if (this._OnIndexReadyCb != "") {
             cb := this._OnIndexReadyCb
@@ -989,6 +1169,8 @@ class Navi {
      * ツリーフィルター入力変更: 300ms デバウンスで _ApplyTreeFilter を呼ぶ
      */
     static _OnTreeFilterChange() {
+        if (this._SearchMode)
+            return  ; 検索モード中はリアルタイムフィルターをスキップ
         if (this._treeFilterCallback != "")
             SetTimer(this._treeFilterCallback, 0)
         query := this.GuiObj["TreeFilter"].Value
@@ -1186,7 +1368,7 @@ class Navi {
         if (this._FilterDrawHandler != "")
             return
         handler := (w, l, m, h) => Navi._OnFilterNotify(w, l, m, h)
-        OnMessage(0x004E, handler)
+        OnMessage(this.WM_NOTIFY, handler)
         this._FilterDrawHandler := handler
     }
 
@@ -1301,6 +1483,427 @@ class Navi {
         }
         this._UpdateStatusBar()
     }
+
+    ; --- タブ機能 ---
+
+    /**
+     * タブNのクリック・ホットキー用クロージャを生成（ループ変数キャプチャ対策）
+     */
+    static _MakeTabHandler(n) {
+        return (*) => this._SwitchToTab(n)
+    }
+
+    /**
+     * タブダブルクリック: そのタブに切り替えてルート選択を開く
+     */
+    static _MakeTabDblClickHandler(n) {
+        return (*) => (this._SwitchToTab(n), this._OpenDropdown())
+    }
+
+
+    /**
+     * _AllFolderNames + _FolderMap からプロファイルファイルを書き出す
+     * ドラッグ追加など ListView を介さずにメモリ上のマップから直接書き出す場合に使用する。
+     * ListView を持つ編集 GUI 経由の書き出しは _WriteProfileFile(lv, outPath) を使う。
+     */
+    static _WriteProfileFileFromMap(outPath) {
+        txt := ""
+        for name in this._AllFolderNames
+            if (this._FolderMap.Has(name))
+                txt .= name . "=" . this._FolderMap[name] . "`n"
+        try FileDelete(outPath)
+        FileAppend(txt, outPath, "UTF-8")
+    }
+
+    /**
+     * タブNのラベルを返す（下線がアクティブを示すため、ラベルはルート名のみ）
+     */
+    static _GetTabLabel(n) {
+        if (n > this._TabCount)
+            return ""
+        root := (n == this._CurrentTab) ? this.lastRoot
+              : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
+        if (root == "")
+            root := "New"
+        ; 85px幅: 日本語全角7文字≈70px、ASCII14文字≈84px → 7文字超で切り詰め
+        return (StrLen(root) > 7) ? SubStr(root, 1, 6) . ".." : root
+    }
+
+    /**
+     * タブバーのラベルと下線インジケーター位置を更新
+     * タブ数が1のときは非表示、2以上のときは表示する
+     */
+    static _UpdateTabBar() {
+        Loop this.TAB_MAX {
+            n := A_Index
+            if (n > this._TabBtnCtrls.Length)
+                break
+            ctrl := this._TabBtnCtrls[n]
+            if (n > this._TabCount) {
+                ctrl.Visible := false
+                continue
+            }
+            ctrl.Visible := (this._TabCount > 1)
+            DllCall("user32\SendMessageW", "ptr", ctrl.Hwnd,
+                "uint", this.WM_SETTEXT, "ptr", 0, "wstr", this._GetTabLabel(n))
+        }
+        if (this._TabULCtrl) {
+            this._TabULCtrl.Visible := (this._TabCount > 1)
+            margin := this.GuiObj.MarginX
+            this._TabULCtrl.Move(margin + (this._CurrentTab - 1) * (this.TAB_WIDTH + 1))
+        }
+        ; タブ数変化に応じてタブバー表示/非表示を切り替え
+        this._SetTabBarVisible(this._TabCount > 1)
+    }
+
+    /**
+     * タブバーの表示/非表示を切り替え、他コントロールを上下にシフトする
+     */
+    static _SetTabBarVisible(show) {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (show == this._tabBarVisible)
+            return
+        this._tabBarVisible := show
+        shift := show ? this._tabBarShift : -this._tabBarShift
+
+        ; タブラベルと下線の表示切り替え
+        for ctrl in this._TabBtnCtrls
+            ctrl.Visible := show
+        if (this._TabULCtrl)
+            this._TabULCtrl.Visible := show
+        if (this._TabSepCtrl)
+            this._TabSepCtrl.Visible := show
+
+        ; タブバー下のコントロールを全て上下にシフト
+        ctrls := [
+            this.GuiObj["ProfileBtn"],  this.GuiObj["ProfileSep"],
+            this.GuiObj["RootBtn"],
+            this.GuiObj._btnEditCtrl,   this.GuiObj._btnSettingsCtrl,
+            this.GuiObj["PinCheck"],    this.GuiObj["AutoFilesCheck"],
+            this.GuiObj["Breadcrumb"],  this.GuiObj["FilterToggle"],
+            this.GuiObj["SearchTypeBtn"], this.GuiObj["TreeFilter"],
+            this.GuiObj["FolderTree"],
+            this.GuiObj["QuickPath"]
+        ]
+        for ctrl in ctrls {
+            ctrl.GetPos(, &cy)
+            ctrl.Move(, cy + shift)
+        }
+        this._tvY += shift
+    }
+
+    /**
+     * GUIから現在の表示状態を読み取って返す
+     */
+    static _GetLiveState() {
+        marks := Map()
+        for k, v in this._MarkedPaths
+            marks[k] := v
+        tv := this.GuiObj["FolderTree"]
+        selPath := ""
+        selId := tv.GetSelection()
+        if (selId)
+            try selPath := this._GetTVFullPath(tv, selId)
+        return {
+            root:       this.lastRoot,
+            filter:     this.GuiObj["TreeFilter"].Value,
+            marks:      marks,
+            markFilter: this._MarkFilterActive,
+            path:       selPath
+        }
+    }
+
+    /**
+     * 現在のタブに表示状態を保存
+     */
+    static _SaveCurrentTab() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        s := this._GetLiveState()
+        while (this._Tabs.Length < this._CurrentTab)
+            this._Tabs.Push({root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: []})
+        tab := this._Tabs[this._CurrentTab]
+        tab.root := s.root, tab.filter := s.filter, tab.marks := s.marks
+        tab.markFilter := s.markFilter, tab.path := s.path
+    }
+
+    /**
+     * 現在のルート操作前に呼ぶ: 現在の状態をタブ内履歴に積む（Alt+← で戻れる）
+     */
+    static _PushTabHistory() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        while (this._Tabs.Length < this._CurrentTab)
+            this._Tabs.Push({root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: []})
+        tab := this._Tabs[this._CurrentTab]
+        s   := this._GetLiveState()
+        tab.history.Push({root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path})
+        if (tab.history.Length > this.TAB_HISTORY_MAX)
+            tab.history.RemoveAt(1)
+        tab.future := []
+    }
+
+    /**
+     * 状態オブジェクトを TreeView に適用する共通ヘルパー
+     */
+    static _ApplyTabState(state, tv) {
+        if (state.root != "" && this._FolderMap.Has(state.root) && state.root != this.lastRoot) {
+            this.lastRoot := state.root
+            this.GuiObj["RootBtn"].Text := this._TruncRootLabel(state.root)
+        }
+        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+        this.GuiObj["TreeFilter"].Value := state.filter
+        if (state.markFilter && rootPath != "") {
+            this._MarkedPaths      := state.marks
+            this._MarkFilterActive := true
+            this._ApplyMarkFilter(tv, rootPath)
+        } else if (state.filter != "" && rootPath != "") {
+            this._MarkFilterActive := false
+            this._MarkedPaths      := state.marks
+            this._ApplyTreeFilter(state.filter)
+        } else if (rootPath != "") {
+            this._MarkFilterActive := false
+            this._RefreshTree(tv, rootPath, false)
+            this._MarkedPaths := state.marks
+            this._RebuildMarkedIdSet(tv)
+            this._EnsureFilterDraw(tv)
+            DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
+        }
+        if (state.path != "" && rootPath != "")
+            this._FocusPath(tv, state.path)
+    }
+
+    /**
+     * 現在のタブ状態を TreeView に復元する（Show() 初期化用）
+     */
+    static _RestoreCurrentTab(tv) {
+        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
+            return false
+        tab := this._Tabs[this._CurrentTab]
+        if (tab.root == "" || !this._FolderMap.Has(tab.root))
+            return false
+        this._ApplyTabState(tab, tv)
+        return true
+    }
+
+    /**
+     * タブNに切り替える（現在の状態を保存してから復元）
+     */
+    static _SwitchToTab(n) {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (n < 1 || n > this._TabCount)
+            return
+        this._SaveCurrentTab()
+        this._CurrentTab := n
+        tv := this.GuiObj["FolderTree"]
+        tab := (n <= this._Tabs.Length) ? this._Tabs[n] : ""
+        if (tab == "" || tab.root == "") {
+            this.GuiObj["TreeFilter"].Value := ""
+            this._MarkFilterActive := false
+            rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+            if (rootPath != "")
+                this._RefreshTree(tv, rootPath, false)
+            this._MarkedPaths := Map()
+            this._MarkedIdSet := Map()
+        } else {
+            this._ApplyTabState(tab, tv)
+        }
+        this._UpdateTabBar()
+        this._UpdateStatusBar()
+    }
+
+    /**
+     * 新しいタブを開く（Ctrl+T）: 現在のルートで初期化、フィルター・マークはクリア
+     */
+    static _NewTab() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (this._TabCount >= this.TAB_MAX)
+            return
+        this._SaveCurrentTab()
+        this._TabCount++
+        while (this._Tabs.Length < this._TabCount)
+            this._Tabs.Push({root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: []})
+        this._Tabs[this._TabCount] := {
+            root: this.lastRoot, filter: "", marks: Map(),
+            markFilter: false, path: "", history: [], future: []
+        }
+        this._CurrentTab := this._TabCount
+        tv := this.GuiObj["FolderTree"]
+        this.GuiObj["TreeFilter"].Value := ""
+        this._MarkFilterActive := false
+        this._MarkedPaths := Map()
+        this._MarkedIdSet := Map()
+        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+        if (rootPath != "")
+            this._RefreshTree(tv, rootPath, false)
+        this._UpdateTabBar()
+        this._UpdateStatusBar()
+    }
+
+    /**
+     * 現在のタブを閉じる（Ctrl+W）: タブが1枚のときは何もしない
+     */
+    static _CloseTab() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (this._TabCount <= 1)
+            return
+        this._Tabs.RemoveAt(this._CurrentTab)
+        this._TabCount--
+        if (this._CurrentTab > this._TabCount)
+            this._CurrentTab := this._TabCount
+        tv := this.GuiObj["FolderTree"]
+        tab := (this._CurrentTab <= this._Tabs.Length) ? this._Tabs[this._CurrentTab] : ""
+        if (tab == "" || tab.root == "") {
+            this.GuiObj["TreeFilter"].Value := ""
+            this._MarkFilterActive := false
+            this._MarkedPaths := Map()
+            this._MarkedIdSet := Map()
+            rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+            if (rootPath != "")
+                this._RefreshTree(tv, rootPath, false)
+        } else {
+            this._ApplyTabState(tab, tv)
+        }
+        this._UpdateTabBar()
+        this._UpdateStatusBar()
+    }
+
+    /**
+     * タブ内履歴を戻る（Alt+←）
+     */
+    static _TabNavBack() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
+            return
+        tab := this._Tabs[this._CurrentTab]
+        if (tab.history.Length == 0)
+            return
+        s := this._GetLiveState()
+        tab.future.Push({root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path})
+        prev := tab.history.Pop()
+        tab.root := prev.root, tab.filter := prev.filter, tab.marks := prev.marks
+        tab.markFilter := prev.markFilter, tab.path := prev.path
+        this._ApplyTabState(tab, this.GuiObj["FolderTree"])
+        this._UpdateTabBar()
+        this._UpdateStatusBar()
+    }
+
+    /**
+     * タブ内履歴を進む（Alt+→）
+     */
+    static _TabNavForward() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
+            return
+        tab := this._Tabs[this._CurrentTab]
+        if (tab.future.Length == 0)
+            return
+        s := this._GetLiveState()
+        tab.history.Push({root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path})
+        next := tab.future.Pop()
+        tab.root := next.root, tab.filter := next.filter, tab.marks := next.marks
+        tab.markFilter := next.markFilter, tab.path := next.path
+        this._ApplyTabState(tab, this.GuiObj["FolderTree"])
+        this._UpdateTabBar()
+        this._UpdateStatusBar()
+    }
+
+    /**
+     * 現在のタブの履歴（戻る・進む）をクリア（Ctrl+Shift+H）
+     */
+    static _ClearTabHistory() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
+            return
+        tab := this._Tabs[this._CurrentTab]
+        tab.history := []
+        tab.future  := []
+        ToolTip("タブ履歴をクリアしました"), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
+    }
+
+    /**
+     * プロファイルパスから INI セクション名を生成（例: "Tabs_work"）
+     * プロファイル未設定時は "Tabs" を返す
+     */
+    static _ProfileTabSection(profilePath := "") {
+        if (profilePath == "")
+            profilePath := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (profilePath == "")
+            return "Tabs"
+        name := RegExReplace(profilePath, ".*\\")   ; basename
+        name := RegExReplace(name, "\.txt$", "")    ; 拡張子除去
+        name := RegExReplace(name, "[^\w]", "_")    ; 使用不可文字を _
+        return "Tabs_" . name
+    }
+
+    /**
+     * 全タブ状態を Navi.ini のプロファイル別セクションに保存
+     */
+    static _SaveTabsToIni() {
+        sec := this._ProfileTabSection()
+        try IniDelete(this.IniPath, sec)
+        IniWrite(this._TabCount,   this.IniPath, sec, "Count")
+        IniWrite(this._CurrentTab, this.IniPath, sec, "Current")
+        Loop this._TabCount {
+            n   := A_Index
+            tab := (n <= this._Tabs.Length) ? this._Tabs[n] : ""
+            if (tab == "")
+                continue
+            IniWrite(tab.root,               this.IniPath, sec, "Tab" . n . "Root")
+            IniWrite(tab.filter,             this.IniPath, sec, "Tab" . n . "Filter")
+            IniWrite(tab.path,               this.IniPath, sec, "Tab" . n . "Path")
+            IniWrite(tab.markFilter ? "1" : "0", this.IniPath, sec, "Tab" . n . "MarkFilter")
+            markStr := ""
+            for k, v in tab.marks
+                markStr .= (markStr == "" ? "" : "|") . v
+            IniWrite(markStr, this.IniPath, sec, "Tab" . n . "Marks")
+        }
+    }
+
+    /**
+     * Navi.ini のプロファイル別セクションからタブ状態を復元
+     * Show() の _LoadFolders 直後に呼ぶこと（タブバー生成前に _TabCount を確定させるため）
+     */
+    static _LoadTabsFromIni() {
+        sec   := this._ProfileTabSection()
+        ; プロファイル別セクションになければ旧来の [Tabs] にフォールバック
+        if (IniRead(this.IniPath, sec, "Count", "") == "")
+            sec := "Tabs"
+        count   := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Count",   "1")), this.TAB_MAX))
+        current := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Current", "1")), count))
+        this._TabCount   := count
+        this._CurrentTab := current
+        this._Tabs       := []
+
+        Loop count {
+            n    := A_Index
+            root := IniRead(this.IniPath, sec, "Tab" . n . "Root",       "")
+            filt := IniRead(this.IniPath, sec, "Tab" . n . "Filter",     "")
+            pth  := IniRead(this.IniPath, sec, "Tab" . n . "Path",       "")
+            mf   := IniRead(this.IniPath, sec, "Tab" . n . "MarkFilter", "0")
+            mStr := IniRead(this.IniPath, sec, "Tab" . n . "Marks",      "")
+
+            marks := Map()
+            if (mStr != "")
+                for p in StrSplit(mStr, "|")
+                    if (p != "")
+                        marks[StrLower(p)] := p
+
+            this._Tabs.Push({
+                root: root, filter: filt, path: pth,
+                markFilter: (mf == "1"), marks: marks,
+                history: [], future: []
+            })
+        }
+    }
+
 
     static _ToggleMarkFilter() {
         if (this._MarkedPaths.Count == 0 || !(this.GuiObj && WinExist(this.GuiObj)))
@@ -1579,6 +2182,516 @@ class Navi {
         return ""
     }
 
+    /**
+     * 編集 GUI の ListView からプロファイルファイルを書き出す（フォーマット: name=path）
+     * メモリ上のマップから直接書き出す場合は _WriteProfileFileFromMap(outPath) を使う。
+     */
+    static _WriteProfileFile(lv, outPath) {
+        txt := ""
+        Loop lv.GetCount() {
+            name := lv.GetText(A_Index, 1)
+            path := lv.GetText(A_Index, 2)
+            if (name != "" && path != "")
+                txt .= name . "=" . path . "`n"
+        }
+        try FileDelete(outPath)
+        FileAppend(txt, outPath, "UTF-8")
+    }
+
+    /**
+     * .txt プロファイルを読み込んでルートリストを置き換え、タブをリセットして再起動
+     * フォーマット: name=path または path のみ（名前はフォルダ名から自動生成）
+     */
+    static _ImportProfile(txtPath) {
+        if (!FileExist(txtPath)) {
+            ToolTip("ファイルが見つかりません: " . txtPath), SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+            return
+        }
+        txt := FileRead(txtPath, "UTF-8")
+        if (txt == "")
+            txt := FileRead(txtPath)  ; UTF-8 BOMなしフォールバック
+        entries := []
+        for line in StrSplit(txt, "`n", "`r") {
+            line := Trim(line)
+            if (line == "" || SubStr(line, 1, 1) == ";")
+                continue
+            if (InStr(line, "=")) {
+                p    := StrSplit(line, "=", , 2)
+                name := Trim(p[1])
+                path := Trim(p[2])
+            } else {
+                path := Trim(line)
+                name := StrSplit(RTrim(path, "\"), "\")[-1]
+            }
+            if (name != "" && path != "")
+                entries.Push({name: name, path: path})
+        }
+        ; [Folders] セクションを新しいリストで上書き（空プロファイルはセクションをクリア）
+        IniDelete(this.IniPath, "Folders")
+        for e in entries
+            IniWrite(e.path . "|1", this.IniPath, "Folders", e.name)
+        ; 現プロファイルのタブ状態を保存（プロファイル別セクションに書き込む）
+        this._SaveCurrentTab()
+        this._SaveTabsToIni()
+        ; 最後に使ったプロファイルパスを更新
+        IniWrite(txtPath, this.IniPath, "Settings", "LastProfile")
+        ; GUI が開いていればインプレース更新、なければ再起動
+        if (this.GuiObj && WinExist(this.GuiObj))
+            this._ReloadProfileInPlace()
+        else
+            Reload()
+    }
+
+    /**
+     * プロファイル切り替え・保存後のインプレース更新
+     * GUI を閉じずにフォルダマップ・タブ・ツリーを現在の INI 内容で再構築する。
+     * プロファイルロード（_ImportProfile）とリスト保存（_SaveList）の*方から呼ばれる。
+     */
+    static _ReloadProfileInPlace() {
+        ; フォルダデータを再読み込み
+        newFolderMap := Map(), newFolderNames := []
+        this._LoadFolders(newFolderMap, newFolderNames)
+        this._AllFolderNames := newFolderNames
+        this.FilteredNames   := newFolderNames.Clone()
+        this._FolderMap      := newFolderMap
+
+        ; 新プロファイルのタブ状態を読み込み
+        this._LoadTabsFromIni()
+
+        ; マーク状態をリセット
+        this._MarkedPaths      := Map()
+        this._MarkedIdSet      := Map()
+        this._MarkFilterActive := false
+
+        ; ツリーを新プロファイルで復元
+        tv := this.GuiObj["FolderTree"]
+        this.GuiObj["TreeFilter"].Value := ""
+        if (newFolderNames.Length == 0) {
+            ; 空プロファイル: ツリーをクリアして RootBtn をリセット
+            tv.Delete()
+            this.lastRoot := ""
+            this.lastPath := ""
+        } else if (!this._RestoreCurrentTab(tv)) {
+            ; 新プロファイルに前のルートがなければ先頭ルートへ
+            this.lastRoot := newFolderNames[1]
+            this._RefreshTree(tv, newFolderMap[this.lastRoot])
+        }
+
+        ; UI 更新
+        this.GuiObj["RootBtn"].Text := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
+        this._UpdateProfileBtn()
+        this._UpdateTabBar()
+        this._UpdateStatusBar()
+    }
+
+    ; --- プロファイル機能 ---
+
+    static _GetProfilesDir() {
+        return A_ScriptDir . "\ui\profiles"
+    }
+
+    static _GetProfileList() {
+        dir := this._GetProfilesDir()
+        if (!DirExist(dir))
+            DirCreate(dir)
+        names := []
+        Loop Files dir . "\*.txt"
+            names.Push(RegExReplace(A_LoopFileName, "\.txt$", ""))
+        return names
+    }
+
+    static _GetProfileBtnText() {
+        last := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (last == "")
+            return "Profile"
+        name := RegExReplace(last, ".*\\")
+        name := RegExReplace(name, "\.txt$")
+        return (StrLen(name) > 10) ? SubStr(name, 1, 9) . ".." : name
+    }
+
+    ; RootBtn (w190) に収まるよう長い名前を切り詰める
+    static _TruncRootLabel(name) {
+        return (StrLen(name) > 18) ? SubStr(name, 1, 16) . "..." : name
+    }
+
+    static _UpdateProfileBtn() {
+        if (this.GuiObj && WinExist(this.GuiObj))
+            this.GuiObj["ProfileBtn"].Text := this._GetProfileBtnText()
+    }
+
+    static _OpenProfileDropdown() {
+        if (this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+
+        this._AllProfileNames      := this._GetProfileList()
+        this._ProfileFilteredNames := this._AllProfileNames.Clone()
+
+        ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "プロファイル")
+        ddGui.MarginX := 8
+        ddGui.MarginY := 8
+        ddGui.SetFont("s10", "Yu Gothic UI")
+
+        filterEdit := ddGui.Add("Edit", "xm w200 vProfileFilter")
+        try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
+            "wstr", "名前でフィルター...", "ptr")
+
+        ddList := ddGui.Add("ListBox", "xm w200 r8 vProfileList", this._ProfileFilteredNames)
+        if (this._ProfileFilteredNames.Length > 0)
+            ddList.Choose(1)
+
+        ddGui.SetFont("s8")
+        ddGui.Add("Text", "xm c808080", "↑↓: 移動  Enter: ロード  Esc: 閉じる")
+        this.ProfileDropdownGui := ddGui
+
+        filterEdit.OnEvent("Change",      (*) => this._ProfileOverlayFilterChange())
+        ddList.OnEvent("DoubleClick",     (*) => this._ConfirmProfileDropdown())
+        ddGui.OnEvent("Close",            (*) => this._CloseProfileDropdown())
+
+        local ddHwnd   := ddGui.Hwnd
+        local self     := this
+        local wmActMsg := Navi.WM_ACTIVATE
+        wmAct(wParam, lParam, msg, hwnd) {
+            if (hwnd = ddHwnd && wParam = 0) {
+                OnMessage(wmActMsg, wmAct, 0)
+                SetTimer(() => self._CloseProfileDropdown(), -50)
+            }
+        }
+        OnMessage(wmActMsg, wmAct)
+
+        HotIfWinActive("ahk_id " ddGui.Hwnd)
+        Hotkey("Enter",   (*) => this._ConfirmProfileDropdown(), "On")
+        Hotkey("Escape",  (*) => this._CloseProfileDropdown(), "On")
+        Hotkey("~Down",   (*) => this._ProfileNavDown(), "On")
+        Hotkey("~Up",     (*) => this._ProfileNavUp(), "On")
+        HotIf()
+
+        this.GuiObj.GetPos(&gx, &gy)
+        this.GuiObj["ProfileBtn"].GetPos(&bx, &by, &bw, &bh)
+        ddGui.Show("x" . (gx + bx) . " y" . (gy + by) . " w220 AutoSize")
+        filterEdit.Focus()
+    }
+
+    static _CloseProfileDropdown() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        local ddGui := this.ProfileDropdownGui
+        this.ProfileDropdownGui := ""
+        try ddGui.Destroy()
+    }
+
+    ; プロファイル一覧を再スキャンしてドロップダウンのListBoxを更新する
+    static _RefreshProfileDropdownList() {
+        this._AllProfileNames := this._GetProfileList()
+        query := (this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            ? this.ProfileDropdownGui["ProfileFilter"].Value : ""
+        this._ProfileFilteredNames := []
+        for name in this._AllProfileNames
+            if (query == "" || InStr(name, query, false))
+                this._ProfileFilteredNames.Push(name)
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        ddList := this.ProfileDropdownGui["ProfileList"]
+        ddList.Delete()
+        if (this._ProfileFilteredNames.Length > 0) {
+            ddList.Add(this._ProfileFilteredNames)
+            ddList.Choose(1)
+        }
+    }
+
+    ; 現在のルートを新しい名前のプロファイルとして保存（上書き不可）
+    static _NewProfileDialog() {
+        this._CloseProfileDropdown()
+        result := InputBox("新しいプロファイル名を入力してください:", "新規プロファイル", "w260 h100")
+        if (result.Result != "OK" || Trim(result.Value) == "")
+            return
+        name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
+        if (name == "")
+            return
+        dir := this._GetProfilesDir()
+        if (!DirExist(dir))
+            DirCreate(dir)
+        outPath := dir . "\" . name . ".txt"
+        if (FileExist(outPath)) {
+            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
+            return
+        }
+        txt := ""
+        for n in this._AllFolderNames {
+            p := this._FolderMap.Has(n) ? this._FolderMap[n] : ""
+            if (p != "")
+                txt .= n . "=" . p . "`n"
+        }
+        FileAppend(txt, outPath, "UTF-8")
+        IniWrite(outPath, this.IniPath, "Settings", "LastProfile")
+        this._UpdateProfileBtn()
+        ToolTip("作成しました: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
+    }
+
+    ; 空の新規プロファイルを作成（LV もクリアして編集状態にする）
+    static _NewProfileDialogFromEdit(editGui) {
+        editGui.Opt("-AlwaysOnTop")
+        result := InputBox("新しいプロファイル名を入力してください:", "新規プロファイル", "w260 h100")
+        editGui.Opt("+AlwaysOnTop")
+        if (result.Result != "OK" || Trim(result.Value) == "")
+            return
+        name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
+        if (name == "")
+            return
+        dir := this._GetProfilesDir()
+        if (!DirExist(dir))
+            DirCreate(dir)
+        outPath := dir . "\" . name . ".txt"
+        if (FileExist(outPath)) {
+            editGui.Opt("-AlwaysOnTop")
+            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
+            editGui.Opt("+AlwaysOnTop")
+            return
+        }
+        FileAppend("", outPath, "UTF-8")  ; 空ファイル作成
+        IniWrite(outPath, this.IniPath, "Settings", "LastProfile")
+        this._UpdateProfileBtn()
+        this._RefreshEditProfileList(editGui, name)
+        this._LoadProfileIntoLV(editGui["FolderList"], name)  ; 空のLVに切り替え
+        ToolTip("作成しました: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
+    }
+
+    ; 現在の LV 内容をコピーして新規プロファイルを作成
+    static _DupProfileDialogFromEdit(editGui, lv) {
+        editGui.Opt("-AlwaysOnTop")
+        result := InputBox("複製後のプロファイル名を入力してください:", "プロファイルを複製", "w260 h100")
+        editGui.Opt("+AlwaysOnTop")
+        if (result.Result != "OK" || Trim(result.Value) == "")
+            return
+        name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
+        if (name == "")
+            return
+        dir := this._GetProfilesDir()
+        if (!DirExist(dir))
+            DirCreate(dir)
+        outPath := dir . "\" . name . ".txt"
+        if (FileExist(outPath)) {
+            editGui.Opt("-AlwaysOnTop")
+            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
+            editGui.Opt("+AlwaysOnTop")
+            return
+        }
+        this._WriteProfileFile(lv, outPath)
+        IniWrite(outPath, this.IniPath, "Settings", "LastProfile")
+        this._UpdateProfileBtn()
+        this._RefreshEditProfileList(editGui, name)
+        this._LoadProfileIntoLV(editGui["FolderList"], name)  ; 複製内容をLVに反映
+        ToolTip("複製しました: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
+    }
+
+    ; 編集ダイアログのドロップダウンで選択中のプロファイルを削除
+    static _DeleteProfileFromEdit(editGui) {
+        name := editGui["EditProfileDDL"].Text
+        if (name == "")
+            return
+        path := this._GetProfilesDir() . "\" . name . ".txt"
+        if (!FileExist(path))
+            return
+        editGui.Opt("-AlwaysOnTop")
+        ans := MsgBox("「" . name . "」を削除しますか？", "プロファイル削除", "YesNo Icon!")
+        editGui.Opt("+AlwaysOnTop")
+        if (ans != "Yes")
+            return
+        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (lastProfile = path) {
+            IniDelete(this.IniPath, "Settings", "LastProfile")
+            this._UpdateProfileBtn()
+        }
+        FileDelete(path)
+        this._RefreshEditProfileList(editGui)
+        this._LoadProfileIntoLV(editGui["FolderList"], editGui["EditProfileDDL"].Text)
+    }
+
+    ; 編集ダイアログのドロップダウンで選択中のプロファイルの名前を変更
+    static _RenameProfileFromEdit(editGui) {
+        name := editGui["EditProfileDDL"].Text
+        if (name == "")
+            return
+        oldPath := this._GetProfilesDir() . "\" . name . ".txt"
+        if (!FileExist(oldPath))
+            return
+        editGui.Opt("-AlwaysOnTop")
+        result := InputBox("新しい名前を入力してください:", "名前変更", "w260 h100", name)
+        editGui.Opt("+AlwaysOnTop")
+        if (result.Result != "OK" || Trim(result.Value) == "" || Trim(result.Value) = name)
+            return
+        newName := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
+        if (newName == "")
+            return
+        newPath := this._GetProfilesDir() . "\" . newName . ".txt"
+        if (FileExist(newPath)) {
+            editGui.Opt("-AlwaysOnTop")
+            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
+            editGui.Opt("+AlwaysOnTop")
+            return
+        }
+        FileMove(oldPath, newPath)
+        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (lastProfile = oldPath) {
+            IniWrite(newPath, this.IniPath, "Settings", "LastProfile")
+            this._UpdateProfileBtn()
+        }
+        this._RefreshEditProfileList(editGui, newName)
+    }
+
+    ; 編集ダイアログのプロファイルドロップダウンリストを再構築
+    ; selectName を指定するとその項目を選択する（省略時は先頭）
+    static _RefreshEditProfileList(editGui, selectName := "") {
+        try {
+            if !(editGui && WinExist(editGui))
+                return
+            names := this._GetProfileList()
+            ddl := editGui["EditProfileDDL"]
+            ddl.Delete()
+            if (names.Length > 0) {
+                ddl.Add(names)
+                chosen := 1
+                if (selectName != "") {
+                    for i, n in names {
+                        if (n = selectName) {
+                            chosen := i
+                            break
+                        }
+                    }
+                }
+                ddl.Choose(chosen)
+            }
+        }
+    }
+
+    ; 指定プロファイルの内容を ListView に読み込む
+    static _LoadProfileIntoLV(lv, profileName) {
+        if (profileName == "")
+            return
+        path := this._GetProfilesDir() . "\" . profileName . ".txt"
+        if (!FileExist(path))
+            return
+        lv.Delete()
+        try {
+            loop read path {
+                line := Trim(A_LoopReadLine)
+                if (line == "" || !InStr(line, "="))
+                    continue
+                parts := StrSplit(line, "=", , 2)
+                lv.Add(, Trim(parts[1]), parts[2], "○")
+            }
+        }
+    }
+
+    ; 選択中のプロファイルを削除する
+    static _DeleteSelectedProfile() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        name := this.ProfileDropdownGui["ProfileList"].Text
+        if (name == "")
+            return
+        path := this._GetProfilesDir() . "\" . name . ".txt"
+        if (!FileExist(path))
+            return
+        if (MsgBox("「" . name . "」を削除しますか？", "プロファイル削除", "YesNo Icon!") != "Yes")
+            return
+        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (lastProfile = path) {
+            IniDelete(this.IniPath, "Settings", "LastProfile")
+            this._UpdateProfileBtn()
+        }
+        FileDelete(path)
+        this._RefreshProfileDropdownList()
+    }
+
+    ; 選択中のプロファイルの名前を変更する
+    static _RenameSelectedProfile() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        name := this.ProfileDropdownGui["ProfileList"].Text
+        if (name == "")
+            return
+        oldPath := this._GetProfilesDir() . "\" . name . ".txt"
+        if (!FileExist(oldPath))
+            return
+        result := InputBox("新しい名前を入力してください:", "名前変更", "w260 h100", name)
+        if (result.Result != "OK" || Trim(result.Value) == "" || Trim(result.Value) = name)
+            return
+        newName := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
+        if (newName == "")
+            return
+        newPath := this._GetProfilesDir() . "\" . newName . ".txt"
+        if (FileExist(newPath)) {
+            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
+            return
+        }
+        FileMove(oldPath, newPath)
+        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (lastProfile = oldPath) {
+            IniWrite(newPath, this.IniPath, "Settings", "LastProfile")
+            this._UpdateProfileBtn()
+        }
+        this._RefreshProfileDropdownList()
+    }
+
+    static _ConfirmProfileDropdown() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        name := this.ProfileDropdownGui["ProfileList"].Text
+        this._CloseProfileDropdown()
+        if (name == "")
+            return
+        path := this._GetProfilesDir() . "\" . name . ".txt"
+        this._ImportProfile(path)
+    }
+
+    static _ProfileOverlayFilterChange() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        query := this.ProfileDropdownGui["ProfileFilter"].Value
+        this._ProfileFilteredNames := []
+        for name in this._AllProfileNames
+            if (query == "" || InStr(name, query, false))
+                this._ProfileFilteredNames.Push(name)
+        ddList := this.ProfileDropdownGui["ProfileList"]
+        ddList.Delete()
+        if (this._ProfileFilteredNames.Length > 0) {
+            ddList.Add(this._ProfileFilteredNames)
+            ddList.Choose(1)
+        }
+    }
+
+    static _ProfileNavDown() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        focus := 0
+        try focus := DllCall("user32\GetFocus", "ptr")
+        if (focus != this.ProfileDropdownGui["ProfileFilter"].Hwnd)
+            return
+        ddList := this.ProfileDropdownGui["ProfileList"]
+        cur   := ddList.Value
+        total := this._ProfileFilteredNames.Length
+        if (total == 0)
+            return
+        ddList.Choose((cur <= 0 || cur >= total) ? 1 : cur + 1)
+    }
+
+    static _ProfileNavUp() {
+        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
+            return
+        focus := 0
+        try focus := DllCall("user32\GetFocus", "ptr")
+        if (focus != this.ProfileDropdownGui["ProfileFilter"].Hwnd)
+            return
+        ddList := this.ProfileDropdownGui["ProfileList"]
+        cur   := ddList.Value
+        total := this._ProfileFilteredNames.Length
+        if (total == 0)
+            return
+        ddList.Choose((cur <= 1) ? total : cur - 1)
+    }
+
     static _QuickRegisterFromEdit() {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
@@ -1586,6 +2699,12 @@ class Navi {
         path := Trim(e.Value)
         if (path = "")
             return
+        ; .txt ファイルならプロファイルとしてインポート
+        if (SubStr(StrLower(path), -3) == ".txt") {
+            e.Value := ""
+            this._ImportProfile(path)
+            return
+        }
         if (!DirExist(path)) {
             ToolTip("無効なパスです"), SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
             return
@@ -1616,9 +2735,16 @@ class Navi {
         tv := this.GuiObj["FolderTree"]
         rootBtn.Text := name
 
+        this._PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
         this.lastRoot := name
         this.lastPath := path
         this._RefreshTree(tv, path)
+        this._UpdateTabBar()  ; タブラベルに新ルート名を反映
+
+        ; プロファイルが設定されている場合は自動保存
+        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
+        if (lastProfile != "")
+            this._WriteProfileFileFromMap(lastProfile)
 
         e.Value := ""
         ToolTip("Root added: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
@@ -1650,9 +2776,22 @@ class Navi {
             this._OpenDropdown()
             return
         }
+        if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
+            this._ToggleSearchMode()
+            return
+        }
+        if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
+            this._CycleSearchType()
+            return
+        }
         if (this.GuiObj.HasOwnProp("_btnEditHwnd") && currFocus = this.GuiObj._btnEditHwnd) {
             ; 編集ボタンがフォーカスなら編集GUIを開く
             this._ShowEditGui(this.GuiObj)
+            return
+        }
+        if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd) {
+            ; プロファイルボタンがフォーカスならドロップダウンを開く
+            this._OpenProfileDropdown()
             return
         }
         if (this.GuiObj.HasOwnProp("_pinCheckHwnd") && currFocus = this.GuiObj._pinCheckHwnd) {
@@ -1667,7 +2806,7 @@ class Navi {
             return
         }
         if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
-            ; ツリーフィルター欄がフォーカスの場合: IME変換中なら確定Enterを送る、それ以外はツリーへフォーカス移動
+            ; ツリーフィルター欄がフォーカスの場合: IME変換中なら確定Enterを送る
             hIMC := DllCall("imm32\ImmGetContext", "ptr", this.GuiObj._treeFilterHwnd, "ptr")
             if (hIMC) {
                 composing := DllCall("imm32\ImmGetCompositionStringW", "ptr", hIMC, "uint", 0x0008, "ptr", 0, "ptr", 0) > 0
@@ -1677,11 +2816,80 @@ class Navi {
                     return
                 }
             }
-            this.GuiObj["FolderTree"].Focus()
+            ; 検索モードなら検索実行、フィルターモードならツリーへフォーカス移動
+            if (this._SearchMode) {
+                this._RunSearchFromFilter()
+            } else {
+                this.GuiObj["FolderTree"].Focus()
+            }
             return
         }
         ; それ以外はアクティベート（ファイルなら直接開く、フォルダならExplorer）
         this._HandleActivate()
+    }
+
+    /**
+     * フィルター欄のモードをフォルダフィルター ↔ ファイル検索で切り替える
+     */
+    static _ToggleSearchMode() {
+        this._SearchMode := !this._SearchMode
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        this.GuiObj["FilterToggle"].Text := this._SearchMode ? "🔍" : "📁"
+        ; 検索タイプボタンの表示切替・リセット
+        this.GuiObj["SearchTypeBtn"].Visible := this._SearchMode
+        if (!this._SearchMode) {
+            this._SearchTypeFilter := "all"
+            this.GuiObj["SearchTypeBtn"].Text := "*"
+        }
+        ; TreeFilter の右端を TreeView の右端に揃える（幅 = margin + tvW - tfX）
+        _margin_ := this.GuiObj.MarginX
+        this.GuiObj["FolderTree"].GetPos(,, &_tvW_)
+        if (this._SearchMode)
+            this.GuiObj["TreeFilter"].Move(70,, _margin_ + _tvW_ - 70)
+        else
+            this.GuiObj["TreeFilter"].Move(39,, _margin_ + _tvW_ - 39)
+        cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
+        try DllCall("user32\SendMessageW", "ptr", this.GuiObj["TreeFilter"].Hwnd,
+            "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr", cue, "ptr")
+        this.GuiObj["TreeFilter"].Value := ""
+        this._ApplyTreeFilter("")  ; どちらのモードに切り替えても必ずツリーフィルターをリセット
+        if (!this._SearchMode)    ; フォルダフィルターに戻したら検索結果も閉じる
+            try NaviSearch.ClearHighlights(this)
+        this.GuiObj["TreeFilter"].Focus()
+    }
+
+    /**
+     * 検索モード時: フィルター欄のテキストを使ってファイル検索を実行する
+     */
+    static _RunSearchFromFilter() {
+        query := this.GuiObj["TreeFilter"].Value
+        if (query == "")
+            return
+        tv := this.GuiObj["FolderTree"]
+        selId := tv.GetSelection()
+        basePath := selId ? this._GetTVFullPath(tv, selId) : ""
+        if (basePath == "" || !DirExist(basePath))
+            basePath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+        if (basePath == "")
+            return
+        NaviSearch.RunLocalDirect(this, basePath, query, this._SearchTypeFilter)
+    }
+
+    /**
+     * 検索対象種別を循環切替: *方 → フォルダのみ → ファイルのみ → *方...
+     */
+    static _CycleSearchType() {
+        if (this._SearchTypeFilter = "all") {
+            this._SearchTypeFilter := "dir"
+            this.GuiObj["SearchTypeBtn"].Text := "📁"
+        } else if (this._SearchTypeFilter = "dir") {
+            this._SearchTypeFilter := "file"
+            this.GuiObj["SearchTypeBtn"].Text := "📄"
+        } else {
+            this._SearchTypeFilter := "all"
+            this.GuiObj["SearchTypeBtn"].Text := "*"
+        }
     }
 
     static _HandleActivate() {
@@ -1697,8 +2905,31 @@ class Navi {
                 this._DestroyGui()
             return
         }
-        ; フォルダノード: 従来通り Explorer で開く
+        ; フォルダノード: 既存 Explorer があればアクティブ化、なければ新規
         this.Execute("e")
+    }
+
+    /**
+     * 指定パスが既に Explorer で開かれていればそのウィンドウをアクティブ化する。
+     * 開かれていなければ新規で explorer.exe を起動する。
+     */
+    static _ActivateOrOpenExplorer(path) {
+        path := RTrim(path, "\")
+        try {
+            shell := ComObject("Shell.Application")
+            for w in shell.Windows() {
+                try {
+                    expPath := RTrim(w.Document.Folder.Self.Path, "\")
+                    if (expPath = path) {
+                        hwnd := w.HWND
+                        WinRestore("ahk_id " hwnd)
+                        WinActivate("ahk_id " hwnd)
+                        return
+                    }
+                }
+            }
+        }
+        Run('explorer.exe "' . path . '"')
     }
 
     static _HandleSpace() {
@@ -1706,6 +2937,14 @@ class Navi {
             return
         currFocus := 0
         try currFocus := DllCall("user32\GetFocus", "ptr")
+        if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
+            this._ToggleSearchMode()
+            return
+        }
+        if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
+            this._CycleSearchType()
+            return
+        }
         ; ツリーフィルター欄にフォーカスがある場合はスペースを手動で送る
         if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
             Send "{Space}"  ; IMEのスペース変換も通るよう実キーとして送信
@@ -1725,12 +2964,62 @@ class Navi {
         this.ShowActionMenu()
     }
 
-    static _HandleRootBtnDown() {
+    static _HandleLeftKey() {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
         currFocus := 0
         try currFocus := DllCall("user32\GetFocus", "ptr")
         if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
+            this.GuiObj["ProfileBtn"].Focus()
+        } else if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
+            this.GuiObj["FilterToggle"].Focus()
+        } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
+            ; カーソルが先頭ならトグルボタンへ、そうでなければ通常の←（カーソル移動）
+            sel := SendMessage(0x00B0, 0, 0, this.GuiObj["TreeFilter"])  ; EM_GETSEL
+            if ((sel & 0xFFFF) = 0) {
+                ; 検索モード中はSearchTypeBtnが表示されているのでそちらへ
+                if (this._SearchMode && this.GuiObj.HasOwnProp("_searchTypeBtnHwnd"))
+                    this.GuiObj["SearchTypeBtn"].Focus()
+                else
+                    this.GuiObj["FilterToggle"].Focus()
+            } else
+                Send "{Left}"
+        } else if (this._tvHwnd != 0 && currFocus = this._tvHwnd) {
+            PostMessage(0x0100, 0x25, 0, this._tvHwnd)  ; WM_KEYDOWN VK_LEFT: TreeView折りたたみ
+            PostMessage(0x0101, 0x25, 0, this._tvHwnd)  ; WM_KEYUP
+        }
+    }
+
+    static _HandleRightKey() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        currFocus := 0
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd)
+            this.GuiObj["RootBtn"].Focus()
+        else if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
+            ; 検索モード中はSearchTypeBtnが表示されているのでそちらへ
+            if (this._SearchMode && this.GuiObj.HasOwnProp("_searchTypeBtnHwnd"))
+                this.GuiObj["SearchTypeBtn"].Focus()
+            else
+                this.GuiObj["TreeFilter"].Focus()
+        } else if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd)
+            this.GuiObj["TreeFilter"].Focus()
+        else if (this._tvHwnd != 0 && currFocus = this._tvHwnd) {
+            PostMessage(0x0100, 0x27, 0, this._tvHwnd)  ; WM_KEYDOWN VK_RIGHT: TreeView展開
+            PostMessage(0x0101, 0x27, 0, this._tvHwnd)  ; WM_KEYUP
+        }
+    }
+
+    static _HandleRootBtnDown() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        currFocus := 0
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd) {
+            ; プロファイルボタン → ツリーフィルター欄へ
+            this.GuiObj["TreeFilter"].Focus()
+        } else if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
             ; ルートボタン → ツリーフィルター欄へ
             this.GuiObj["TreeFilter"].Focus()
         } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
@@ -2037,7 +3326,6 @@ class Navi {
      * オーバーレイのリスト選択変更（クリック時）: ユーザーに見せるだけ。確定はEnter/ダブルクリック。
      */
     static _OnDropdownListChange() {
-        ; ユーザーがリストをクリックした際はダブルクリックを待つ（何もしない）
     }
 
     /**
@@ -2059,7 +3347,7 @@ class Navi {
         ddGui.SetFont("s10", "Yu Gothic UI")
 
         filterEdit := ddGui.Add("Edit", "xm w260 vOverlayFilter")
-        try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", 0x1501, "ptr", 1,
+        try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
             "wstr", "名前でフィルター...", "ptr")
 
         ddList := ddGui.Add("ListBox", "xm w260 r8 vDDList", this.FilteredNames)
@@ -2081,16 +3369,17 @@ class Navi {
         ddList.OnEvent("Change", (*) => this._OnDropdownListChange())
         ddList.OnEvent("DoubleClick", (*) => this._ConfirmDropdown())
         ddGui.OnEvent("Close", (*) => this._CloseDropdown())
-        ; WM_ACTIVATE (0x0006): wParam=0 でウィンドウが非アクティブになった時にオーバーレイを閉じる
-        local ddHwnd := ddGui.Hwnd
-        local self := this
+        ; WM_ACTIVATE: wParam=0 でウィンドウが非アクティブになった時にオーバーレイを閉じる
+        local ddHwnd    := ddGui.Hwnd
+        local self      := this
+        local wmActMsg2 := Navi.WM_ACTIVATE
         wmActivate(wParam, lParam, msg, hwnd) {
             if (hwnd = ddHwnd && wParam = 0) {
-                OnMessage(0x0006, wmActivate, 0)  ; 登録解除
+                OnMessage(wmActMsg2, wmActivate, 0)  ; 登録解除
                 SetTimer(() => self._CloseDropdown(), -50)
             }
         }
-        OnMessage(0x0006, wmActivate)
+        OnMessage(wmActMsg2, wmActivate)
 
         HotIfWinActive("ahk_id " ddGui.Hwnd)
         Hotkey("~Enter", (*) => this._ConfirmDropdown(), "On")
@@ -2138,11 +3427,13 @@ class Navi {
         }
         this._CloseDropdown()
         if (selectedTxt != "" && this._FolderMap.Has(selectedTxt) && this.GuiObj && WinExist(this.GuiObj)) {
+            this._PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
             this.lastRoot := selectedTxt
-            this.GuiObj["RootBtn"].Text := selectedTxt
-            this.GuiObj["TreeFilter"].Value := ""  ; ルート切り替え時にフィルターをクリア
+            this.GuiObj["RootBtn"].Text := this._TruncRootLabel(selectedTxt)
+            this.GuiObj["TreeFilter"].Value := ""
             tv := this.GuiObj["FolderTree"]
             this._RefreshTree(tv, this._FolderMap[selectedTxt])
+            this._UpdateTabBar()  ; タブラベルに新ルート名を反映
         } else if (this.GuiObj && WinExist(this.GuiObj)) {
             WinActivate("ahk_id " this.GuiObj.Hwnd)
             this.GuiObj["FolderTree"].Focus()
@@ -2154,22 +3445,28 @@ class Navi {
      * RootBtn 行（編集・ピン留め・ファイル表示）は固定のまま
      */
     static _OnResize(minmax, w, h) {
-        if (minmax = 1 || !(this.GuiObj && WinExist(this.GuiObj)))
+        if (minmax = -1 || !(this.GuiObj && WinExist(this.GuiObj)))
             return
         margin := this.GuiObj.MarginX
         ctrlW  := w - 2 * margin
 
         ; 全幅コントロールを幅に追従させる
-        this.GuiObj["QuickPath"].Move(,, ctrlW)
         this.GuiObj["Breadcrumb"].Move(,, ctrlW)
-        this.GuiObj["TreeFilter"].Move(,, ctrlW)
+        if (this._TabSepCtrl)
+            this._TabSepCtrl.Move(0,, w)  ; 境界線はクライアント全幅
+        ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
+        this.GuiObj["TreeFilter"].GetPos(&_tfX_)
+        this.GuiObj["TreeFilter"].Move(,, w - margin - _tfX_)
 
-        ; TreeView は StatusBar の上まで高さを埋める
+        ; TreeView は QuickPath と StatusBar の上まで高さを埋める
         sbH := 28  ; フォールバック値
         if (this.GuiObj.HasOwnProp("_sbRef"))
             this.GuiObj._sbRef.GetPos(,, , &sbH)
-        tvH := Max(60, h - this._tvY - sbH)
+        qpH := this._quickPathH
+        tvH := Max(60, h - this._tvY - qpH - sbH)
         this.GuiObj["FolderTree"].Move(,, ctrlW, tvH)
+        ; QuickPath を TreeView 直下に追従
+        this.GuiObj["QuickPath"].Move(, this._tvY + tvH, ctrlW, qpH)
     }
 
     /**
@@ -2251,7 +3548,7 @@ class Navi {
     static _InitDefaultActions() {
         this.RegisterAction("e", "&E: Explorer", (path) => (
             DirExist(path) || SplitPath(path, , &path),
-            Run('explorer.exe "' . path . '"')
+            this._ActivateOrOpenExplorer(path)
         ))
         this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
             DirExist(path) || SplitPath(path, , &path),
@@ -2278,7 +3575,7 @@ class Navi {
         ; ローカル再帰検索
         this.RegisterAction("f", "&F: Search (Local)", (path) => NaviSearch.RunLocal(this, path))
         ; Shell 右クリックメニュー
-        this.RegisterAction("r", "&R: Right-Click Menu", (path) => NaviContextMenu.Show(path))
+        this.RegisterAction("r", "&R: Right-Click Menu", (path) => NaviContextMenu.Show(path, this))
     }
 
     ; 右クリック: TreeView 上のアイテムを選択して Shell コンテキストメニューを表示
@@ -2286,10 +3583,13 @@ class Navi {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
         tv := this.GuiObj["FolderTree"]
+        MouseGetPos(,,,&underHwnd, 2)
+        if (underHwnd != tv.Hwnd)
+            return
         ; 右クリック後に選択が確定するよう 1 tick 待つ
         SetTimer(() => (
             id := tv.GetSelection(),
-            id ? NaviContextMenu.Show(Navi._GetTVFullPath(tv, id)) : 0
+            id ? NaviContextMenu.Show(this._GetTVFullPath(tv, id), this) : 0
         ), -1)
     }
 
