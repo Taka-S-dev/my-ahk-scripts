@@ -21,6 +21,7 @@
 #Include *i Navi.Action.ahk
 #Include *i Navi.Filter.ahk
 #Include *i Navi.Tab.ahk
+#Include *i Navi.Profile.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -68,9 +69,7 @@ class Navi {
     static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
     static DropdownGui := ""             ; ルート選択ドロップダウンGUI
-    static ProfileDropdownGui := ""      ; プロファイル選択ドロップダウンGUI
-    static _AllProfileNames := []      ; 全プロファイル名リスト
-    static _ProfileFilteredNames := []   ; フィルター後プロファイル名リスト
+    ; プロファイル関連状態は NaviProfile クラスで管理（Navi.Profile.ahk）
     ; フィルタ関連状態は NaviFilter クラスで管理（Navi.Filter.ahk）
     static _MarkedPaths := Map()   ; マーク済みパス集合（小文字キー→元パス）
     static _MarkedIdSet := Map()   ; マークノードID集合（カスタムドロー用）
@@ -112,6 +111,7 @@ class Navi {
         NaviActions.Init(this)
         NaviFilter.Init(this)
         NaviTab.Init(this)
+        NaviProfile.Init(this)
     }
 
     static Show() {
@@ -157,7 +157,7 @@ class Navi {
         rootBtnText := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
         ; Profile は小さいフォントで控えめに（文脈ラベル的な扱い）
         this.GuiObj.SetFont("s8", "Yu Gothic UI")
-        btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", this._GetProfileBtnText())
+        btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", NaviProfile.GetProfileBtnText())
         this.GuiObj._profileBtnHwnd := btnProfile.Hwnd
         ; › セパレーターで階層を表現
         this.GuiObj.SetFont("s10", "Yu Gothic UI")
@@ -256,7 +256,7 @@ class Navi {
         rootBtn.OnEvent("Click", (*) => this._OpenDropdown())
         btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
         btnSettings.OnEvent("Click", (*) => this._ShowSettingsGui(this.GuiObj))
-        btnProfile.OnEvent("Click", (*) => this._OpenProfileDropdown())
+        btnProfile.OnEvent("Click", (*) => NaviProfile.OpenProfileDropdown())
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this._HandleActivate())
         this.GuiObj.OnEvent("Close", (*) => (this.GuiObj := ""))
@@ -365,7 +365,7 @@ class Navi {
         this._MarkFilterActive := false
         this._LastTreeRootPath := ""
         ; プロファイルドロップダウンを閉じる
-        this._CloseProfileDropdown()
+        NaviProfile.CloseProfileDropdown()
         ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
         NaviTab.Cleanup()
         if (this.GuiObj && WinExist(this.GuiObj)) {
@@ -427,7 +427,7 @@ class Navi {
         editGui.SetFont("s10", "Yu Gothic UI")
         ; --- プロファイル管理 GroupBox（最上部）---
         profBox := editGui.Add("GroupBox", "xm w550 h54", "プロファイル管理")
-        profNames := this._GetProfileList()
+        profNames := NaviProfile.GetProfileList()
         profDDL := editGui.Add("DropDownList", "xm+10 yp+20 w200 vEditProfileDDL", profNames)
         if (profNames.Length > 0) {
             currentP := IniRead(this.IniPath, "Settings", "LastProfile", "")
@@ -457,11 +457,11 @@ class Navi {
             editGui, lv, lv.GetNext())), btnDel.OnEvent("Click", (*) => this._DeleteItem(lv, editGui))
         btnUp.OnEvent("Click", (*) => this._MoveItem(lv, -1)), btnDown.OnEvent("Click", (*) => this._MoveItem(lv, 1))
         btnSave.OnEvent("Click", (*) => this._SaveList(lv, editGui, parentGui))
-        profDDL.OnEvent("Change", (*) => this._LoadProfileIntoLV(lv, editGui["EditProfileDDL"].Text))
-        btnProfNew.OnEvent("Click", (*) => this._NewProfileDialogFromEdit(editGui))
-        btnProfDup.OnEvent("Click", (*) => this._DupProfileDialogFromEdit(editGui, lv))
-        btnProfDel.OnEvent("Click", (*) => this._DeleteProfileFromEdit(editGui))
-        btnProfRen.OnEvent("Click", (*) => this._RenameProfileFromEdit(editGui))
+        profDDL.OnEvent("Change", (*) => NaviProfile.LoadProfileIntoLV(lv, editGui["EditProfileDDL"].Text))
+        btnProfNew.OnEvent("Click", (*) => NaviProfile.NewProfileDialogFromEdit(editGui))
+        btnProfDup.OnEvent("Click", (*) => NaviProfile.DupProfileDialogFromEdit(editGui, lv))
+        btnProfDel.OnEvent("Click", (*) => NaviProfile.DeleteProfileFromEdit(editGui))
+        btnProfRen.OnEvent("Click", (*) => NaviProfile.RenameProfileFromEdit(editGui))
         lv.OnEvent("Click", (_, row) => (row > 0) ? this._ToggleVisibleOnClick(lv, row) : 0)
         lv.OnEvent("DoubleClick", (_, info) => (info && !this._IsVisibleColClick(lv)) ? this._ShowEntryGui(editGui, lv, info) : 0)
 
@@ -730,12 +730,12 @@ class Navi {
         ; プロファイルが設定されている場合は自動的にファイルへ書き出す
         lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
         if (lastProfile != "")
-            this._WriteProfileFile(lv, lastProfile)
+            NaviProfile.WriteProfileFile(lv, lastProfile)
         ; GUI が開いていればインプレース更新、なければ再起動
         if (this.GuiObj && WinExist(this.GuiObj)) {
             if (editGui != "")
                 this._CleanupEditGui(parentGui, editGui)
-            this._ReloadProfileInPlace()
+            NaviProfile.ReloadProfileInPlace()
         } else {
             Reload()
         }
@@ -947,21 +947,6 @@ class Navi {
         }
         this._UpdateStatusBar()
     }
-
-    /**
-     * _AllFolderNames + _FolderMap からプロファイルファイルを書き出す
-     * ドラッグ追加など ListView を介さずにメモリ上のマップから直接書き出す場合に使用する。
-     * ListView を持つ編集 GUI 経由の書き出しは _WriteProfileFile(lv, outPath) を使う。
-     */
-    static _WriteProfileFileFromMap(outPath) {
-        txt := ""
-        for name in this._AllFolderNames
-            if (this._FolderMap.Has(name))
-                txt .= name . "=" . this._FolderMap[name] . "`n"
-        try FileDelete(outPath)
-        FileAppend(txt, outPath, "UTF-8")
-    }
-
 
 
 
@@ -1242,514 +1227,9 @@ class Navi {
         return ""
     }
 
-    /**
-     * 編集 GUI の ListView からプロファイルファイルを書き出す（フォーマット: name=path）
-     * メモリ上のマップから直接書き出す場合は _WriteProfileFileFromMap(outPath) を使う。
-     */
-    static _WriteProfileFile(lv, outPath) {
-        txt := ""
-        Loop lv.GetCount() {
-            name := lv.GetText(A_Index, 1)
-            path := lv.GetText(A_Index, 2)
-            if (name != "" && path != "")
-                txt .= name . "=" . path . "`n"
-        }
-        try FileDelete(outPath)
-        FileAppend(txt, outPath, "UTF-8")
-    }
-
-    /**
-     * .txt プロファイルを読み込んでルートリストを置き換え、タブをリセットして再起動
-     * フォーマット: name=path または path のみ（名前はフォルダ名から自動生成）
-     */
-    static _ImportProfile(txtPath) {
-        if (!FileExist(txtPath)) {
-            ToolTip("ファイルが見つかりません: " . txtPath), SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-        txt := FileRead(txtPath, "UTF-8")
-        if (txt == "")
-            txt := FileRead(txtPath)  ; UTF-8 BOMなしフォールバック
-        entries := []
-        for line in StrSplit(txt, "`n", "`r") {
-            line := Trim(line)
-            if (line == "" || SubStr(line, 1, 1) == ";")
-                continue
-            if (InStr(line, "=")) {
-                p := StrSplit(line, "=", , 2)
-                name := Trim(p[1])
-                path := Trim(p[2])
-            } else {
-                path := Trim(line)
-                name := StrSplit(RTrim(path, "\"), "\")[-1]
-            }
-            if (name != "" && path != "")
-                entries.Push({ name: name, path: path })
-        }
-        ; [Folders] セクションを新しいリストで上書き（空プロファイルはセクションをクリア）
-        IniDelete(this.IniPath, "Folders")
-        for e in entries
-            IniWrite(e.path . "|1", this.IniPath, "Folders", e.name)
-        ; 現プロファイルのタブ状態を保存（プロファイル別セクションに書き込む）
-        NaviTab.SaveCurrentTab()
-        NaviTab.SaveTabsToIni()
-        ; 最後に使ったプロファイルパスを更新
-        IniWrite(txtPath, this.IniPath, "Settings", "LastProfile")
-        ; GUI が開いていればインプレース更新、なければ再起動
-        if (this.GuiObj && WinExist(this.GuiObj))
-            this._ReloadProfileInPlace()
-        else
-            Reload()
-    }
-
-    /**
-     * プロファイル切り替え・保存後のインプレース更新
-     * GUI を閉じずにフォルダマップ・タブ・ツリーを現在の INI 内容で再構築する。
-     * プロファイルロード（_ImportProfile）とリスト保存（_SaveList）の*方から呼ばれる。
-     */
-    static _ReloadProfileInPlace() {
-        ; フォルダデータを再読み込み
-        newFolderMap := Map(), newFolderNames := []
-        this._LoadFolders(newFolderMap, newFolderNames)
-        this._AllFolderNames := newFolderNames
-        this.FilteredNames := newFolderNames.Clone()
-        this._FolderMap := newFolderMap
-
-        ; 新プロファイルのタブ状態を読み込み
-        NaviTab.LoadTabsFromIni()
-
-        ; マーク状態をリセット
-        this._MarkedPaths := Map()
-        this._MarkedIdSet := Map()
-        this._MarkFilterActive := false
-
-        ; ツリーを新プロファイルで復元
-        tv := this.GuiObj["FolderTree"]
-        this.GuiObj["TreeFilter"].Value := ""
-        if (newFolderNames.Length == 0) {
-            ; 空プロファイル: ツリーをクリアして RootBtn をリセット
-            tv.Delete()
-            this.lastRoot := ""
-            this.lastPath := ""
-        } else if (!NaviTab.RestoreCurrentTab(tv)) {
-            ; 新プロファイルに前のルートがなければ先頭ルートへ
-            this.lastRoot := newFolderNames[1]
-            this._RefreshTree(tv, newFolderMap[this.lastRoot])
-        }
-
-        ; UI 更新
-        this.GuiObj["RootBtn"].Text := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
-        this._UpdateProfileBtn()
-        NaviTab.UpdateTabBar()
-        this._UpdateStatusBar()
-    }
-
-    ; --- プロファイル機能 ---
-
-    static _GetProfilesDir() {
-        return A_ScriptDir . "\ui\Navi_profiles"
-    }
-
-    static _GetProfileList() {
-        dir := this._GetProfilesDir()
-        if (!DirExist(dir))
-            DirCreate(dir)
-        names := []
-        Loop Files dir . "\*.txt"
-            names.Push(RegExReplace(A_LoopFileName, "\.txt$", ""))
-        return names
-    }
-
-    static _GetProfileBtnText() {
-        last := IniRead(this.IniPath, "Settings", "LastProfile", "")
-        if (last == "")
-            return "Profile"
-        name := RegExReplace(last, ".*\\")
-        name := RegExReplace(name, "\.txt$")
-        return (StrLen(name) > 10) ? SubStr(name, 1, 9) . ".." : name
-    }
-
     ; RootBtn (w190) に収まるよう長い名前を切り詰める
     static _TruncRootLabel(name) {
         return (StrLen(name) > 18) ? SubStr(name, 1, 16) . "..." : name
-    }
-
-    static _UpdateProfileBtn() {
-        if (this.GuiObj && WinExist(this.GuiObj))
-            this.GuiObj["ProfileBtn"].Text := this._GetProfileBtnText()
-    }
-
-    static _OpenProfileDropdown() {
-        if (this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-
-        this._AllProfileNames := this._GetProfileList()
-        this._ProfileFilteredNames := this._AllProfileNames.Clone()
-
-        ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "プロファイル")
-        ddGui.MarginX := 8
-        ddGui.MarginY := 8
-        ddGui.SetFont("s10", "Yu Gothic UI")
-
-        filterEdit := ddGui.Add("Edit", "xm w200 vProfileFilter")
-        try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
-            "wstr", "名前でフィルター...", "ptr")
-
-        ddList := ddGui.Add("ListBox", "xm w200 r8 vProfileList", this._ProfileFilteredNames)
-        if (this._ProfileFilteredNames.Length > 0)
-            ddList.Choose(1)
-
-        ddGui.SetFont("s8")
-        ddGui.Add("Text", "xm c808080", "↑↓: 移動  Enter: ロード  Esc: 閉じる")
-        this.ProfileDropdownGui := ddGui
-
-        filterEdit.OnEvent("Change", (*) => this._ProfileOverlayFilterChange())
-        ddList.OnEvent("DoubleClick", (*) => this._ConfirmProfileDropdown())
-        ddGui.OnEvent("Close", (*) => this._CloseProfileDropdown())
-
-        local ddHwnd := ddGui.Hwnd
-        local self := this
-        local wmActMsg := Navi.WM_ACTIVATE
-        wmAct(wParam, lParam, msg, hwnd) {
-            if (hwnd = ddHwnd && wParam = 0) {
-                OnMessage(wmActMsg, wmAct, 0)
-                SetTimer(() => self._CloseProfileDropdown(), -50)
-            }
-        }
-        OnMessage(wmActMsg, wmAct)
-
-        HotIfWinActive("ahk_id " ddGui.Hwnd)
-        Hotkey("Enter", (*) => this._ConfirmProfileDropdown(), "On")
-        Hotkey("Escape", (*) => this._CloseProfileDropdown(), "On")
-        Hotkey("~Down", (*) => this._ProfileNavDown(), "On")
-        Hotkey("~Up", (*) => this._ProfileNavUp(), "On")
-        HotIf()
-
-        this.GuiObj.GetPos(&gx, &gy)
-        this.GuiObj["ProfileBtn"].GetPos(&bx, &by, &bw, &bh)
-        ddGui.Show("x" . (gx + bx) . " y" . (gy + by) . " w220 AutoSize")
-        filterEdit.Focus()
-    }
-
-    static _CloseProfileDropdown() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        local ddGui := this.ProfileDropdownGui
-        this.ProfileDropdownGui := ""
-        try ddGui.Destroy()
-    }
-
-    ; プロファイル一覧を再スキャンしてドロップダウンのListBoxを更新する
-    static _RefreshProfileDropdownList() {
-        this._AllProfileNames := this._GetProfileList()
-        query := (this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            ? this.ProfileDropdownGui["ProfileFilter"].Value : ""
-        this._ProfileFilteredNames := []
-        for name in this._AllProfileNames
-            if (query == "" || InStr(name, query, false))
-                this._ProfileFilteredNames.Push(name)
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        ddList := this.ProfileDropdownGui["ProfileList"]
-        ddList.Delete()
-        if (this._ProfileFilteredNames.Length > 0) {
-            ddList.Add(this._ProfileFilteredNames)
-            ddList.Choose(1)
-        }
-    }
-
-    ; 現在のルートを新しい名前のプロファイルとして保存（上書き不可）
-    static _NewProfileDialog() {
-        this._CloseProfileDropdown()
-        result := InputBox("新しいプロファイル名を入力してください:", "新規プロファイル", "w260 h100")
-        if (result.Result != "OK" || Trim(result.Value) == "")
-            return
-        name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
-        if (name == "")
-            return
-        dir := this._GetProfilesDir()
-        if (!DirExist(dir))
-            DirCreate(dir)
-        outPath := dir . "\" . name . ".txt"
-        if (FileExist(outPath)) {
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            return
-        }
-        txt := ""
-        for n in this._AllFolderNames {
-            p := this._FolderMap.Has(n) ? this._FolderMap[n] : ""
-            if (p != "")
-                txt .= n . "=" . p . "`n"
-        }
-        FileAppend(txt, outPath, "UTF-8")
-        IniWrite(outPath, this.IniPath, "Settings", "LastProfile")
-        this._UpdateProfileBtn()
-        ToolTip("作成しました: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
-    }
-
-    ; 空の新規プロファイルを作成（LV もクリアして編集状態にする）
-    static _NewProfileDialogFromEdit(editGui) {
-        editGui.Opt("-AlwaysOnTop")
-        result := InputBox("新しいプロファイル名を入力してください:", "新規プロファイル", "w260 h100")
-        editGui.Opt("+AlwaysOnTop")
-        if (result.Result != "OK" || Trim(result.Value) == "")
-            return
-        name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
-        if (name == "")
-            return
-        dir := this._GetProfilesDir()
-        if (!DirExist(dir))
-            DirCreate(dir)
-        outPath := dir . "\" . name . ".txt"
-        if (FileExist(outPath)) {
-            editGui.Opt("-AlwaysOnTop")
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            editGui.Opt("+AlwaysOnTop")
-            return
-        }
-        FileAppend("", outPath, "UTF-8")  ; 空ファイル作成
-        IniWrite(outPath, this.IniPath, "Settings", "LastProfile")
-        this._UpdateProfileBtn()
-        this._RefreshEditProfileList(editGui, name)
-        this._LoadProfileIntoLV(editGui["FolderList"], name)  ; 空のLVに切り替え
-        ToolTip("作成しました: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
-    }
-
-    ; 現在の LV 内容をコピーして新規プロファイルを作成
-    static _DupProfileDialogFromEdit(editGui, lv) {
-        editGui.Opt("-AlwaysOnTop")
-        result := InputBox("複製後のプロファイル名を入力してください:", "プロファイルを複製", "w260 h100")
-        editGui.Opt("+AlwaysOnTop")
-        if (result.Result != "OK" || Trim(result.Value) == "")
-            return
-        name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
-        if (name == "")
-            return
-        dir := this._GetProfilesDir()
-        if (!DirExist(dir))
-            DirCreate(dir)
-        outPath := dir . "\" . name . ".txt"
-        if (FileExist(outPath)) {
-            editGui.Opt("-AlwaysOnTop")
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            editGui.Opt("+AlwaysOnTop")
-            return
-        }
-        this._WriteProfileFile(lv, outPath)
-        IniWrite(outPath, this.IniPath, "Settings", "LastProfile")
-        this._UpdateProfileBtn()
-        this._RefreshEditProfileList(editGui, name)
-        this._LoadProfileIntoLV(editGui["FolderList"], name)  ; 複製内容をLVに反映
-        ToolTip("複製しました: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
-    }
-
-    ; 編集ダイアログのドロップダウンで選択中のプロファイルを削除
-    static _DeleteProfileFromEdit(editGui) {
-        name := editGui["EditProfileDDL"].Text
-        if (name == "")
-            return
-        path := this._GetProfilesDir() . "\" . name . ".txt"
-        if (!FileExist(path))
-            return
-        editGui.Opt("-AlwaysOnTop")
-        ans := MsgBox("「" . name . "」を削除しますか？", "プロファイル削除", "YesNo Icon!")
-        editGui.Opt("+AlwaysOnTop")
-        if (ans != "Yes")
-            return
-        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
-        if (lastProfile = path) {
-            IniDelete(this.IniPath, "Settings", "LastProfile")
-            this._UpdateProfileBtn()
-        }
-        FileDelete(path)
-        this._RefreshEditProfileList(editGui)
-        this._LoadProfileIntoLV(editGui["FolderList"], editGui["EditProfileDDL"].Text)
-    }
-
-    ; 編集ダイアログのドロップダウンで選択中のプロファイルの名前を変更
-    static _RenameProfileFromEdit(editGui) {
-        name := editGui["EditProfileDDL"].Text
-        if (name == "")
-            return
-        oldPath := this._GetProfilesDir() . "\" . name . ".txt"
-        if (!FileExist(oldPath))
-            return
-        editGui.Opt("-AlwaysOnTop")
-        result := InputBox("新しい名前を入力してください:", "名前変更", "w260 h100", name)
-        editGui.Opt("+AlwaysOnTop")
-        if (result.Result != "OK" || Trim(result.Value) == "" || Trim(result.Value) = name)
-            return
-        newName := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
-        if (newName == "")
-            return
-        newPath := this._GetProfilesDir() . "\" . newName . ".txt"
-        if (FileExist(newPath)) {
-            editGui.Opt("-AlwaysOnTop")
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            editGui.Opt("+AlwaysOnTop")
-            return
-        }
-        FileMove(oldPath, newPath)
-        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
-        if (lastProfile = oldPath) {
-            IniWrite(newPath, this.IniPath, "Settings", "LastProfile")
-            this._UpdateProfileBtn()
-        }
-        this._RefreshEditProfileList(editGui, newName)
-    }
-
-    ; 編集ダイアログのプロファイルドロップダウンリストを再構築
-    ; selectName を指定するとその項目を選択する（省略時は先頭）
-    static _RefreshEditProfileList(editGui, selectName := "") {
-        try {
-            if !(editGui && WinExist(editGui))
-                return
-            names := this._GetProfileList()
-            ddl := editGui["EditProfileDDL"]
-            ddl.Delete()
-            if (names.Length > 0) {
-                ddl.Add(names)
-                chosen := 1
-                if (selectName != "") {
-                    for i, n in names {
-                        if (n = selectName) {
-                            chosen := i
-                            break
-                        }
-                    }
-                }
-                ddl.Choose(chosen)
-            }
-        }
-    }
-
-    ; 指定プロファイルの内容を ListView に読み込む
-    static _LoadProfileIntoLV(lv, profileName) {
-        if (profileName == "")
-            return
-        path := this._GetProfilesDir() . "\" . profileName . ".txt"
-        if (!FileExist(path))
-            return
-        lv.Delete()
-        try {
-            loop read path {
-                line := Trim(A_LoopReadLine)
-                if (line == "" || !InStr(line, "="))
-                    continue
-                parts := StrSplit(line, "=", , 2)
-                lv.Add(, Trim(parts[1]), parts[2], "○")
-            }
-        }
-    }
-
-    ; 選択中のプロファイルを削除する
-    static _DeleteSelectedProfile() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        name := this.ProfileDropdownGui["ProfileList"].Text
-        if (name == "")
-            return
-        path := this._GetProfilesDir() . "\" . name . ".txt"
-        if (!FileExist(path))
-            return
-        if (MsgBox("「" . name . "」を削除しますか？", "プロファイル削除", "YesNo Icon!") != "Yes")
-            return
-        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
-        if (lastProfile = path) {
-            IniDelete(this.IniPath, "Settings", "LastProfile")
-            this._UpdateProfileBtn()
-        }
-        FileDelete(path)
-        this._RefreshProfileDropdownList()
-    }
-
-    ; 選択中のプロファイルの名前を変更する
-    static _RenameSelectedProfile() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        name := this.ProfileDropdownGui["ProfileList"].Text
-        if (name == "")
-            return
-        oldPath := this._GetProfilesDir() . "\" . name . ".txt"
-        if (!FileExist(oldPath))
-            return
-        result := InputBox("新しい名前を入力してください:", "名前変更", "w260 h100", name)
-        if (result.Result != "OK" || Trim(result.Value) == "" || Trim(result.Value) = name)
-            return
-        newName := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
-        if (newName == "")
-            return
-        newPath := this._GetProfilesDir() . "\" . newName . ".txt"
-        if (FileExist(newPath)) {
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            return
-        }
-        FileMove(oldPath, newPath)
-        lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
-        if (lastProfile = oldPath) {
-            IniWrite(newPath, this.IniPath, "Settings", "LastProfile")
-            this._UpdateProfileBtn()
-        }
-        this._RefreshProfileDropdownList()
-    }
-
-    static _ConfirmProfileDropdown() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        name := this.ProfileDropdownGui["ProfileList"].Text
-        this._CloseProfileDropdown()
-        if (name == "")
-            return
-        path := this._GetProfilesDir() . "\" . name . ".txt"
-        this._ImportProfile(path)
-    }
-
-    static _ProfileOverlayFilterChange() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        query := this.ProfileDropdownGui["ProfileFilter"].Value
-        this._ProfileFilteredNames := []
-        for name in this._AllProfileNames
-            if (query == "" || InStr(name, query, false))
-                this._ProfileFilteredNames.Push(name)
-        ddList := this.ProfileDropdownGui["ProfileList"]
-        ddList.Delete()
-        if (this._ProfileFilteredNames.Length > 0) {
-            ddList.Add(this._ProfileFilteredNames)
-            ddList.Choose(1)
-        }
-    }
-
-    static _ProfileNavDown() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        focus := 0
-        try focus := DllCall("user32\GetFocus", "ptr")
-        if (focus != this.ProfileDropdownGui["ProfileFilter"].Hwnd)
-            return
-        ddList := this.ProfileDropdownGui["ProfileList"]
-        cur := ddList.Value
-        total := this._ProfileFilteredNames.Length
-        if (total == 0)
-            return
-        ddList.Choose((cur <= 0 || cur >= total) ? 1 : cur + 1)
-    }
-
-    static _ProfileNavUp() {
-        if !(this.ProfileDropdownGui && WinExist(this.ProfileDropdownGui))
-            return
-        focus := 0
-        try focus := DllCall("user32\GetFocus", "ptr")
-        if (focus != this.ProfileDropdownGui["ProfileFilter"].Hwnd)
-            return
-        ddList := this.ProfileDropdownGui["ProfileList"]
-        cur := ddList.Value
-        total := this._ProfileFilteredNames.Length
-        if (total == 0)
-            return
-        ddList.Choose((cur <= 1) ? total : cur - 1)
     }
 
     static _QuickRegisterFromEdit() {
@@ -1762,7 +1242,7 @@ class Navi {
         ; .txt ファイルならプロファイルとしてインポート
         if (SubStr(StrLower(path), -3) == ".txt") {
             e.Value := ""
-            this._ImportProfile(path)
+            NaviProfile.ImportProfile(path)
             return
         }
         if (!DirExist(path)) {
@@ -1804,7 +1284,7 @@ class Navi {
         ; プロファイルが設定されている場合は自動保存
         lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
         if (lastProfile != "")
-            this._WriteProfileFileFromMap(lastProfile)
+            NaviProfile.WriteProfileFileFromMap(lastProfile)
 
         e.Value := ""
         ToolTip("Root added: " . name), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
@@ -1851,7 +1331,7 @@ class Navi {
         }
         if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd) {
             ; プロファイルボタンがフォーカスならドロップダウンを開く
-            this._OpenProfileDropdown()
+            NaviProfile.OpenProfileDropdown()
             return
         }
         if (this.GuiObj.HasOwnProp("_pinCheckHwnd") && currFocus = this.GuiObj._pinCheckHwnd) {
