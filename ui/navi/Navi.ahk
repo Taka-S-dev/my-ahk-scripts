@@ -119,9 +119,6 @@ class Navi {
             if WinActive(this.GuiObj) {
                 this.GuiObj.Minimize()
             } else {
-                ; フィルター欄をクリアしてから再表示（モードは維持）
-                this.GuiObj["TreeFilter"].Value := ""
-                NaviFilter.ApplyTreeFilter("")
                 this.GuiObj.Show()
                 WinActivate(this.GuiObj)
                 this.GuiObj["FolderTree"].Focus()
@@ -875,6 +872,7 @@ class Navi {
         }
         tv.Delete()
         this.FilesShown := Map()  ; ノードIDが無効化されるためクリア
+        NaviFilter._FilterMatchIdSet := Map()  ; ノードIDが無効化されるためクリア
         NaviMark._MarkedIdSet := Map()
         NaviMark._MarkFilterActive := false
         ; 別ルートへ切り替え時はマークをリセット
