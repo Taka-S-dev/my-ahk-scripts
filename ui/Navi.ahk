@@ -18,6 +18,7 @@
 #Requires AutoHotkey v2.0
 #Include *i Navi.Search.ahk
 #Include *i Navi.ContextMenu.ahk
+#Include *i Navi.Action.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -40,7 +41,7 @@ class Navi {
     static MENU_BTN_H := 26        ; ボタンの高さ
     static MENU_OFFSET_Y := 240    ; 中央配置の計算用オフセット
 
-    ; --- 位置決定用の定数（魔法数の明示化） ---
+    ; --- 位置決定用の定数 ---
     static CARET_OFFSET_X := 5     ; キャレットからのXオフセット
     static CARET_GAP_Y := 25       ; キャレット下に表示する際の縦方向ギャップ
     static SCREEN_MARGIN := 10     ; 画面端からのマージン
@@ -55,9 +56,9 @@ class Navi {
     static lastRoot := ""
     static lastPath := ""
     static GuiObj := ""
-    static QuickPathFocused    := false
-    static QuickPathHwnd       := 0
-    static _TreeFilterFocused  := false
+    static QuickPathFocused := false
+    static QuickPathHwnd := 0
+    static _TreeFilterFocused := false
     static FilesShown := Map()
     static lastSelectedId := 0  ; パンくず更新用
     static DetailListGuiObj := ""  ; 詳細リストウィンドウ
@@ -66,79 +67,66 @@ class Navi {
     static _FolderMap := Map()    ; ルート名→パスマップ
     static DropdownGui := ""             ; ルート選択ドロップダウンGUI
     static ProfileDropdownGui := ""      ; プロファイル選択ドロップダウンGUI
-    static _AllProfileNames   := []      ; 全プロファイル名リスト
+    static _AllProfileNames := []      ; 全プロファイル名リスト
     static _ProfileFilteredNames := []   ; フィルター後プロファイル名リスト
     static _treeFilterCallback := ""  ; ツリーフィルターデバウンス用コールバック参照
     static _indexBuildCallback := ""  ; インデックス先読み構築タイマー用コールバック参照
     static _FolderIndex := []         ; ツリーフィルター用フォルダパスキャッシュ
     static _IndexedRoot := ""         ; キャッシュが対応するルートパス
-    static _FilterRunning    := false ; 再入防止フラグ
-    static _FilterPending    := ""    ; 再入中に届いた最新クエリ（false=保留なし、文字列=保留あり）
+    static _FilterRunning := false ; 再入防止フラグ
+    static _FilterPending := ""    ; 再入中に届いた最新クエリ（false=保留なし、文字列=保留あり）
     static _FilterPendingSet := false ; _FilterPending が有効かどうか（""と未設定を区別）
-    static _FilterCancelled  := false ; ルート切り替え時にフィルタ処理を強制中止するフラグ
-    static _FdIndexPid      := 0     ; fd 非同期インデックス構築のプロセスID
-    static _FdIndexFile     := ""    ; fd 出力先一時ファイル
-    static _FdIndexRoot     := ""    ; 非同期構築中のルートパス
-    static _FdIndexStartMs  := 0     ; fd 起動時刻（A_TickCount）タイムアウト判定用
+    static _FilterCancelled := false ; ルート切り替え時にフィルタ処理を強制中止するフラグ
+    static _FdIndexPid := 0     ; fd 非同期インデックス構築のプロセスID
+    static _FdIndexFile := ""    ; fd 出力先一時ファイル
+    static _FdIndexRoot := ""    ; 非同期構築中のルートパス
+    static _FdIndexStartMs := 0     ; fd 起動時刻（A_TickCount）タイムアウト判定用
     static _FdIndexTimedOut := false ; タイムアウト強制終了フラグ
-    static _FdPollCb        := ""    ; fd 完了ポーリングタイマーコールバック
-    static _OnIndexReadyCb  := ""    ; fd 完了後に呼ぶコールバック
+    static _FdPollCb := ""    ; fd 完了ポーリングタイマーコールバック
+    static _OnIndexReadyCb := ""    ; fd 完了後に呼ぶコールバック
     static FD_INDEX_TIMEOUT_MS := 10000  ; フィルターインデックス構築タイムアウト(ms)
     static _FilterMatchIdSet := Map() ; マッチノードID集合（カスタムドロー用）
-    static _FilterTvHwnd     := 0     ; フィルタカスタムドロー対象 TreeView の Hwnd
+    static _FilterTvHwnd := 0     ; フィルタカスタムドロー対象 TreeView の Hwnd
     static _FilterDrawHandler := ""   ; WM_NOTIFY ハンドラー参照
     static FILTER_MATCH_COLOR := 0x00CC5500  ; フィルタマッチ着色色 BGR: RGB(0,85,204)=青
-    static _MarkedPaths      := Map()   ; マーク済みパス集合（小文字キー→元パス）
-    static _MarkedIdSet      := Map()   ; マークノードID集合（カスタムドロー用）
+    static _MarkedPaths := Map()   ; マーク済みパス集合（小文字キー→元パス）
+    static _MarkedIdSet := Map()   ; マークノードID集合（カスタムドロー用）
     static _MarkFilterActive := false   ; マークフィルタービュー中フラグ
-    static MARK_COLOR        := 0x0000AA00  ; マーク着色色 BGR: 緑
+    static MARK_COLOR := 0x0000AA00  ; マーク着色色 BGR: 緑
     static _LastTreeRootPath := ""      ; 前回の _RefreshTree ルートパス（マーク初期化判定用）
     static TAB_HISTORY_MAX := 20   ; タブ内ルート履歴の最大保持件数
-    static _Tabs          := []    ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
-    static _CurrentTab    := 1     ; アクティブタブ番号（1-based）
-    static _TabCount      := 1     ; 現在開いているタブ数
-    static TAB_MAX        := 5     ; タブ最大数
-    static TAB_WIDTH      := 85    ; タブ1枠の幅px（(GUI_WIDTH-2*MarginX - (TAB_MAX-1)) / TAB_MAX）
-    static _TabBtnCtrls   := []    ; タブラベルコントロール配列（GuiControl）
-    static _TabULCtrl     := ""    ; アクティブタブ下線インジケーター（Progress コントロール）
-    static _TabSepCtrl    := ""    ; タブ/ヘッダー境界線
+    static _Tabs := []    ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
+    static _CurrentTab := 1     ; アクティブタブ番号（1-based）
+    static _TabCount := 1     ; 現在開いているタブ数
+    static TAB_MAX := 5     ; タブ最大数
+    static TAB_WIDTH := 85    ; タブ1枠の幅px（(GUI_WIDTH-2*MarginX - (TAB_MAX-1)) / TAB_MAX）
+    static _TabBtnCtrls := []    ; タブラベルコントロール配列（GuiControl）
+    static _TabULCtrl := ""    ; アクティブタブ下線インジケーター（Progress コントロール）
+    static _TabSepCtrl := ""    ; タブ/ヘッダー境界線
     static TAB_ACTIVE_COLOR := 0x00CC5500  ; アンダーライン色（COLORREF BGR: 青系）
-    static _ILHandle    := 0           ; TreeView 用 ImageList ハンドル
-    static _IconCache   := Map()       ; 拡張子→ImageList インデックスキャッシュ
-    static _ILNextIdx   := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
+    static _ILHandle := 0           ; TreeView 用 ImageList ハンドル
+    static _IconCache := Map()       ; 拡張子→ImageList インデックスキャッシュ
+    static _ILNextIdx := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
     static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
     static _BreadcrumbHwnd := 0       ; パンくずコントロールのHwnd（カーソル変更用）
-    static _tvHwnd        := 0        ; TreeView の Hwnd
-    static _quickPathH    := 22       ; QuickPath 欄の高さ（リサイズ計算用）
+    static _tvHwnd := 0        ; TreeView の Hwnd
+    static _quickPathH := 22       ; QuickPath 欄の高さ（リサイズ計算用）
     static _tabBarVisible := true     ; タブバー表示状態（1タブ時は非表示）
-    static _tabBarShift   := 25      ; タブバー非表示時にコントロールを上げるpx
-    static _SearchMode       := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
+    static _tabBarShift := 25      ; タブバー非表示時にコントロールを上げるpx
+    static _SearchMode := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
     static _SearchTypeFilter := "all"  ; 検索対象種別（"all" / "dir" / "file"）
 
     ; --- Windows API メッセージ定数 ---
-    static WM_SETCURSOR   := 0x0020   ; カーソル形状変更通知
-    static WM_ACTIVATE    := 0x0006   ; ウィンドウアクティブ状態変更
-    static WM_SETTEXT     := 0x000C   ; コントロールテキスト設定（プレースホルダー等）
-    static WM_NOTIFY      := 0x004E   ; コモンコントロール通知（カスタムドロー等）
+    static WM_SETCURSOR := 0x0020   ; カーソル形状変更通知
+    static WM_ACTIVATE := 0x0006   ; ウィンドウアクティブ状態変更
+    static WM_SETTEXT := 0x000C   ; コントロールテキスト設定（プレースホルダー等）
+    static WM_NOTIFY := 0x004E   ; コモンコントロール通知（カスタムドロー等）
     static PBM_SETBARCOLOR := 0x0409  ; プログレスバー前景色設定
-    static PBM_SETBKCOLOR  := 0x040A  ; プログレスバー背景色設定
+    static PBM_SETBKCOLOR := 0x040A  ; プログレスバー背景色設定
     static EM_SETCUEBANNER := 0x1501  ; Edit コントロールのプレースホルダーテキスト設定
     static TAB_UL_BACKGROUND_COLOR := 0xF0F0F0  ; タブ下線の背景色（ウィンドウ背景と合わせて透過風に）
 
-    ; ---- Action registry ----
-    static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
-
-    static RegisterAction(key, label, fn) {
-        this.Actions[StrLower(key)] := { label: label, run: fn }
-    }
-
-    static RegisterShellAction(key, label, cmdTemplate, runOpt := "") {
-        ; {path} を選択パスで置換して実行
-        this.RegisterAction(key, label, (path) => (
-            Run(StrReplace(cmdTemplate, "{path}", path), , runOpt)
-        ))
-    }
 
     static Init() {
         uiDir := A_ScriptDir "\ui"
@@ -152,8 +140,7 @@ class Navi {
         }
         this._EnsureDefaultFolders()
         this.ExplorerPath := this._LoadConfig()
-        this._InitDefaultActions()
-        this._LoadUserActions()
+        NaviActions.Init(this)
     }
 
     static Show() {
@@ -195,12 +182,12 @@ class Navi {
         this._TabBtnCtrls := []
         this.GuiObj.SetFont("s8", "Yu Gothic UI")
         Loop this.TAB_MAX {
-            n    := A_Index
-            w    := this.TAB_WIDTH
+            n := A_Index
+            w := this.TAB_WIDTH
             xOpt := (n = 1) ? "xm w" . w . " h20 +0x101" : "x+1 yp w" . w . " h20 +0x101"
-            lbl  := this.GuiObj.Add("Text", xOpt, this._GetTabLabel(n))
+            lbl := this.GuiObj.Add("Text", xOpt, this._GetTabLabel(n))
             this._TabBtnCtrls.Push(lbl)
-            lbl.OnEvent("Click",       this._MakeTabHandler(n))
+            lbl.OnEvent("Click", this._MakeTabHandler(n))
             lbl.OnEvent("DoubleClick", this._MakeTabDblClickHandler(n))
             if (n > this._TabCount)
                 lbl.Visible := false
@@ -208,7 +195,7 @@ class Navi {
         ; アクティブタブ下線（Progress バーを流用）
         ulCtrl := this.GuiObj.Add("Progress", "xm y+0 w" . this.TAB_WIDTH . " h3 -Smooth -Border", 100)
         DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBARCOLOR, "ptr", 0, "uint", this.TAB_ACTIVE_COLOR)
-        DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBKCOLOR,  "ptr", 0, "uint", this.TAB_UL_BACKGROUND_COLOR)
+        DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBKCOLOR, "ptr", 0, "uint", this.TAB_UL_BACKGROUND_COLOR)
         this._TabULCtrl := ulCtrl
         ; タブとヘッダーの境界線（ブラウザ風の区切り線）
         tabSep := this.GuiObj.Add("Text", "x0 y+0 w471 h2 +0x10")  ; SS_ETCHEDHORZ 全幅（xm8+content455+rm8）
@@ -229,9 +216,9 @@ class Navi {
         ; Root は主役として大きめに
         rootBtn := this.GuiObj.Add("Button", "x+3 yp w190 h26 vRootBtn", rootBtnText)
         this.GuiObj._rootBtnHwnd := rootBtn.Hwnd
-        btnEdit     := this.GuiObj.Add("Button", "x+5 yp w40 h26 -Tabstop", "編集")
-        this.GuiObj._btnEditHwnd    := btnEdit.Hwnd
-        this.GuiObj._btnEditCtrl    := btnEdit
+        btnEdit := this.GuiObj.Add("Button", "x+5 yp w40 h26 -Tabstop", "編集")
+        this.GuiObj._btnEditHwnd := btnEdit.Hwnd
+        this.GuiObj._btnEditCtrl := btnEdit
         btnSettings := this.GuiObj.Add("Button", "x+3 yp w26 h26 -Tabstop", "⚙")
         this.GuiObj._btnSettingsCtrl := btnSettings
         pinCheck := this.GuiObj.Add("Checkbox", "x+8 yp+4 vPinCheck -Tabstop", "ピン留め")
@@ -268,13 +255,13 @@ class Navi {
             filterToggle.Text := "🔍"
             searchTypeBtn.Visible := true
             searchTypeBtn.Text := (this._SearchTypeFilter = "dir") ? "📁" : (this._SearchTypeFilter = "file") ? "📄" : "*"
-            treeFilter.Move(70,, 393)  ; 幅は後の _OnResize で正確に調整される
+            treeFilter.Move(70, , 393)  ; 幅は後の _OnResize で正確に調整される
         }
         cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
         try DllCall("user32\SendMessageW", "ptr", treeFilter.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
             "wstr", cue, "ptr")
         treeFilter.OnEvent("Change", (*) => this._OnTreeFilterChange())
-        treeFilter.OnEvent("Focus",    (*) => (Navi._TreeFilterFocused := true))
+        treeFilter.OnEvent("Focus", (*) => (Navi._TreeFilterFocused := true))
         treeFilter.OnEvent("LoseFocus", (*) => (Navi._TreeFilterFocused := false))
         this.GuiObj._treeFilterHwnd := treeFilter.Hwnd
 
@@ -288,10 +275,10 @@ class Navi {
         try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr",
             "Add root: full path + Enter", "ptr")
         quickEdit.SetFont("s9 c808080", "Yu Gothic UI")
-        quickEdit.OnEvent("Focus",    (*) => (Navi.QuickPathFocused := true))
+        quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
         quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
         this.QuickPathHwnd := quickEdit.Hwnd
-        quickEdit.GetPos(,, , &_qpH_)
+        quickEdit.GetPos(, , , &_qpH_)
         this._quickPathH := _qpH_
 
         ; ステータスバーによる操作案内
@@ -307,7 +294,7 @@ class Navi {
         this._rootBtnRightGap := 455 - _rbW_
         ; タブバー非表示時のシフト量を確定（ヘッダーY - タブバー開始Y）
         btnProfile.GetPos(, &_headerY_)
-        this._tabBarShift   := _headerY_ - _tabBarTopY_
+        this._tabBarShift := _headerY_ - _tabBarTopY_
         this._tabBarVisible := true
 
         ; タブ1枚のときはタブバーを初期非表示にする
@@ -336,7 +323,7 @@ class Navi {
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
         Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
-        Hotkey("Left",  (*) => this._HandleLeftKey(),  "On")
+        Hotkey("Left", (*) => this._HandleLeftKey(), "On")
         Hotkey("Right", (*) => this._HandleRightKey(), "On")
         Hotkey("RButton", (*) => this._HandleRButton(), "On")
         Hotkey("!m", (*) => this._ToggleMark(), "On")
@@ -347,9 +334,9 @@ class Navi {
         }
         Hotkey("^t", (*) => this._NewTab(), "On")
         Hotkey("^w", (*) => this._CloseTab(), "On")
-        Hotkey("^Tab",   (*) => this._SwitchToTab(Mod(this._CurrentTab, this._TabCount) + 1), "On")
-        Hotkey("^+Tab",  (*) => this._SwitchToTab(Mod(this._CurrentTab - 2 + this._TabCount, this._TabCount) + 1), "On")
-        Hotkey("!Left",  (*) => this._TabNavBack(), "On")
+        Hotkey("^Tab", (*) => this._SwitchToTab(Mod(this._CurrentTab, this._TabCount) + 1), "On")
+        Hotkey("^+Tab", (*) => this._SwitchToTab(Mod(this._CurrentTab - 2 + this._TabCount, this._TabCount) + 1), "On")
+        Hotkey("!Left", (*) => this._TabNavBack(), "On")
         Hotkey("!Right", (*) => this._TabNavForward(), "On")
         Hotkey("^+h", (*) => this._ClearTabHistory(), "On")
         HotIf()
@@ -386,101 +373,6 @@ class Navi {
         centerY := waT + (waB - waT - winH) // 2
 
         this.GuiObj.Show("x" . centerX . " y" . centerY)
-    }
-
-    /**
-     * アクション選択用のオーバーレイメニュー
-     */
-    static ShowActionMenu() {
-        tvObj := this.GuiObj["FolderTree"]
-        if !(id := tvObj.GetSelection()) {
-            ToolTip("フォルダを選択してください")
-            SetTimer(() => ToolTip(), -1000)
-            return
-        }
-
-        fullPath := this._GetTVFullPath(tvObj, id)
-        this.GuiObj.GetPos(&gx, &gy, &gw, &gh)
-
-        this.GuiObj.Opt("+Disabled")
-
-        actGui := Gui("+Owner" . this.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border")
-        actGui.BackColor := this.MENU_BG_COLOR
-        actGui.MarginX := 10
-        actGui.MarginY := 8
-
-        folderName := (InStr(fullPath, "\")) ? StrSplit(fullPath, "\")[-1] : fullPath
-        actGui.SetFont("s8 w400 cA0A0A0", "Yu Gothic UI")
-        actGui.Add("Text", "Center w" . this.MENU_BTN_W, folderName)
-
-        actGui.SetFont("s9 w400 cWhite")
-        ; レジストリに登録されたアクションからボタンを生成
-        keys := []
-        for k, _ in this.Actions
-            keys.Push(k)
-        ; AHK v2 arrays don't have a Sort method. Use global Sort() on a joined string.
-        if (keys.Length > 1) {
-            tmp := ""
-            for _, kk in keys
-                tmp .= kk . "`n"
-            tmp := Sort(RTrim(tmp, "`n"))
-            keys := StrSplit(tmp, "`n")
-        }
-
-        for k in keys {
-            act := this.Actions[k]
-            btn := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm", act.label)
-            btn.OnEvent("Click", ((kk, *) => (
-                this.GuiObj.Opt("-Disabled"),
-                actGui.Destroy(),
-                this.Execute(kk)
-            )).Bind(k))
-        }
-
-        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+6", "&X: Cancel")
-        btnCancel.OnEvent("Click", (*) => (this.GuiObj.Opt("-Disabled"), actGui.Destroy()))
-        actGui.OnEvent("Escape", (*) => (this.GuiObj.Opt("-Disabled"), actGui.Destroy()))
-
-        actGui.Show("AutoSize x" . gx + (gw - this.MENU_WIDTH) // 2 . " y" . gy + (gh - this.MENU_OFFSET_Y) // 2)
-    }
-
-    static Execute(key) {
-        fullPath := ""
-        if (this.GuiObj && WinExist(this.GuiObj)) {
-            tvObj := this.GuiObj["FolderTree"]
-            if (id := tvObj.GetSelection()) {
-                fullPath := this._GetTVFullPath(tvObj, id)
-                ; 操作したパスとルート名をメモリに保存
-                this.lastPath := fullPath
-            }
-        }
-        if (fullPath == "") {
-            fullPath := this._GetActiveWindowPath()
-        }
-
-        if (fullPath != "" && (DirExist(fullPath) || FileExist(fullPath))) {
-            ; 外部アプリ起動前にGUIを先に閉じる
-            ; （ExplorerなどがAlwaysOnTopのNavi裏に隠れたり、ウィンドウアクティベーション競合を防ぐ）
-            if (this.GuiObj && WinExist(this.GuiObj)) {
-                ; actGui破棄後の黒塗り描画崩れを常に回復
-                WinRedraw(this.GuiObj)
-                k := StrLower(key)
-                if (k != "f" && k != "r" && !this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
-                    if (IniRead(this.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1")
-                        this.GuiObj.Minimize()
-                    else
-                        this._DestroyGui()
-                }
-            }
-            this._ExecuteAction(key, fullPath)
-            if (key != "k" && StrLower(key) != "f" && StrLower(key) != "r") {
-                ToolTip("実行 [" . key . "]: " . fullPath)
-                SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
-            }
-        } else {
-            ToolTip("対象のパスが見つかりません")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-        }
     }
 
     static _FocusPath(tv, targetPath) {
@@ -531,15 +423,15 @@ class Navi {
             this._treeFilterCallback := ""
         }
         ; マーク状態をリセット
-        this._MarkedPaths      := Map()
-        this._MarkedIdSet      := Map()
+        this._MarkedPaths := Map()
+        this._MarkedIdSet := Map()
         this._MarkFilterActive := false
         this._LastTreeRootPath := ""
         ; プロファイルドロップダウンを閉じる
         this._CloseProfileDropdown()
         ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
         this._TabBtnCtrls := []
-        this._TabULCtrl  := ""
+        this._TabULCtrl := ""
         this._TabSepCtrl := ""
         if (this.GuiObj && WinExist(this.GuiObj)) {
             ; 検索ウィンドウなど付随UIも確実に閉じる
@@ -591,23 +483,6 @@ class Navi {
         )"
 
     MsgBox(helpText, "Navi ショートカット", "Iconi 4096")
-    }
-
-    static _ExecuteAction(key, path) {
-        k := StrLower(key)
-        if (this.Actions.Has(k)) {
-            fn := this.Actions[k].run
-            ; 関数オブジェクトをプロパティから呼ぶ場合は .Call() を使用
-            try {
-                fn.Call(path)
-            } catch as e {
-                ToolTip("Action error: " . e.Message)
-                SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            }
-        } else {
-            ToolTip("未定義のアクション: " . key)
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-        }
     }
 
     static _ShowEditGui(parentGui) {
@@ -667,10 +542,10 @@ class Navi {
         ; パス列をLV幅いっぱいに伸ばす（内側クライアント幅から固定列を除いた残り）
         rc := Buffer(16, 0)
         DllCall("user32\GetClientRect", "ptr", lv.Hwnd, "ptr", rc)
-        lvClientW    := NumGet(rc, 8, "int")
+        lvClientW := NumGet(rc, 8, "int")
         initPathColW := lvClientW - 120 - 50
         lv.ModifyCol(2, initPathColW)
-        profBox.GetPos(,, &initProfBoxW)
+        profBox.GetPos(, , &initProfBoxW)
 
         ; 垂直移動が必要なコントロールの初期 Y を収集（LV下のボタン行のみ）
         vertCtrls := [btnAdd, btnMod, btnDel, btnUp, btnDown]
@@ -688,7 +563,7 @@ class Navi {
             lv.Move(, , initLvW + dw, initLvH + dh)
             lv.ModifyCol(2, initPathColW + dw)
             btnSave.Move(initBtnSaveX + dw, initBtnSaveY + dh)
-            profBox.Move(,, initProfBoxW + dw)
+            profBox.Move(, , initProfBoxW + dw)
             for i, ctrl in vertCtrls
                 ctrl.Move(, vertY[i] + dh)
         }
@@ -717,7 +592,7 @@ class Navi {
         btnBrowseExplorer.Enabled := (explorerPath != "explorer.exe")
         useDefaultCb.OnEvent("Click", (*) => (
             useDefaultCb.Value ? (explorerEdit.Enabled := false, btnBrowseExplorer.Enabled := false)
-                               : (explorerEdit.Enabled := true,  btnBrowseExplorer.Enabled := true)
+            : (explorerEdit.Enabled := true, btnBrowseExplorer.Enabled := true)
         ))
         btnBrowseExplorer.OnEvent("Click", (*) => (
             sel := FileSelect(3, explorerEdit.Value, "ファイラーを選択", "(*.exe)"),
@@ -993,16 +868,16 @@ class Navi {
      * ImageList[0]=フォルダ → "Icon1"、ImageList[1]=ファイル → "Icon2"
      */
     static _SetupTreeIcons(tv) {
-        SHGSI_ICON      := 0x100
+        SHGSI_ICON := 0x100
         SHGSI_SMALLICON := 0x1
-        SIID_DOCNOASSOC  := 0   ; 汎用ファイルアイコン（関連付けなし）
-        SIID_FOLDER      := 3   ; 標準フォルダアイコン
-        SIID_FOLDEROPEN  := 4   ; 開いたフォルダ（ハイライトフォルダ用）
-        SIID_FIND        := 22  ; 検索アイコン（ハイライトファイル用）
+        SIID_DOCNOASSOC := 0   ; 汎用ファイルアイコン（関連付けなし）
+        SIID_FOLDER := 3   ; 標準フォルダアイコン
+        SIID_FOLDEROPEN := 4   ; 開いたフォルダ（ハイライトフォルダ用）
+        SIID_FIND := 22  ; 検索アイコン（ハイライトファイル用）
 
         ; SHSTOCKICONINFO: cbSize(4) [+4 pad on 64bit] + hIcon(ptr) + iSysImageIndex(4) + iIcon(4) + szPath(MAX_PATH*2)
         ; 64bit: 4+4pad+8+4+4+520=544 / 32bit: 4+4+4+4+520=536
-        sii_size     := (A_PtrSize = 8) ? 544 : 536
+        sii_size := (A_PtrSize = 8) ? 544 : 536
         hIcon_offset := A_PtrSize  ; 64bit=8(cbSize+padding), 32bit=4(cbSize)
 
         ; Icon1=フォルダ, Icon2=汎用ファイル, Icon3=ハイライトフォルダ, Icon4=ハイライトファイル
@@ -1048,7 +923,7 @@ class Navi {
         DllCall("shell32\SHGetFileInfoW",
             "wstr", "file" . ext,
             "uint", 0x80,           ; FILE_ATTRIBUTE_NORMAL
-            "ptr",  sfi,
+            "ptr", sfi,
             "uint", sfi_size,
             "uint", 0x111)          ; SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES
         hIcon := NumGet(sfi, 0, "ptr")
@@ -1102,9 +977,9 @@ class Navi {
         pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
         if (pid = 0)
             return false
-        this._FdIndexPid     := pid
-        this._FdIndexFile    := tmpFile
-        this._FdIndexRoot    := rootPath
+        this._FdIndexPid := pid
+        this._FdIndexFile := tmpFile
+        this._FdIndexRoot := rootPath
         this._FdIndexStartMs := A_TickCount
         cb := () => this._PollFdIndex()
         this._FdPollCb := cb
@@ -1187,15 +1062,15 @@ class Navi {
         if (this._FdIndexPid != 0) {
             try ProcessClose(this._FdIndexPid)
             try FileDelete(this._FdIndexFile)
-            this._FdIndexPid  := 0
+            this._FdIndexPid := 0
             this._FdIndexFile := ""
             this._FdIndexRoot := ""
         }
         if (this._FdPollCb != "")
             SetTimer(this._FdPollCb, 0)
-        this._FdPollCb        := ""
+        this._FdPollCb := ""
         this._FdIndexTimedOut := false
-        this._OnIndexReadyCb  := ""
+        this._OnIndexReadyCb := ""
     }
 
     /**
@@ -1258,13 +1133,13 @@ class Navi {
         this._FilterCancelled := false  ; 新しいフィルタ要求でキャンセルフラグをリセット
         ; 再入防止: 実行中なら最新クエリを保留して即リターン
         if (this._FilterRunning) {
-            this._FilterPending    := query
+            this._FilterPending := query
             this._FilterPendingSet := true   ; "" もクリア操作として区別できるようにフラグで管理
             return
         }
-        this._FilterRunning    := true
+        this._FilterRunning := true
         this._FilterPendingSet := false
-        this._FilterPending    := ""
+        this._FilterPending := ""
         try {
             if !(this.GuiObj && WinExist(this.GuiObj))
                 return
@@ -1424,7 +1299,7 @@ class Navi {
             ; 保留クエリがあれば次のイベントループで処理（"" もクリア操作として正しく処理）
             if (this._FilterPendingSet) {
                 pending := this._FilterPending
-                this._FilterPending    := ""
+                this._FilterPending := ""
                 this._FilterPendingSet := false
                 SetTimer(() => this._ApplyTreeFilter(pending), -1)
             }
@@ -1449,15 +1324,15 @@ class Navi {
         if (NumGet(lParam, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
             return
         stageOff := (A_PtrSize = 8) ? 24 : 12
-        stage    := NumGet(lParam, stageOff, "uint")
+        stage := NumGet(lParam, stageOff, "uint")
         if (stage = 0x1) {  ; CDDS_PREPAINT
             ; マッチまたはマーク済みノードがあれば CDRF_NOTIFYITEMDRAW を返す
             return (Navi._FilterMatchIdSet.Count > 0 || Navi._MarkedIdSet.Count > 0) ? 0x20 : ""
         }
         if (stage = 0x10001) {  ; CDDS_ITEMPREPAINT
             specOff := (A_PtrSize = 8) ? 56 : 36
-            itemId  := NumGet(lParam, specOff, "ptr")
-            clrOff  := (A_PtrSize = 8) ? 80 : 48
+            itemId := NumGet(lParam, specOff, "ptr")
+            clrOff := (A_PtrSize = 8) ? 80 : 48
             ; マーク色はフィルタマッチ色より優先
             if (Navi._MarkedIdSet.Has(itemId)) {
                 NumPut("uint", Navi.MARK_COLOR, lParam, clrOff)
@@ -1476,20 +1351,20 @@ class Navi {
             || (this._FdIndexPid != 0 && this._FdIndexRoot != rootPath)) {
             this._CancelFdIndex()
             ; 実行中の _ApplyTreeFilter ループを次の Sleep(0) チェックで中止させる
-            this._FilterCancelled  := true
-            this._FilterRunning    := false
+            this._FilterCancelled := true
+            this._FilterRunning := false
             this._FilterPendingSet := false
-            this._FilterPending    := ""
-            this._IndexedRoot      := ""
-            this._FolderIndex      := []
+            this._FilterPending := ""
+            this._IndexedRoot := ""
+            this._FolderIndex := []
         }
         tv.Delete()
         this.FilesShown := Map()  ; ノードIDが無効化されるためクリア
-        this._MarkedIdSet      := Map()
+        this._MarkedIdSet := Map()
         this._MarkFilterActive := false
         ; 別ルートへ切り替え時はマークをリセット
         if (rootPath != this._LastTreeRootPath) {
-            this._MarkedPaths      := Map()
+            this._MarkedPaths := Map()
             this._LastTreeRootPath := rootPath
         }
         if (!DirExist(rootPath)) {
@@ -1591,7 +1466,7 @@ class Navi {
         if (n > this._TabCount)
             return ""
         root := (n == this._CurrentTab) ? this.lastRoot
-              : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
+            : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
         if (root == "")
             root := "New"
         ; 85px幅: 日本語全角7文字≈70px、ASCII14文字≈84px → 7文字超で切り詰め
@@ -1646,11 +1521,11 @@ class Navi {
 
         ; タブバー下のコントロールを全て上下にシフト
         ctrls := [
-            this.GuiObj["ProfileBtn"],  this.GuiObj["ProfileSep"],
+            this.GuiObj["ProfileBtn"], this.GuiObj["ProfileSep"],
             this.GuiObj["RootBtn"],
-            this.GuiObj._btnEditCtrl,   this.GuiObj._btnSettingsCtrl,
-            this.GuiObj["PinCheck"],    this.GuiObj["AutoFilesCheck"],
-            this.GuiObj["Breadcrumb"],  this.GuiObj["FilterToggle"],
+            this.GuiObj._btnEditCtrl, this.GuiObj._btnSettingsCtrl,
+            this.GuiObj["PinCheck"], this.GuiObj["AutoFilesCheck"],
+            this.GuiObj["Breadcrumb"], this.GuiObj["FilterToggle"],
             this.GuiObj["SearchTypeBtn"], this.GuiObj["TreeFilter"],
             this.GuiObj["FolderTree"],
             this.GuiObj["QuickPath"]
@@ -1675,11 +1550,11 @@ class Navi {
         if (selId)
             try selPath := this._GetTVFullPath(tv, selId)
         return {
-            root:       this.lastRoot,
-            filter:     this.GuiObj["TreeFilter"].Value,
-            marks:      marks,
+            root: this.lastRoot,
+            filter: this.GuiObj["TreeFilter"].Value,
+            marks: marks,
             markFilter: this._MarkFilterActive,
-            path:       selPath
+            path: selPath
         }
     }
 
@@ -1691,7 +1566,7 @@ class Navi {
             return
         s := this._GetLiveState()
         while (this._Tabs.Length < this._CurrentTab)
-            this._Tabs.Push({root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: []})
+            this._Tabs.Push({ root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: [] })
         tab := this._Tabs[this._CurrentTab]
         tab.root := s.root, tab.filter := s.filter, tab.marks := s.marks
         tab.markFilter := s.markFilter, tab.path := s.path
@@ -1704,10 +1579,10 @@ class Navi {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
         while (this._Tabs.Length < this._CurrentTab)
-            this._Tabs.Push({root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: []})
+            this._Tabs.Push({ root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: [] })
         tab := this._Tabs[this._CurrentTab]
-        s   := this._GetLiveState()
-        tab.history.Push({root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path})
+        s := this._GetLiveState()
+        tab.history.Push({ root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path })
         if (tab.history.Length > this.TAB_HISTORY_MAX)
             tab.history.RemoveAt(1)
         tab.future := []
@@ -1724,12 +1599,12 @@ class Navi {
         rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
         this.GuiObj["TreeFilter"].Value := state.filter
         if (state.markFilter && rootPath != "") {
-            this._MarkedPaths      := state.marks
+            this._MarkedPaths := state.marks
             this._MarkFilterActive := true
             this._ApplyMarkFilter(tv, rootPath)
         } else if (state.filter != "" && rootPath != "") {
             this._MarkFilterActive := false
-            this._MarkedPaths      := state.marks
+            this._MarkedPaths := state.marks
             this._ApplyTreeFilter(state.filter)
         } else if (rootPath != "") {
             this._MarkFilterActive := false
@@ -1794,7 +1669,7 @@ class Navi {
         this._SaveCurrentTab()
         this._TabCount++
         while (this._Tabs.Length < this._TabCount)
-            this._Tabs.Push({root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: []})
+            this._Tabs.Push({ root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: [] })
         this._Tabs[this._TabCount] := {
             root: this.lastRoot, filter: "", marks: Map(),
             markFilter: false, path: "", history: [], future: []
@@ -1853,7 +1728,7 @@ class Navi {
         if (tab.history.Length == 0)
             return
         s := this._GetLiveState()
-        tab.future.Push({root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path})
+        tab.future.Push({ root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path })
         prev := tab.history.Pop()
         tab.root := prev.root, tab.filter := prev.filter, tab.marks := prev.marks
         tab.markFilter := prev.markFilter, tab.path := prev.path
@@ -1874,7 +1749,7 @@ class Navi {
         if (tab.future.Length == 0)
             return
         s := this._GetLiveState()
-        tab.history.Push({root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path})
+        tab.history.Push({ root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path })
         next := tab.future.Pop()
         tab.root := next.root, tab.filter := next.filter, tab.marks := next.marks
         tab.markFilter := next.markFilter, tab.path := next.path
@@ -1893,7 +1768,7 @@ class Navi {
             return
         tab := this._Tabs[this._CurrentTab]
         tab.history := []
-        tab.future  := []
+        tab.future := []
         ToolTip("タブ履歴をクリアしました"), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
     }
 
@@ -1918,16 +1793,16 @@ class Navi {
     static _SaveTabsToIni() {
         sec := this._ProfileTabSection()
         try IniDelete(this.IniPath, sec)
-        IniWrite(this._TabCount,   this.IniPath, sec, "Count")
+        IniWrite(this._TabCount, this.IniPath, sec, "Count")
         IniWrite(this._CurrentTab, this.IniPath, sec, "Current")
         Loop this._TabCount {
-            n   := A_Index
+            n := A_Index
             tab := (n <= this._Tabs.Length) ? this._Tabs[n] : ""
             if (tab == "")
                 continue
-            IniWrite(tab.root,               this.IniPath, sec, "Tab" . n . "Root")
-            IniWrite(tab.filter,             this.IniPath, sec, "Tab" . n . "Filter")
-            IniWrite(tab.path,               this.IniPath, sec, "Tab" . n . "Path")
+            IniWrite(tab.root, this.IniPath, sec, "Tab" . n . "Root")
+            IniWrite(tab.filter, this.IniPath, sec, "Tab" . n . "Filter")
+            IniWrite(tab.path, this.IniPath, sec, "Tab" . n . "Path")
             IniWrite(tab.markFilter ? "1" : "0", this.IniPath, sec, "Tab" . n . "MarkFilter")
             markStr := ""
             for k, v in tab.marks
@@ -1941,23 +1816,23 @@ class Navi {
      * Show() の _LoadFolders 直後に呼ぶこと（タブバー生成前に _TabCount を確定させるため）
      */
     static _LoadTabsFromIni() {
-        sec   := this._ProfileTabSection()
+        sec := this._ProfileTabSection()
         ; プロファイル別セクションになければ旧来の [Tabs] にフォールバック
         if (IniRead(this.IniPath, sec, "Count", "") == "")
             sec := "Tabs"
-        count   := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Count",   "1")), this.TAB_MAX))
+        count := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Count", "1")), this.TAB_MAX))
         current := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Current", "1")), count))
-        this._TabCount   := count
+        this._TabCount := count
         this._CurrentTab := current
-        this._Tabs       := []
+        this._Tabs := []
 
         Loop count {
-            n    := A_Index
-            root := IniRead(this.IniPath, sec, "Tab" . n . "Root",       "")
-            filt := IniRead(this.IniPath, sec, "Tab" . n . "Filter",     "")
-            pth  := IniRead(this.IniPath, sec, "Tab" . n . "Path",       "")
-            mf   := IniRead(this.IniPath, sec, "Tab" . n . "MarkFilter", "0")
-            mStr := IniRead(this.IniPath, sec, "Tab" . n . "Marks",      "")
+            n := A_Index
+            root := IniRead(this.IniPath, sec, "Tab" . n . "Root", "")
+            filt := IniRead(this.IniPath, sec, "Tab" . n . "Filter", "")
+            pth := IniRead(this.IniPath, sec, "Tab" . n . "Path", "")
+            mf := IniRead(this.IniPath, sec, "Tab" . n . "MarkFilter", "0")
+            mStr := IniRead(this.IniPath, sec, "Tab" . n . "Marks", "")
 
             marks := Map()
             if (mStr != "")
@@ -2009,19 +1884,19 @@ class Navi {
         tv.Delete()
         this.FilesShown := Map()
         this._FilterMatchIdSet := Map()
-        this._MarkedIdSet      := Map()
+        this._MarkedIdSet := Map()
         NaviSearch._HighlightedIdSet := Map()
 
         rootBase := RTrim(rootPath, "\")
-        rootID   := tv.Add(rootPath, 0, "Expand Icon1")
+        rootID := tv.Add(rootPath, 0, "Expand Icon1")
         addedPaths := Map()
         addedPaths[StrLower(rootBase)] := rootID
 
         firstMark := true
         for key, markedPath in this._MarkedPaths {
-            rel   := SubStr(markedPath, StrLen(rootBase) + 2)
+            rel := SubStr(markedPath, StrLen(rootBase) + 2)
             parts := StrSplit(rel, "\")
-            parentID    := rootID
+            parentID := rootID
             currentPath := rootBase
             for i, part in parts {
                 currentPath .= "\" . part
@@ -2033,14 +1908,14 @@ class Navi {
                         this._MarkedIdSet[existingID] := true
                     parentID := existingID
                 } else {
-                    opts    := isMatch ? "Bold" : ""
+                    opts := isMatch ? "Bold" : ""
                     if (isMatch && firstMark) {
                         opts .= " Select"
                         firstMark := false
                     }
-                    isDir   := DirExist(currentPath) ? true : false
+                    isDir := DirExist(currentPath) ? true : false
                     iconStr := isDir ? "Icon1" : this._GetFileIconStr(part)
-                    nodeID  := tv.Add(part, parentID, opts . " " . iconStr)
+                    nodeID := tv.Add(part, parentID, opts . " " . iconStr)
                     if (isMatch)
                         this._MarkedIdSet[nodeID] := true
                     addedPaths[pathKey] := nodeID
@@ -2285,7 +2160,7 @@ class Navi {
             if (line == "" || SubStr(line, 1, 1) == ";")
                 continue
             if (InStr(line, "=")) {
-                p    := StrSplit(line, "=", , 2)
+                p := StrSplit(line, "=", , 2)
                 name := Trim(p[1])
                 path := Trim(p[2])
             } else {
@@ -2293,7 +2168,7 @@ class Navi {
                 name := StrSplit(RTrim(path, "\"), "\")[-1]
             }
             if (name != "" && path != "")
-                entries.Push({name: name, path: path})
+                entries.Push({ name: name, path: path })
         }
         ; [Folders] セクションを新しいリストで上書き（空プロファイルはセクションをクリア）
         IniDelete(this.IniPath, "Folders")
@@ -2321,15 +2196,15 @@ class Navi {
         newFolderMap := Map(), newFolderNames := []
         this._LoadFolders(newFolderMap, newFolderNames)
         this._AllFolderNames := newFolderNames
-        this.FilteredNames   := newFolderNames.Clone()
-        this._FolderMap      := newFolderMap
+        this.FilteredNames := newFolderNames.Clone()
+        this._FolderMap := newFolderMap
 
         ; 新プロファイルのタブ状態を読み込み
         this._LoadTabsFromIni()
 
         ; マーク状態をリセット
-        this._MarkedPaths      := Map()
-        this._MarkedIdSet      := Map()
+        this._MarkedPaths := Map()
+        this._MarkedIdSet := Map()
         this._MarkFilterActive := false
 
         ; ツリーを新プロファイルで復元
@@ -2394,7 +2269,7 @@ class Navi {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
 
-        this._AllProfileNames      := this._GetProfileList()
+        this._AllProfileNames := this._GetProfileList()
         this._ProfileFilteredNames := this._AllProfileNames.Clone()
 
         ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "プロファイル")
@@ -2414,12 +2289,12 @@ class Navi {
         ddGui.Add("Text", "xm c808080", "↑↓: 移動  Enter: ロード  Esc: 閉じる")
         this.ProfileDropdownGui := ddGui
 
-        filterEdit.OnEvent("Change",      (*) => this._ProfileOverlayFilterChange())
-        ddList.OnEvent("DoubleClick",     (*) => this._ConfirmProfileDropdown())
-        ddGui.OnEvent("Close",            (*) => this._CloseProfileDropdown())
+        filterEdit.OnEvent("Change", (*) => this._ProfileOverlayFilterChange())
+        ddList.OnEvent("DoubleClick", (*) => this._ConfirmProfileDropdown())
+        ddGui.OnEvent("Close", (*) => this._CloseProfileDropdown())
 
-        local ddHwnd   := ddGui.Hwnd
-        local self     := this
+        local ddHwnd := ddGui.Hwnd
+        local self := this
         local wmActMsg := Navi.WM_ACTIVATE
         wmAct(wParam, lParam, msg, hwnd) {
             if (hwnd = ddHwnd && wParam = 0) {
@@ -2430,10 +2305,10 @@ class Navi {
         OnMessage(wmActMsg, wmAct)
 
         HotIfWinActive("ahk_id " ddGui.Hwnd)
-        Hotkey("Enter",   (*) => this._ConfirmProfileDropdown(), "On")
-        Hotkey("Escape",  (*) => this._CloseProfileDropdown(), "On")
-        Hotkey("~Down",   (*) => this._ProfileNavDown(), "On")
-        Hotkey("~Up",     (*) => this._ProfileNavUp(), "On")
+        Hotkey("Enter", (*) => this._ConfirmProfileDropdown(), "On")
+        Hotkey("Escape", (*) => this._CloseProfileDropdown(), "On")
+        Hotkey("~Down", (*) => this._ProfileNavDown(), "On")
+        Hotkey("~Up", (*) => this._ProfileNavUp(), "On")
         HotIf()
 
         this.GuiObj.GetPos(&gx, &gy)
@@ -2739,7 +2614,7 @@ class Navi {
         if (focus != this.ProfileDropdownGui["ProfileFilter"].Hwnd)
             return
         ddList := this.ProfileDropdownGui["ProfileList"]
-        cur   := ddList.Value
+        cur := ddList.Value
         total := this._ProfileFilteredNames.Length
         if (total == 0)
             return
@@ -2754,7 +2629,7 @@ class Navi {
         if (focus != this.ProfileDropdownGui["ProfileFilter"].Hwnd)
             return
         ddList := this.ProfileDropdownGui["ProfileList"]
-        cur   := ddList.Value
+        cur := ddList.Value
         total := this._ProfileFilteredNames.Length
         if (total == 0)
             return
@@ -2913,11 +2788,11 @@ class Navi {
         }
         ; TreeFilter の右端を TreeView の右端に揃える（幅 = margin + tvW - tfX）
         _margin_ := this.GuiObj.MarginX
-        this.GuiObj["FolderTree"].GetPos(,, &_tvW_)
+        this.GuiObj["FolderTree"].GetPos(, , &_tvW_)
         if (this._SearchMode)
-            this.GuiObj["TreeFilter"].Move(70,, _margin_ + _tvW_ - 70)
+            this.GuiObj["TreeFilter"].Move(70, , _margin_ + _tvW_ - 70)
         else
-            this.GuiObj["TreeFilter"].Move(39,, _margin_ + _tvW_ - 39)
+            this.GuiObj["TreeFilter"].Move(39, , _margin_ + _tvW_ - 39)
         cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
         try DllCall("user32\SendMessageW", "ptr", this.GuiObj["TreeFilter"].Hwnd,
             "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr", cue, "ptr")
@@ -2962,8 +2837,8 @@ class Navi {
     }
 
     static _HandleActivate() {
-        tv   := this.GuiObj["FolderTree"]
-        id   := tv.GetSelection()
+        tv := this.GuiObj["FolderTree"]
+        id := tv.GetSelection()
         path := id ? this._GetTVFullPath(tv, id) : ""
         if (path == "")
             return
@@ -2975,7 +2850,7 @@ class Navi {
             return
         }
         ; フォルダノード: 既存 Explorer があればアクティブ化、なければ新規
-        this.Execute("e")
+        NaviActions.Execute("e")
     }
 
     /**
@@ -3030,7 +2905,7 @@ class Navi {
             IniWrite(this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles")
             return
         }
-        this.ShowActionMenu()
+        NaviActions.ShowActionMenu()
     }
 
     static _HandleLeftKey() {
@@ -3292,7 +3167,7 @@ class Navi {
         actGui.SetFont("s9 w400 cWhite")
         ; レジストリに登録されたアクションからボタンを生成
         keys := []
-        for k, _ in this.Actions
+        for k, _ in NaviActions.Actions
             keys.Push(k)
         ; ソート
         if (keys.Length > 1) {
@@ -3304,7 +3179,7 @@ class Navi {
         }
 
         for k in keys {
-            act := this.Actions[k]
+            act := NaviActions.Actions[k]
             btn := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm", act.label)
             btn.OnEvent("Click", ((kk, *) => (
                 dlGui.Opt("-Disabled"),
@@ -3342,7 +3217,7 @@ class Navi {
         ; 操作したパスとルート名をメモリに保存（ツリーと同じように）
         this.lastPath := fullPath
 
-        this._ExecuteAction(key, fullPath)
+        NaviActions._ExecuteAction(key, fullPath)
 
         ; アクション実行後に詳細リストウィンドウを閉じる
         this._CloseDetailListGui()
@@ -3439,8 +3314,8 @@ class Navi {
         ddList.OnEvent("DoubleClick", (*) => this._ConfirmDropdown())
         ddGui.OnEvent("Close", (*) => this._CloseDropdown())
         ; WM_ACTIVATE: wParam=0 でウィンドウが非アクティブになった時にオーバーレイを閉じる
-        local ddHwnd    := ddGui.Hwnd
-        local self      := this
+        local ddHwnd := ddGui.Hwnd
+        local self := this
         local wmActMsg2 := Navi.WM_ACTIVATE
         wmActivate(wParam, lParam, msg, hwnd) {
             if (hwnd = ddHwnd && wParam = 0) {
@@ -3517,23 +3392,23 @@ class Navi {
         if (minmax = -1 || !(this.GuiObj && WinExist(this.GuiObj)))
             return
         margin := this.GuiObj.MarginX
-        ctrlW  := w - 2 * margin
+        ctrlW := w - 2 * margin
 
         ; 全幅コントロールを幅に追従させる
-        this.GuiObj["Breadcrumb"].Move(,, ctrlW)
+        this.GuiObj["Breadcrumb"].Move(, , ctrlW)
         if (this._TabSepCtrl)
-            this._TabSepCtrl.Move(0,, w)  ; 境界線はクライアント全幅
+            this._TabSepCtrl.Move(0, , w)  ; 境界線はクライアント全幅
         ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
         this.GuiObj["TreeFilter"].GetPos(&_tfX_)
-        this.GuiObj["TreeFilter"].Move(,, w - margin - _tfX_)
+        this.GuiObj["TreeFilter"].Move(, , w - margin - _tfX_)
 
         ; TreeView は QuickPath と StatusBar の上まで高さを埋める
         sbH := 28  ; フォールバック値
         if (this.GuiObj.HasOwnProp("_sbRef"))
-            this.GuiObj._sbRef.GetPos(,, , &sbH)
+            this.GuiObj._sbRef.GetPos(, , , &sbH)
         qpH := this._quickPathH
         tvH := Max(60, h - this._tvY - qpH - sbH)
-        this.GuiObj["FolderTree"].Move(,, ctrlW, tvH)
+        this.GuiObj["FolderTree"].Move(, , ctrlW, tvH)
         ; QuickPath を TreeView 直下に追従
         this.GuiObj["QuickPath"].Move(, this._tvY + tvH, ctrlW, qpH)
     }
@@ -3614,45 +3489,12 @@ class Navi {
         ddList.Choose((cur <= 1) ? total : cur - 1)
     }
 
-    static _InitDefaultActions() {
-        this.RegisterAction("e", "&E: Explorer", (path) => (
-            DirExist(path) || SplitPath(path, , &path),
-            this._ActivateOrOpenExplorer(path)
-        ))
-        this.RegisterAction("t", "&t: Preferred Explorer", (path) => (
-            DirExist(path) || SplitPath(path, , &path),
-            (this.ExplorerPath == "explorer.exe")
-                ? Run('explorer.exe "' . path . '"')
-                : (FileExist(this.ExplorerPath) ? Run('"' . this.ExplorerPath . '" "' . path . '"') : 0)
-        ))
-        this.RegisterShellAction("v", "&V: VS Code", A_ComSpec . ' /c code "{path}"', "Hide")
-        this.RegisterShellAction("c", "&C: Command Prompt", A_ComSpec . ' /K cd /d "{path}"')
-        this.RegisterShellAction("p", "&P: PowerShell",
-            'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"')
-        this.RegisterAction("k", "&K: Copy Path", (path) => (A_Clipboard := path, ToolTip("Path Copied: " . path),
-            SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)))
-        ; ファイル/フォルダ名のみをコピー
-        this.RegisterAction("n", "&N: Copy Name", (path) => (
-            SplitPath(path, &fn),
-            name := (fn != "" ? fn : path),
-            A_Clipboard := name,
-            ToolTip("Name Copied: " . name),
-            SetTimer(() => ToolTip(), -this.TOOLTIP_COPY_DURATION)
-        ))
-        ; 一時コピーを作成して開く
-        this.RegisterAction("o", "&O: Open Temp Copy", (path) => this._OpenTempCopy(path))
-        ; ローカル再帰検索
-        this.RegisterAction("f", "&F: Search (Local)", (path) => NaviSearch.RunLocal(this, path))
-        ; Shell 右クリックメニュー
-        this.RegisterAction("r", "&R: Right-Click Menu", (path) => NaviContextMenu.Show(path, this))
-    }
-
     ; 右クリック: TreeView 上のアイテムを選択して Shell コンテキストメニューを表示
     static _HandleRButton() {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
         tv := this.GuiObj["FolderTree"]
-        MouseGetPos(,,,&underHwnd, 2)
+        MouseGetPos(, , , &underHwnd, 2)
         if (underHwnd != tv.Hwnd)
             return
         ; 右クリック後に選択が確定するよう 1 tick 待つ
@@ -3662,25 +3504,4 @@ class Navi {
         ), -1)
     }
 
-    static _LoadUserActions() {
-        try {
-            content := IniRead(this.IniPath, "Actions", , "")
-            for line in StrSplit(content, "`n", "`r") {
-                if !InStr(line, "=")
-                    continue
-                kv := StrSplit(line, "=", , 2)
-                key := Trim(kv[1])
-                parts := StrSplit(Trim(kv[2]), "|")
-                if (parts.Length >= 3) {
-                    label := parts[1]
-                    kind := StrLower(parts[2])
-                    if (kind = "shell") {
-                        cmd := parts[3]
-                        opt := (parts.Length >= 4) ? parts[4] : ""
-                        this.RegisterShellAction(key, label, cmd, opt)
-                    }
-                }
-            }
-        }
-    }
 }
