@@ -34,6 +34,7 @@ class NaviSearch {
     static _HighlightedIdSet := Map()  ; カスタムドロー用 O(1) ルックアップ
     static _CustomDrawHandler := ""    ; WM_NOTIFY ハンドラー参照
     static _CustomDrawTvHwnd := 0      ; 対象TreeViewのHwnd
+    static _NaviRef          := ""     ; Navi インスタンス参照（#Warn 回避用）
     static HIGHLIGHT_COLOR := 0x0000A5FF ; ハイライト色(COLORREF) = オレンジ R255 G165 B0
 
     ; 調整可能な設定値
@@ -99,16 +100,30 @@ class NaviSearch {
             SetTimer(() => ToolTip(), -navi.TOOLTIP_ERROR_DURATION)
             return
         }
-        ; 設定を読み込み（除外リスト、タイムアウト等）
-        this._LoadSettings()
-        this.LastSearchBasePath := basePath
         ; モーダル・最前面の検索入力ダイアログ
         result := this._PromptQuery(navi, basePath)
         if (result = "")
             return
-        q          := result["q"]
-        typeFilter := result["typeFilter"]
-        ; クエリ内の d:/f: プレフィックスによる上書き（後方互換性）
+        this._StartSearch(navi, basePath, result["q"], result["typeFilter"])
+    }
+
+    ; ダイアログなしで直接検索実行（フィルター欄の検索モードから呼び出し）
+    static RunLocalDirect(navi, basePath, query, typeFilter := "all") {
+        if (basePath = "" || !DirExist(basePath)) {
+            ToolTip("検索ベースのフォルダが無効です")
+            SetTimer(() => ToolTip(), -navi.TOOLTIP_ERROR_DURATION)
+            return
+        }
+        if (query = "")
+            return
+        this._StartSearch(navi, basePath, query, typeFilter)
+    }
+
+    ; 共通の検索開始処理（クエリ正規化・タスク初期化・バックエンド選択）
+    static _StartSearch(navi, basePath, q, typeFilter) {
+        this._LoadSettings()
+        this.LastSearchBasePath := basePath
+        ; d:/f: プレフィックスによる typeFilter 上書き（後方互換性）
         if (SubStr(q, 1, 2) = "d:") {
             typeFilter := "dir"
             q := Trim(SubStr(q, 3))
@@ -116,13 +131,10 @@ class NaviSearch {
             typeFilter := "file"
             q := Trim(SubStr(q, 3))
         }
-
         incGroups := [], notAlts := []
         this._ParseQuery(q, &incGroups, &notAlts)
         if (incGroups.Length = 0)
             return
-
-        ; 非同期タスクを初期化
         this.CancelRequested := false
         this.SearchActive := true
         this.Task := Map(
@@ -139,13 +151,13 @@ class NaviSearch {
         )
         this._ShowProgress(navi)
         this.EnsureHotkeys(navi)
-        ; バックエンド選択: fd が利用可能かつ有効ならfd バックエンドを使用
-        fdPath := ""
-        if (this.UseFd)
-            fdPath := this._FindFd()
         ; 検索開始前に JumpGui を開く（リアルタイム表示用）
         if (navi.GuiObj && WinExist(navi.GuiObj))
             this._EnsureJumpGui(navi)
+        ; バックエンド選択: fd が利用可能かつ有効なら fd バックエンドを使用
+        fdPath := ""
+        if (this.UseFd)
+            fdPath := this._FindFd()
         if (fdPath != "")
             this._RunWithFd(navi, basePath, q, typeFilter, incGroups, notAlts)
         else
@@ -1029,9 +1041,9 @@ class NaviSearch {
             }
             if (nv && nv.GuiObj && WinExist(nv.GuiObj)) {
                 nv.GuiObj.Opt("-Disabled +AlwaysOnTop")
-                ; NaviのEsc=閉じるを再登録（検索キャンセルで上書きされたため）
+                ; NaviのEsc=_HandleEscを再登録（検索キャンセルで上書きされたため）
                 HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
-                Hotkey("Esc", (*) => nv._DestroyGui(), "On")
+                Hotkey("Esc", (*) => nv._HandleEsc(), "On")
                 HotIf()
             }
         }
@@ -1083,7 +1095,7 @@ class NaviSearch {
         for id in this.HighlightedIds
             this._HighlightedIdSet[id] := true
         ; NM_CUSTOMDRAW ハンドラー登録
-        this._EnsureCustomDraw(tv)
+        this._EnsureCustomDraw(tv, navi)
         ; 最初の結果へスクロール位置を合わせてから再描画を再開（Results基準）
         this.HighlightedIdx := 0
         if (this.Results.Length > 0) {
@@ -1540,8 +1552,9 @@ class NaviSearch {
     }
 
     ; NM_CUSTOMDRAW ハンドラーを登録（未登録なら）
-    static _EnsureCustomDraw(tv) {
+    static _EnsureCustomDraw(tv, navi) {
         this._CustomDrawTvHwnd := tv.Hwnd
+        this._NaviRef := navi
         if (this._CustomDrawHandler != "")
             return
         handler := (w, l, m, h) => NaviSearch._OnWMNotify(w, l, m, h)
@@ -1568,7 +1581,7 @@ class NaviSearch {
             specOff := (A_PtrSize = 8) ? 56 : 36
             itemId  := NumGet(lParam, specOff, "ptr")
             ; フィルタマッチノードは Navi の filter ハンドラーに委譲（優先度: filter > search）
-            if (Navi._FilterMatchIdSet.Has(itemId))
+            if (NaviSearch._NaviRef != "" && NaviSearch._NaviRef._FilterMatchIdSet.Has(itemId))
                 return
             if (NaviSearch._HighlightedIdSet.Has(itemId)) {
                 ; NMTVCUSTOMDRAW.clrText  offset (64bit:80 / 32bit:48)
