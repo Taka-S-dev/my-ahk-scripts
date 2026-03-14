@@ -20,6 +20,7 @@
 #Include *i Navi.ContextMenu.ahk
 #Include *i Navi.Action.ahk
 #Include *i Navi.Filter.ahk
+#Include *i Navi.Tab.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -35,7 +36,7 @@ class Navi {
     static TEMP_DIR_SUBPATH := "\ui\NaviTemp"
     static TEMP_PREFIX := "TEMP_"
 
-    ; --- [追加] アクションメニュー用の定数 ---
+    ; --- アクションメニュー用の定数 ---
     static MENU_BG_COLOR := "262626"  ; メニューの背景色
     static MENU_WIDTH := 210       ; メニューの幅
     static MENU_BTN_W := 190       ; ボタンの幅
@@ -76,16 +77,8 @@ class Navi {
     static _MarkFilterActive := false   ; マークフィルタービュー中フラグ
     static MARK_COLOR := 0x0000AA00  ; マーク着色色 BGR: 緑
     static _LastTreeRootPath := ""      ; 前回の _RefreshTree ルートパス（マーク初期化判定用）
-    static TAB_HISTORY_MAX := 20   ; タブ内ルート履歴の最大保持件数
-    static _Tabs := []    ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
-    static _CurrentTab := 1     ; アクティブタブ番号（1-based）
-    static _TabCount := 1     ; 現在開いているタブ数
-    static TAB_MAX := 5     ; タブ最大数
-    static TAB_WIDTH := 85    ; タブ1枠の幅px（(GUI_WIDTH-2*MarginX - (TAB_MAX-1)) / TAB_MAX）
-    static _TabBtnCtrls := []    ; タブラベルコントロール配列（GuiControl）
-    static _TabULCtrl := ""    ; アクティブタブ下線インジケーター（Progress コントロール）
-    static _TabSepCtrl := ""    ; タブ/ヘッダー境界線
-    static TAB_ACTIVE_COLOR := 0x00CC5500  ; アンダーライン色（COLORREF BGR: 青系）
+
+    ; --- アイコン管理 ---
     static _ILHandle := 0           ; TreeView 用 ImageList ハンドル
     static _IconCache := Map()       ; 拡張子→ImageList インデックスキャッシュ
     static _ILNextIdx := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
@@ -94,8 +87,6 @@ class Navi {
     static _BreadcrumbHwnd := 0       ; パンくずコントロールのHwnd（カーソル変更用）
     static _tvHwnd := 0        ; TreeView の Hwnd
     static _quickPathH := 22       ; QuickPath 欄の高さ（リサイズ計算用）
-    static _tabBarVisible := true     ; タブバー表示状態（1タブ時は非表示）
-    static _tabBarShift := 25      ; タブバー非表示時にコントロールを上げるpx
     static _SearchMode := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
     static _SearchTypeFilter := "all"  ; 検索対象種別（"all" / "dir" / "file"）
 
@@ -104,11 +95,7 @@ class Navi {
     static WM_ACTIVATE := 0x0006   ; ウィンドウアクティブ状態変更
     static WM_SETTEXT := 0x000C   ; コントロールテキスト設定（プレースホルダー等）
     static WM_NOTIFY := 0x004E   ; コモンコントロール通知（カスタムドロー等）
-    static PBM_SETBARCOLOR := 0x0409  ; プログレスバー前景色設定
-    static PBM_SETBKCOLOR := 0x040A  ; プログレスバー背景色設定
     static EM_SETCUEBANNER := 0x1501  ; Edit コントロールのプレースホルダーテキスト設定
-    static TAB_UL_BACKGROUND_COLOR := 0xF0F0F0  ; タブ下線の背景色（ウィンドウ背景と合わせて透過風に）
-
 
     static Init() {
         uiDir := A_ScriptDir "\ui"
@@ -124,6 +111,7 @@ class Navi {
         this.ExplorerPath := this._LoadConfig()
         NaviActions.Init(this)
         NaviFilter.Init(this)
+        NaviTab.Init(this)
     }
 
     static Show() {
@@ -151,7 +139,7 @@ class Navi {
 
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
-        this._LoadTabsFromIni()  ; タブ状態を INI から復元（_TabCount が確定するのでタブバー生成前に呼ぶ）
+        NaviTab.LoadTabsFromIni()  ; タブ状態を INI から復元（_TabCount が確定するのでタブバー生成前に呼ぶ）
 
         chooseIdx := 1
         for i, name in folderNames {
@@ -162,29 +150,7 @@ class Navi {
         }
 
         ; --- タブバー（最上部）---
-        this._TabBtnCtrls := []
-        this.GuiObj.SetFont("s8", "Yu Gothic UI")
-        Loop this.TAB_MAX {
-            n := A_Index
-            w := this.TAB_WIDTH
-            xOpt := (n = 1) ? "xm w" . w . " h20 +0x101" : "x+1 yp w" . w . " h20 +0x101"
-            lbl := this.GuiObj.Add("Text", xOpt, this._GetTabLabel(n))
-            this._TabBtnCtrls.Push(lbl)
-            lbl.OnEvent("Click", this._MakeTabHandler(n))
-            lbl.OnEvent("DoubleClick", this._MakeTabDblClickHandler(n))
-            if (n > this._TabCount)
-                lbl.Visible := false
-        }
-        ; アクティブタブ下線（Progress バーを流用）
-        ulCtrl := this.GuiObj.Add("Progress", "xm y+0 w" . this.TAB_WIDTH . " h3 -Smooth -Border", 100)
-        DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBARCOLOR, "ptr", 0, "uint", this.TAB_ACTIVE_COLOR)
-        DllCall("SendMessage", "ptr", ulCtrl.Hwnd, "uint", this.PBM_SETBKCOLOR, "ptr", 0, "uint", this.TAB_UL_BACKGROUND_COLOR)
-        this._TabULCtrl := ulCtrl
-        ; タブとヘッダーの境界線（ブラウザ風の区切り線）
-        tabSep := this.GuiObj.Add("Text", "x0 y+0 w471 h2 +0x10")  ; SS_ETCHEDHORZ 全幅（xm8+content455+rm8）
-        this._TabSepCtrl := tabSep
-        ; タブバーの実際の高さを計測（非表示時のシフト量として使用）
-        this._TabBtnCtrls[1].GetPos(, &_tabBarTopY_)
+        _tabBarTopY_ := NaviTab.BuildTabBar(this.GuiObj)
         this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
         ; --- ヘッダー行（プロファイル・ルート選択・編集・設定・チェックボックス）---
@@ -277,12 +243,12 @@ class Navi {
         this._rootBtnRightGap := 455 - _rbW_
         ; タブバー非表示時のシフト量を確定（ヘッダーY - タブバー開始Y）
         btnProfile.GetPos(, &_headerY_)
-        this._tabBarShift := _headerY_ - _tabBarTopY_
-        this._tabBarVisible := true
+        NaviTab._tabBarShift := _headerY_ - _tabBarTopY_
+        NaviTab._tabBarVisible := true
 
         ; タブ1枚のときはタブバーを初期非表示にする
-        if (this._TabCount == 1)
-            this._SetTabBarVisible(false)
+        if (NaviTab._TabCount == 1)
+            NaviTab.SetTabBarVisible(false)
 
         ; ウィンドウリサイズイベント登録
         this.GuiObj.OnEvent("Size", (g, mm, w, h) => this._OnResize(mm, w, h))
@@ -312,16 +278,7 @@ class Navi {
         Hotkey("!m", (*) => this._ToggleMark(), "On")
         Hotkey("^m", (*) => this._ToggleMarkFilter(), "On")
         Hotkey("!+m", (*) => this._ClearAllMarks(), "On")
-        Loop this.TAB_MAX {
-            Hotkey("^" . A_Index, this._MakeTabHandler(A_Index), "On")
-        }
-        Hotkey("^t", (*) => this._NewTab(), "On")
-        Hotkey("^w", (*) => this._CloseTab(), "On")
-        Hotkey("^Tab", (*) => this._SwitchToTab(Mod(this._CurrentTab, this._TabCount) + 1), "On")
-        Hotkey("^+Tab", (*) => this._SwitchToTab(Mod(this._CurrentTab - 2 + this._TabCount, this._TabCount) + 1), "On")
-        Hotkey("!Left", (*) => this._TabNavBack(), "On")
-        Hotkey("!Right", (*) => this._TabNavForward(), "On")
-        Hotkey("^+h", (*) => this._ClearTabHistory(), "On")
+        NaviTab.RegisterHotkeys()
         HotIf()
 
         ; パンくず更新用タイマー開始
@@ -330,7 +287,7 @@ class Navi {
 
         if (folderNames.Length > 0) {
             ; タブ状態が保存されていれば復元、なければデフォルト初期化
-            if (!this._RestoreCurrentTab(tv)) {
+            if (!NaviTab.RestoreCurrentTab(tv)) {
                 selectedRoot := (this.lastRoot != "" && folderMap.Has(this.lastRoot)) ? this.lastRoot : folderNames[1]
                 this.lastRoot := selectedRoot
                 this.GuiObj["RootBtn"].Text := this._TruncRootLabel(selectedRoot)
@@ -340,7 +297,7 @@ class Navi {
                 }
             }
             this._RefreshBreadcrumb()
-            this._UpdateTabBar()
+            NaviTab.UpdateTabBar()
             this._UpdateStatusBar()
         }
 
@@ -396,8 +353,8 @@ class Navi {
 
     static _DestroyGui() {
         ; 現在のタブ状態を保存してから破棄（次回起動時に復元できるようにする）
-        this._SaveCurrentTab()
-        this._SaveTabsToIni()
+        NaviTab.SaveCurrentTab()
+        NaviTab.SaveTabsToIni()
         ; パンくず監視タイマーを停止
         SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
         ; フィルタータイマーを停止（GUI破棄後に ApplyTreeFilter が発火するのを防ぐ）
@@ -410,9 +367,7 @@ class Navi {
         ; プロファイルドロップダウンを閉じる
         this._CloseProfileDropdown()
         ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
-        this._TabBtnCtrls := []
-        this._TabULCtrl := ""
-        this._TabSepCtrl := ""
+        NaviTab.Cleanup()
         if (this.GuiObj && WinExist(this.GuiObj)) {
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
@@ -993,23 +948,6 @@ class Navi {
         this._UpdateStatusBar()
     }
 
-    ; --- タブ機能 ---
-
-    /**
-     * タブNのクリック・ホットキー用クロージャを生成（ループ変数キャプチャ対策）
-     */
-    static _MakeTabHandler(n) {
-        return (*) => this._SwitchToTab(n)
-    }
-
-    /**
-     * タブダブルクリック: そのタブに切り替えてルート選択を開く
-     */
-    static _MakeTabDblClickHandler(n) {
-        return (*) => (this._SwitchToTab(n), this._OpenDropdown())
-    }
-
-
     /**
      * _AllFolderNames + _FolderMap からプロファイルファイルを書き出す
      * ドラッグ追加など ListView を介さずにメモリ上のマップから直接書き出す場合に使用する。
@@ -1024,394 +962,7 @@ class Navi {
         FileAppend(txt, outPath, "UTF-8")
     }
 
-    /**
-     * タブNのラベルを返す（下線がアクティブを示すため、ラベルはルート名のみ）
-     */
-    static _GetTabLabel(n) {
-        if (n > this._TabCount)
-            return ""
-        root := (n == this._CurrentTab) ? this.lastRoot
-            : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
-        if (root == "")
-            root := "New"
-        ; 85px幅: 日本語全角7文字≈70px、ASCII14文字≈84px → 7文字超で切り詰め
-        return (StrLen(root) > 7) ? SubStr(root, 1, 6) . ".." : root
-    }
 
-    /**
-     * タブバーのラベルと下線インジケーター位置を更新
-     * タブ数が1のときは非表示、2以上のときは表示する
-     */
-    static _UpdateTabBar() {
-        Loop this.TAB_MAX {
-            n := A_Index
-            if (n > this._TabBtnCtrls.Length)
-                break
-            ctrl := this._TabBtnCtrls[n]
-            if (n > this._TabCount) {
-                ctrl.Visible := false
-                continue
-            }
-            ctrl.Visible := (this._TabCount > 1)
-            DllCall("user32\SendMessageW", "ptr", ctrl.Hwnd,
-                "uint", this.WM_SETTEXT, "ptr", 0, "wstr", this._GetTabLabel(n))
-        }
-        if (this._TabULCtrl) {
-            this._TabULCtrl.Visible := (this._TabCount > 1)
-            margin := this.GuiObj.MarginX
-            this._TabULCtrl.Move(margin + (this._CurrentTab - 1) * (this.TAB_WIDTH + 1))
-        }
-        ; タブ数変化に応じてタブバー表示/非表示を切り替え
-        this._SetTabBarVisible(this._TabCount > 1)
-    }
-
-    /**
-     * タブバーの表示/非表示を切り替え、他コントロールを上下にシフトする
-     */
-    static _SetTabBarVisible(show) {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (show == this._tabBarVisible)
-            return
-        this._tabBarVisible := show
-        shift := show ? this._tabBarShift : -this._tabBarShift
-
-        ; タブラベルと下線の表示切り替え
-        for ctrl in this._TabBtnCtrls
-            ctrl.Visible := show
-        if (this._TabULCtrl)
-            this._TabULCtrl.Visible := show
-        if (this._TabSepCtrl)
-            this._TabSepCtrl.Visible := show
-
-        ; タブバー下のコントロールを全て上下にシフト
-        ctrls := [
-            this.GuiObj["ProfileBtn"], this.GuiObj["ProfileSep"],
-            this.GuiObj["RootBtn"],
-            this.GuiObj._btnEditCtrl, this.GuiObj._btnSettingsCtrl,
-            this.GuiObj["PinCheck"], this.GuiObj["AutoFilesCheck"],
-            this.GuiObj["Breadcrumb"], this.GuiObj["FilterToggle"],
-            this.GuiObj["SearchTypeBtn"], this.GuiObj["TreeFilter"],
-            this.GuiObj["FolderTree"],
-            this.GuiObj["QuickPath"]
-        ]
-        for ctrl in ctrls {
-            ctrl.GetPos(, &cy)
-            ctrl.Move(, cy + shift)
-        }
-        this._tvY += shift
-    }
-
-    /**
-     * GUIから現在の表示状態を読み取って返す
-     */
-    static _GetLiveState() {
-        marks := Map()
-        for k, v in this._MarkedPaths
-            marks[k] := v
-        tv := this.GuiObj["FolderTree"]
-        selPath := ""
-        selId := tv.GetSelection()
-        if (selId)
-            try selPath := this._GetTVFullPath(tv, selId)
-        return {
-            root: this.lastRoot,
-            filter: this.GuiObj["TreeFilter"].Value,
-            marks: marks,
-            markFilter: this._MarkFilterActive,
-            path: selPath
-        }
-    }
-
-    /**
-     * 現在のタブに表示状態を保存
-     */
-    static _SaveCurrentTab() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        s := this._GetLiveState()
-        while (this._Tabs.Length < this._CurrentTab)
-            this._Tabs.Push({ root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: [] })
-        tab := this._Tabs[this._CurrentTab]
-        tab.root := s.root, tab.filter := s.filter, tab.marks := s.marks
-        tab.markFilter := s.markFilter, tab.path := s.path
-    }
-
-    /**
-     * 現在のルート操作前に呼ぶ: 現在の状態をタブ内履歴に積む（Alt+← で戻れる）
-     */
-    static _PushTabHistory() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        while (this._Tabs.Length < this._CurrentTab)
-            this._Tabs.Push({ root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: [] })
-        tab := this._Tabs[this._CurrentTab]
-        s := this._GetLiveState()
-        tab.history.Push({ root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path })
-        if (tab.history.Length > this.TAB_HISTORY_MAX)
-            tab.history.RemoveAt(1)
-        tab.future := []
-    }
-
-    /**
-     * 状態オブジェクトを TreeView に適用する共通ヘルパー
-     */
-    static _ApplyTabState(state, tv) {
-        if (state.root != "" && this._FolderMap.Has(state.root) && state.root != this.lastRoot) {
-            this.lastRoot := state.root
-            this.GuiObj["RootBtn"].Text := this._TruncRootLabel(state.root)
-        }
-        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-        this.GuiObj["TreeFilter"].Value := state.filter
-        if (state.markFilter && rootPath != "") {
-            this._MarkedPaths := state.marks
-            this._MarkFilterActive := true
-            this._ApplyMarkFilter(tv, rootPath)
-        } else if (state.filter != "" && rootPath != "") {
-            this._MarkFilterActive := false
-            this._MarkedPaths := state.marks
-            NaviFilter.ApplyTreeFilter(state.filter)
-        } else if (rootPath != "") {
-            this._MarkFilterActive := false
-            this._RefreshTree(tv, rootPath, false)
-            this._MarkedPaths := state.marks
-            this._RebuildMarkedIdSet(tv)
-            NaviFilter.EnsureFilterDraw(tv)
-            DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
-        }
-        if (state.path != "" && rootPath != "")
-            this._FocusPath(tv, state.path)
-    }
-
-    /**
-     * 現在のタブ状態を TreeView に復元する（Show() 初期化用）
-     */
-    static _RestoreCurrentTab(tv) {
-        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
-            return false
-        tab := this._Tabs[this._CurrentTab]
-        if (tab.root == "" || !this._FolderMap.Has(tab.root))
-            return false
-        this._ApplyTabState(tab, tv)
-        return true
-    }
-
-    /**
-     * タブNに切り替える（現在の状態を保存してから復元）
-     */
-    static _SwitchToTab(n) {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (n < 1 || n > this._TabCount)
-            return
-        this._SaveCurrentTab()
-        this._CurrentTab := n
-        tv := this.GuiObj["FolderTree"]
-        tab := (n <= this._Tabs.Length) ? this._Tabs[n] : ""
-        if (tab == "" || tab.root == "") {
-            this.GuiObj["TreeFilter"].Value := ""
-            this._MarkFilterActive := false
-            rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-            if (rootPath != "")
-                this._RefreshTree(tv, rootPath, false)
-            this._MarkedPaths := Map()
-            this._MarkedIdSet := Map()
-        } else {
-            this._ApplyTabState(tab, tv)
-        }
-        this._UpdateTabBar()
-        this._UpdateStatusBar()
-    }
-
-    /**
-     * 新しいタブを開く（Ctrl+T）: 現在のルートで初期化、フィルター・マークはクリア
-     */
-    static _NewTab() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (this._TabCount >= this.TAB_MAX)
-            return
-        this._SaveCurrentTab()
-        this._TabCount++
-        while (this._Tabs.Length < this._TabCount)
-            this._Tabs.Push({ root: "", filter: "", marks: Map(), markFilter: false, path: "", history: [], future: [] })
-        this._Tabs[this._TabCount] := {
-            root: this.lastRoot, filter: "", marks: Map(),
-            markFilter: false, path: "", history: [], future: []
-        }
-        this._CurrentTab := this._TabCount
-        tv := this.GuiObj["FolderTree"]
-        this.GuiObj["TreeFilter"].Value := ""
-        this._MarkFilterActive := false
-        this._MarkedPaths := Map()
-        this._MarkedIdSet := Map()
-        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-        if (rootPath != "")
-            this._RefreshTree(tv, rootPath, false)
-        this._UpdateTabBar()
-        this._UpdateStatusBar()
-    }
-
-    /**
-     * 現在のタブを閉じる（Ctrl+W）: タブが1枚のときは何もしない
-     */
-    static _CloseTab() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (this._TabCount <= 1)
-            return
-        this._Tabs.RemoveAt(this._CurrentTab)
-        this._TabCount--
-        if (this._CurrentTab > this._TabCount)
-            this._CurrentTab := this._TabCount
-        tv := this.GuiObj["FolderTree"]
-        tab := (this._CurrentTab <= this._Tabs.Length) ? this._Tabs[this._CurrentTab] : ""
-        if (tab == "" || tab.root == "") {
-            this.GuiObj["TreeFilter"].Value := ""
-            this._MarkFilterActive := false
-            this._MarkedPaths := Map()
-            this._MarkedIdSet := Map()
-            rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-            if (rootPath != "")
-                this._RefreshTree(tv, rootPath, false)
-        } else {
-            this._ApplyTabState(tab, tv)
-        }
-        this._UpdateTabBar()
-        this._UpdateStatusBar()
-    }
-
-    /**
-     * タブ内履歴を戻る（Alt+←）
-     */
-    static _TabNavBack() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
-            return
-        tab := this._Tabs[this._CurrentTab]
-        if (tab.history.Length == 0)
-            return
-        s := this._GetLiveState()
-        tab.future.Push({ root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path })
-        prev := tab.history.Pop()
-        tab.root := prev.root, tab.filter := prev.filter, tab.marks := prev.marks
-        tab.markFilter := prev.markFilter, tab.path := prev.path
-        this._ApplyTabState(tab, this.GuiObj["FolderTree"])
-        this._UpdateTabBar()
-        this._UpdateStatusBar()
-    }
-
-    /**
-     * タブ内履歴を進む（Alt+→）
-     */
-    static _TabNavForward() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
-            return
-        tab := this._Tabs[this._CurrentTab]
-        if (tab.future.Length == 0)
-            return
-        s := this._GetLiveState()
-        tab.history.Push({ root: s.root, filter: s.filter, marks: s.marks, markFilter: s.markFilter, path: s.path })
-        next := tab.future.Pop()
-        tab.root := next.root, tab.filter := next.filter, tab.marks := next.marks
-        tab.markFilter := next.markFilter, tab.path := next.path
-        this._ApplyTabState(tab, this.GuiObj["FolderTree"])
-        this._UpdateTabBar()
-        this._UpdateStatusBar()
-    }
-
-    /**
-     * 現在のタブの履歴（戻る・進む）をクリア（Ctrl+Shift+H）
-     */
-    static _ClearTabHistory() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        if (this._CurrentTab > this._Tabs.Length || this._Tabs[this._CurrentTab] == "")
-            return
-        tab := this._Tabs[this._CurrentTab]
-        tab.history := []
-        tab.future := []
-        ToolTip("タブ履歴をクリアしました"), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
-    }
-
-    /**
-     * プロファイルパスから INI セクション名を生成（例: "Tabs_work"）
-     * プロファイル未設定時は "Tabs" を返す
-     */
-    static _ProfileTabSection(profilePath := "") {
-        if (profilePath == "")
-            profilePath := IniRead(this.IniPath, "Settings", "LastProfile", "")
-        if (profilePath == "")
-            return "Tabs"
-        name := RegExReplace(profilePath, ".*\\")   ; basename
-        name := RegExReplace(name, "\.txt$", "")    ; 拡張子除去
-        name := RegExReplace(name, "[^\w]", "_")    ; 使用不可文字を _
-        return "Tabs_" . name
-    }
-
-    /**
-     * 全タブ状態を Navi.ini のプロファイル別セクションに保存
-     */
-    static _SaveTabsToIni() {
-        sec := this._ProfileTabSection()
-        try IniDelete(this.IniPath, sec)
-        IniWrite(this._TabCount, this.IniPath, sec, "Count")
-        IniWrite(this._CurrentTab, this.IniPath, sec, "Current")
-        Loop this._TabCount {
-            n := A_Index
-            tab := (n <= this._Tabs.Length) ? this._Tabs[n] : ""
-            if (tab == "")
-                continue
-            IniWrite(tab.root, this.IniPath, sec, "Tab" . n . "Root")
-            IniWrite(tab.filter, this.IniPath, sec, "Tab" . n . "Filter")
-            IniWrite(tab.path, this.IniPath, sec, "Tab" . n . "Path")
-            IniWrite(tab.markFilter ? "1" : "0", this.IniPath, sec, "Tab" . n . "MarkFilter")
-            markStr := ""
-            for k, v in tab.marks
-                markStr .= (markStr == "" ? "" : "|") . v
-            IniWrite(markStr, this.IniPath, sec, "Tab" . n . "Marks")
-        }
-    }
-
-    /**
-     * Navi.ini のプロファイル別セクションからタブ状態を復元
-     * Show() の _LoadFolders 直後に呼ぶこと（タブバー生成前に _TabCount を確定させるため）
-     */
-    static _LoadTabsFromIni() {
-        sec := this._ProfileTabSection()
-        ; プロファイル別セクションになければ旧来の [Tabs] にフォールバック
-        if (IniRead(this.IniPath, sec, "Count", "") == "")
-            sec := "Tabs"
-        count := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Count", "1")), this.TAB_MAX))
-        current := Max(1, Min(Integer(IniRead(this.IniPath, sec, "Current", "1")), count))
-        this._TabCount := count
-        this._CurrentTab := current
-        this._Tabs := []
-
-        Loop count {
-            n := A_Index
-            root := IniRead(this.IniPath, sec, "Tab" . n . "Root", "")
-            filt := IniRead(this.IniPath, sec, "Tab" . n . "Filter", "")
-            pth := IniRead(this.IniPath, sec, "Tab" . n . "Path", "")
-            mf := IniRead(this.IniPath, sec, "Tab" . n . "MarkFilter", "0")
-            mStr := IniRead(this.IniPath, sec, "Tab" . n . "Marks", "")
-
-            marks := Map()
-            if (mStr != "")
-                for p in StrSplit(mStr, "|")
-                    if (p != "")
-                        marks[StrLower(p)] := p
-
-            this._Tabs.Push({
-                root: root, filter: filt, path: pth,
-                markFilter: (mf == "1"), marks: marks,
-                history: [], future: []
-            })
-        }
-    }
 
 
     static _ToggleMarkFilter() {
@@ -1740,8 +1291,8 @@ class Navi {
         for e in entries
             IniWrite(e.path . "|1", this.IniPath, "Folders", e.name)
         ; 現プロファイルのタブ状態を保存（プロファイル別セクションに書き込む）
-        this._SaveCurrentTab()
-        this._SaveTabsToIni()
+        NaviTab.SaveCurrentTab()
+        NaviTab.SaveTabsToIni()
         ; 最後に使ったプロファイルパスを更新
         IniWrite(txtPath, this.IniPath, "Settings", "LastProfile")
         ; GUI が開いていればインプレース更新、なければ再起動
@@ -1765,7 +1316,7 @@ class Navi {
         this._FolderMap := newFolderMap
 
         ; 新プロファイルのタブ状態を読み込み
-        this._LoadTabsFromIni()
+        NaviTab.LoadTabsFromIni()
 
         ; マーク状態をリセット
         this._MarkedPaths := Map()
@@ -1780,7 +1331,7 @@ class Navi {
             tv.Delete()
             this.lastRoot := ""
             this.lastPath := ""
-        } else if (!this._RestoreCurrentTab(tv)) {
+        } else if (!NaviTab.RestoreCurrentTab(tv)) {
             ; 新プロファイルに前のルートがなければ先頭ルートへ
             this.lastRoot := newFolderNames[1]
             this._RefreshTree(tv, newFolderMap[this.lastRoot])
@@ -1789,7 +1340,7 @@ class Navi {
         ; UI 更新
         this.GuiObj["RootBtn"].Text := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
         this._UpdateProfileBtn()
-        this._UpdateTabBar()
+        NaviTab.UpdateTabBar()
         this._UpdateStatusBar()
     }
 
@@ -2244,11 +1795,11 @@ class Navi {
         tv := this.GuiObj["FolderTree"]
         rootBtn.Text := name
 
-        this._PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
+        NaviTab.PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
         this.lastRoot := name
         this.lastPath := path
         this._RefreshTree(tv, path)
-        this._UpdateTabBar()  ; タブラベルに新ルート名を反映
+        NaviTab.UpdateTabBar()  ; タブラベルに新ルート名を反映
 
         ; プロファイルが設定されている場合は自動保存
         lastProfile := IniRead(this.IniPath, "Settings", "LastProfile", "")
@@ -2936,13 +2487,13 @@ class Navi {
         }
         this._CloseDropdown()
         if (selectedTxt != "" && this._FolderMap.Has(selectedTxt) && this.GuiObj && WinExist(this.GuiObj)) {
-            this._PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
+            NaviTab.PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
             this.lastRoot := selectedTxt
             this.GuiObj["RootBtn"].Text := this._TruncRootLabel(selectedTxt)
             this.GuiObj["TreeFilter"].Value := ""
             tv := this.GuiObj["FolderTree"]
             this._RefreshTree(tv, this._FolderMap[selectedTxt])
-            this._UpdateTabBar()  ; タブラベルに新ルート名を反映
+            NaviTab.UpdateTabBar()  ; タブラベルに新ルート名を反映
         } else if (this.GuiObj && WinExist(this.GuiObj)) {
             WinActivate("ahk_id " this.GuiObj.Hwnd)
             this.GuiObj["FolderTree"].Focus()
@@ -2961,8 +2512,8 @@ class Navi {
 
         ; 全幅コントロールを幅に追従させる
         this.GuiObj["Breadcrumb"].Move(, , ctrlW)
-        if (this._TabSepCtrl)
-            this._TabSepCtrl.Move(0, , w)  ; 境界線はクライアント全幅
+        if (NaviTab._TabSepCtrl)
+            NaviTab._TabSepCtrl.Move(0, , w)  ; 境界線はクライアント全幅
         ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
         this.GuiObj["TreeFilter"].GetPos(&_tfX_)
         this.GuiObj["TreeFilter"].Move(, , w - margin - _tfX_)
