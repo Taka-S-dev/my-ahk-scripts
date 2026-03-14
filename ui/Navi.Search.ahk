@@ -1580,8 +1580,8 @@ class NaviSearch {
             ; NMCUSTOMDRAW.dwItemSpec (HTREEITEM)  offset (64bit:56 / 32bit:36)
             specOff := (A_PtrSize = 8) ? 56 : 36
             itemId  := NumGet(lParam, specOff, "ptr")
-            ; フィルタマッチノードは Navi の filter ハンドラーに委譲（優先度: filter > search）
-            if (NaviSearch._NaviRef != "" && NaviSearch._NaviRef._FilterMatchIdSet.Has(itemId))
+            ; フィルタマッチノードは NaviFilter の filter ハンドラーに委譲（優先度: filter > search）
+            if (NaviFilter._FilterMatchIdSet.Has(itemId))
                 return
             if (NaviSearch._HighlightedIdSet.Has(itemId)) {
                 ; NMTVCUSTOMDRAW.clrText  offset (64bit:80 / 32bit:48)
