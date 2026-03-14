@@ -22,6 +22,7 @@
 #Include *i Navi.Filter.ahk
 #Include *i Navi.Tab.ahk
 #Include *i Navi.Profile.ahk
+#Include *i Navi.DetailList.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -64,7 +65,7 @@ class Navi {
     static _TreeFilterFocused := false
     static FilesShown := Map()
     static lastSelectedId := 0  ; パンくず更新用
-    static DetailListGuiObj := ""  ; 詳細リストウィンドウ
+    ; 詳細リスト関連状態は NaviDetailList クラスで管理（Navi.DetailList.ahk）
     static _AllFolderNames := []  ; 全ルート名リスト（フィルタ前）
     static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
@@ -112,6 +113,7 @@ class Navi {
         NaviFilter.Init(this)
         NaviTab.Init(this)
         NaviProfile.Init(this)
+        NaviDetailList.Init(this)
     }
 
     static Show() {
@@ -267,7 +269,7 @@ class Navi {
         Hotkey("Enter", (*) => this._HandleEnter(), "On")
         Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
-        Hotkey("^d", (*) => this.ShowDetailList(), "On")
+        Hotkey("^d", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
@@ -366,6 +368,8 @@ class Navi {
         this._LastTreeRootPath := ""
         ; プロファイルドロップダウンを閉じる
         NaviProfile.CloseProfileDropdown()
+        ; 詳細リスト参照をリセット（+Owner で親破棄時に自動クローズされるため Destroy 不要）
+        NaviDetailList._guiObj := ""
         ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
         NaviTab.Cleanup()
         if (this.GuiObj && WinExist(this.GuiObj)) {
@@ -1606,253 +1610,6 @@ class Navi {
         ToolTip("Files shown: " . count), SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
     }
 
-    /**
-     * 選択中のファイル・フォルダと同一階層の詳細リストを表示
-     */
-    static ShowDetailList() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-
-        ; 既に詳細リストウィンドウが表示されている場合は閉じる
-        if (this.DetailListGuiObj && WinExist(this.DetailListGuiObj)) {
-            this._CloseDetailListGui()
-            return
-        }
-
-        tv := this.GuiObj["FolderTree"]
-        id := tv.GetSelection()
-        if (id = 0) {
-            ToolTip("フォルダを選択してください")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-
-        selectedPath := this._GetTVFullPath(tv, id)
-
-        ; フォルダでない場合は親フォルダを取得
-        targetDir := ""
-        if (DirExist(selectedPath)) {
-            targetDir := selectedPath
-        } else if (FileExist(selectedPath)) {
-            SplitPath(selectedPath, , &parentDir)
-            targetDir := parentDir
-        } else {
-            ToolTip("パスが見つかりません")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-
-        ; 詳細リスト用のGUIを作成
-        this.GuiObj.GetPos(&gx, &gy, &gw, &gh)
-        this.GuiObj.Opt("+Disabled")
-
-        dlGui := Gui("+Owner" . this.GuiObj.Hwnd . " +Resize", "詳細リスト - " . targetDir)
-        this.DetailListGuiObj := dlGui
-        dlGui.SetFont("s10", "Yu Gothic UI")
-
-        ; ListViewを作成（名前、種類、サイズ、作成日時、更新日時）
-        lv := dlGui.Add("ListView", "r20 w900 Grid Sort", ["名前", "種類", "サイズ", "作成日時", "更新日時"])
-
-        ; 同一階層のすべてのファイル・フォルダを取得
-        itemCount := 0
-        ; フォルダを先に追加
-        loop files, targetDir . "\*", "D" {
-            if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H"))
-                continue
-
-            created := FormatTime(A_LoopFileTimeCreated, "yyyy/MM/dd HH:mm:ss")
-            modified := FormatTime(A_LoopFileTimeModified, "yyyy/MM/dd HH:mm:ss")
-
-            lv.Add(, A_LoopFileName, "<フォルダ>", "", created, modified)
-            itemCount++
-        }
-
-        ; ファイルを追加
-        loop files, targetDir . "\*", "F" {
-            if (InStr(A_LoopFileAttrib, "H"))
-                continue
-
-            ; ファイルサイズを適切な単位で表示
-            size := A_LoopFileSize
-            sizeStr := ""
-            if (size < 1024)
-                sizeStr := size . " B"
-            else if (size < 1048576)
-                sizeStr := Round(size / 1024, 2) . " KB"
-            else if (size < 1073741824)
-                sizeStr := Round(size / 1048576, 2) . " MB"
-            else
-                sizeStr := Round(size / 1073741824, 2) . " GB"
-
-            ; ファイル種類（拡張子）
-            SplitPath(A_LoopFileName, , , &ext)
-            fileType := (ext != "") ? "." . ext : "ファイル"
-
-            created := FormatTime(A_LoopFileTimeCreated, "yyyy/MM/dd HH:mm:ss")
-            modified := FormatTime(A_LoopFileTimeModified, "yyyy/MM/dd HH:mm:ss")
-
-            lv.Add(, A_LoopFileName, fileType, sizeStr, created, modified)
-            itemCount++
-        }
-
-        ; 列幅の自動調整
-        lv.ModifyCol(1, 250)  ; 名前
-        lv.ModifyCol(2, 100)  ; 種類
-        lv.ModifyCol(3, 100)  ; サイズ
-        lv.ModifyCol(4, 180)  ; 作成日時
-        lv.ModifyCol(5, 180)  ; 更新日時
-
-        ; ステータスバー
-        dlGui.SetFont("s8")
-        sb := dlGui.Add("StatusBar")
-        sb.SetText(" [Space] アクションメニュー  /  [Enter] エクスプローラー  /  項目数: " . itemCount)
-
-        ; 閉じるボタン
-        dlGui.SetFont("s10")
-        btnClose := dlGui.Add("Button", "w100 Default", "閉じる")
-        btnClose.OnEvent("Click", (*) => this._CloseDetailListGui())
-
-        ; ListViewイベント
-        lv.OnEvent("DoubleClick", (obj, row) => (row ? this._ExecuteFromDetailList(dlGui, lv, row, targetDir, "e") : 0))
-
-        ; ホットキー設定（詳細リストウィンドウアクティブ時のみ）
-        HotIfWinActive("ahk_id " dlGui.Hwnd)
-        Hotkey("Space", (*) => this._ShowDetailListActionMenu(dlGui, lv, targetDir), "On")
-        Hotkey("Enter", (*) => this._ExecuteFromDetailList(dlGui, lv, lv.GetNext(), targetDir, "e"), "On")
-        Hotkey("^d", (*) => this._CloseDetailListGui(), "On")
-        Hotkey("Esc", (*) => this._CloseDetailListGui(), "On")
-        HotIf()
-
-        dlGui.OnEvent("Close", (*) => this._CloseDetailListGui())
-
-        ; ウィンドウを親ウィンドウの右側に表示
-        dlGui.Show("x" . (gx + gw + 10) . " y" . gy . " w920")
-    }
-
-    /**
-     * 詳細リストからアクションメニューを表示
-     */
-    static _ShowDetailListActionMenu(dlGui, lv, targetDir) {
-        row := lv.GetNext()
-        if (row == 0) {
-            ToolTip("項目を選択してください")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-
-        itemName := lv.GetText(row, 1)
-        fullPath := targetDir . "\" . itemName
-
-        if (!DirExist(fullPath) && !FileExist(fullPath)) {
-            ToolTip("パスが見つかりません")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-
-        dlGui.GetPos(&gx, &gy, &gw, &gh)
-        dlGui.Opt("+Disabled")
-
-        actGui := Gui("+Owner" . dlGui.Hwnd . " -Caption +AlwaysOnTop +Border")
-        actGui.BackColor := this.MENU_BG_COLOR
-        actGui.MarginX := 10
-        actGui.MarginY := 8
-
-        actGui.SetFont("s8 w400 cA0A0A0", "Yu Gothic UI")
-        actGui.Add("Text", "Center w" . this.MENU_BTN_W, itemName)
-
-        actGui.SetFont("s9 w400 cWhite")
-        ; レジストリに登録されたアクションからボタンを生成
-        keys := []
-        for k, _ in NaviActions.Actions
-            keys.Push(k)
-        ; ソート
-        if (keys.Length > 1) {
-            tmp := ""
-            for _, kk in keys
-                tmp .= kk . "`n"
-            tmp := Sort(RTrim(tmp, "`n"))
-            keys := StrSplit(tmp, "`n")
-        }
-
-        for k in keys {
-            act := NaviActions.Actions[k]
-            btn := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm", act.label)
-            btn.OnEvent("Click", ((kk, *) => (
-                dlGui.Opt("-Disabled"),
-                actGui.Destroy(),
-                this._ExecuteFromDetailList(dlGui, lv, row, targetDir, kk)
-            )).Bind(k))
-        }
-
-        btnCancel := actGui.Add("Button", "w" . this.MENU_BTN_W . " h" . this.MENU_BTN_H . " xm y+6", "&X: Cancel")
-        btnCancel.OnEvent("Click", (*) => (dlGui.Opt("-Disabled"), actGui.Destroy()))
-        actGui.OnEvent("Escape", (*) => (dlGui.Opt("-Disabled"), actGui.Destroy()))
-
-        actGui.Show("AutoSize x" . gx + (gw - this.MENU_WIDTH) // 2 . " y" . gy + (gh - this.MENU_OFFSET_Y) // 2)
-    }
-
-    /**
-     * 詳細リストから選択されたアイテムに対してアクションを実行
-     */
-    static _ExecuteFromDetailList(dlGui, lv, row, targetDir, key) {
-        if (row == 0) {
-            ToolTip("項目を選択してください")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-
-        itemName := lv.GetText(row, 1)
-        fullPath := targetDir . "\" . itemName
-
-        if (!DirExist(fullPath) && !FileExist(fullPath)) {
-            ToolTip("パスが見つかりません")
-            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
-            return
-        }
-
-        ; 操作したパスとルート名をメモリに保存（ツリーと同じように）
-        this.lastPath := fullPath
-
-        NaviActions._ExecuteAction(key, fullPath)
-
-        ; アクション実行後に詳細リストウィンドウを閉じる
-        this._CloseDetailListGui()
-
-        ; メインのNaviウィンドウも閉じる（ピン留めとShiftキーを考慮）
-        if (this.GuiObj && WinExist(this.GuiObj)) {
-            k := StrLower(key)
-            ; 検索アクション(f)以外の場合
-            if (k != "f") {
-                ; ピン留めされていない、かつShiftキーが押されていない場合に閉じる
-                if (!this.GuiObj["PinCheck"].Value && !GetKeyState("Shift", "P")) {
-                    this._DestroyGui()
-                }
-            }
-        }
-
-        if (key != "k" && StrLower(key) != "f") {
-            ToolTip("実行 [" . key . "]: " . fullPath)
-            SetTimer(() => ToolTip(), -this.TOOLTIP_SUCCESS_DURATION)
-        }
-    }
-
-    /**
-     * 詳細リストウィンドウを閉じる
-     */
-    static _CloseDetailListGui() {
-        if (this.DetailListGuiObj && WinExist(this.DetailListGuiObj)) {
-            try this.DetailListGuiObj.Destroy()
-            this.DetailListGuiObj := ""
-        }
-        if (this.GuiObj && WinExist(this.GuiObj)) {
-            this.GuiObj.Opt("-Disabled")
-            ; ツリーにフォーカスを戻す
-            try {
-                tv := this.GuiObj["FolderTree"]
-                tv.Focus()
-            }
-        }
-    }
 
     /**
      * 選択ファイルをNaviと同階層(ui)の一時フォルダにコピーし、既定アプリで開く
