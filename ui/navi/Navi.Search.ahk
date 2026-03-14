@@ -154,9 +154,9 @@ class NaviSearch {
         ; 検索開始前に JumpGui を開く（リアルタイム表示用）
         if (navi.GuiObj && WinExist(navi.GuiObj))
             this._EnsureJumpGui(navi)
-        ; バックエンド選択: fd が利用可能かつ有効なら fd バックエンドを使用
+        ; バックエンド選択: fd が利用可能かつ有効、かつネットワークパスでない場合に fd を使用
         fdPath := ""
-        if (this.UseFd)
+        if (this.UseFd && !NaviFilter._IsNetworkPath(basePath))
             fdPath := this._FindFd()
         if (fdPath != "")
             this._RunWithFd(navi, basePath, q, typeFilter, incGroups, notAlts)

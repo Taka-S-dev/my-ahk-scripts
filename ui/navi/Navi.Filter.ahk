@@ -43,6 +43,9 @@ class NaviFilter {
         this._navi := naviRef
     }
 
+    ; UNC パス（\\server\share）かどうかを返す
+    static _IsNetworkPath(path) => (SubStr(path, 1, 2) == "\\")
+
     ; ==============================================================================
     ; フォルダインデックス構築
     ; ==============================================================================
@@ -192,7 +195,9 @@ class NaviFilter {
             this._OnIndexReadyCb := onReady
             return false
         }
-        useFd  := (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
+        ; ネットワークパスは fd を使用しない（サーバー負荷対策）
+        useFd  := !this._IsNetworkPath(rootPath)
+               && (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
         fdPath := useFd ? NaviSearch._FindFd() : ""
         if (fdPath != "" && this._StartFolderIndexFd(rootPath, fdPath)) {
             this._OnIndexReadyCb := onReady
@@ -207,6 +212,9 @@ class NaviFilter {
      * フォルダインデックスを先読み構築する（_RefreshTree の 800ms タイマーから呼ばれる）
      */
     static PrefetchFolderIndex(rootPath) {
+        ; ネットワークパスは自動インデックス構築をスキップ（サーバー負荷対策）
+        if (this._IsNetworkPath(rootPath))
+            return
         if (this._IndexedRoot == rootPath || (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath))
             return
         this._EnsureIndex(rootPath, () => "")
