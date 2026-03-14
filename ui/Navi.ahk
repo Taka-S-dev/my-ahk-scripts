@@ -23,6 +23,7 @@
 #Include *i Navi.Tab.ahk
 #Include *i Navi.Profile.ahk
 #Include *i Navi.DetailList.ahk
+#Include *i Navi.Breadcrumb.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -51,11 +52,6 @@ class Navi {
     static SCREEN_MARGIN := 10     ; 画面端からのマージン
     static MOUSE_OFFSET := 15      ; マウス位置からのオフセット
 
-    ; --- パンくずリスト用の定数 ---
-    static BREADCRUMB_COLOR := "505050"      ; パンくずテキスト色
-    static BREADCRUMB_HEIGHT := 20           ; パンくずの高さ
-    static BREADCRUMB_WATCH_MS := 100        ; 選択監視タイマー間隔
-
     ; --- セッション内メモリ ---
     static lastRoot := ""
     static lastPath := ""
@@ -64,8 +60,8 @@ class Navi {
     static QuickPathHwnd := 0
     static _TreeFilterFocused := false
     static FilesShown := Map()
-    static lastSelectedId := 0  ; パンくず更新用
     ; 詳細リスト関連状態は NaviDetailList クラスで管理（Navi.DetailList.ahk）
+    ; パンくず関連定数・状態は NaviBreadcrumb クラスで管理（Navi.Breadcrumb.ahk）
     static _AllFolderNames := []  ; 全ルート名リスト（フィルタ前）
     static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
@@ -84,7 +80,6 @@ class Navi {
     static _ILNextIdx := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
     static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
-    static _BreadcrumbHwnd := 0       ; パンくずコントロールのHwnd（カーソル変更用）
     static _tvHwnd := 0        ; TreeView の Hwnd
     static _quickPathH := 22       ; QuickPath 欄の高さ（リサイズ計算用）
     static _SearchMode := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
@@ -114,6 +109,7 @@ class Navi {
         NaviTab.Init(this)
         NaviProfile.Init(this)
         NaviDetailList.Init(this)
+        NaviBreadcrumb.Init(this)
     }
 
     static Show() {
@@ -185,10 +181,10 @@ class Navi {
 
         ; --- パンくずリスト ---
         this.GuiObj.SetFont("s9", "Yu Gothic UI")
-        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . this.BREADCRUMB_HEIGHT . " vBreadcrumb c" . this.BREADCRUMB_COLOR . " +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
-        breadcrumb.OnEvent("Click", (*) => this._OnBreadcrumbClick())
-        this._BreadcrumbHwnd := breadcrumb.Hwnd
-        OnMessage(this.WM_SETCURSOR, Navi._OnSetCursor.Bind(Navi))
+        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . NaviBreadcrumb.BREADCRUMB_HEIGHT . " vBreadcrumb c" . NaviBreadcrumb.BREADCRUMB_COLOR . " +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
+        breadcrumb.OnEvent("Click", (*) => NaviBreadcrumb._OnClick())
+        NaviBreadcrumb._hwnd := breadcrumb.Hwnd
+        OnMessage(this.WM_SETCURSOR, NaviBreadcrumb._OnSetCursor.Bind(NaviBreadcrumb))
         this.GuiObj.SetFont("s10", "Yu Gothic UI")
 
         ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
@@ -284,8 +280,7 @@ class Navi {
         HotIf()
 
         ; パンくず更新用タイマー開始
-        this.lastSelectedId := 0
-        SetTimer(this._BreadcrumbWatcher.Bind(this), this.BREADCRUMB_WATCH_MS)
+        NaviBreadcrumb.StartWatcher()
 
         if (folderNames.Length > 0) {
             ; タブ状態が保存されていれば復元、なければデフォルト初期化
@@ -298,7 +293,7 @@ class Navi {
                     this._FocusPath(tv, this.lastPath)
                 }
             }
-            this._RefreshBreadcrumb()
+            NaviBreadcrumb.Refresh()
             NaviTab.UpdateTabBar()
             this._UpdateStatusBar()
         }
@@ -358,7 +353,7 @@ class Navi {
         NaviTab.SaveCurrentTab()
         NaviTab.SaveTabsToIni()
         ; パンくず監視タイマーを停止
-        SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
+        NaviBreadcrumb.StopWatcher()
         ; フィルタータイマーを停止（GUI破棄後に ApplyTreeFilter が発火するのを防ぐ）
         NaviFilter.CancelDebounce()
         ; マーク状態をリセット
@@ -1110,45 +1105,6 @@ class Navi {
         return path
     }
 
-    ; --- パンくずリスト関連 ---
-    static _BreadcrumbWatcher() {
-        try {
-            if !(this.GuiObj && this.GuiObj.Hwnd && WinExist("ahk_id " this.GuiObj.Hwnd)) {
-                SetTimer(this._BreadcrumbWatcher.Bind(this), 0)
-                return
-            }
-            tv := this.GuiObj["FolderTree"]
-            id := tv.GetSelection()
-            if (id != this.lastSelectedId) {
-                this.lastSelectedId := id
-                this._UpdateBreadcrumb(tv, id)
-            }
-        }
-    }
-
-    static _RefreshBreadcrumb() {
-        try {
-            if !(this.GuiObj && this.GuiObj.Hwnd && WinExist("ahk_id " this.GuiObj.Hwnd))
-                return
-            tv := this.GuiObj["FolderTree"]
-            id := tv.GetSelection()
-            this.lastSelectedId := id
-            this._UpdateBreadcrumb(tv, id)
-        }
-    }
-
-    static _UpdateBreadcrumb(tv, id) {
-        try {
-            if !(this.GuiObj && this.GuiObj.Hwnd)
-                return
-            if (id = 0) {
-                this.GuiObj["Breadcrumb"].Value := ""
-                return
-            }
-            fullPath := this._GetTVFullPath(tv, id)
-            this.GuiObj["Breadcrumb"].Value := fullPath
-        }
-    }
 
     static _UpdateStatusBar() {
         try {
@@ -1156,59 +1112,6 @@ class Navi {
             base := " [Space]メニュー  [Enter]開く  [Ctrl+D]詳細  [F1]ヘルプ"
             sb.SetText(this._MarkFilterActive ? base . "  [mark]" : base)
         }
-    }
-
-    static _OnSetCursor(wParam, lParam, msg, hwnd) {
-        if (wParam != Navi._BreadcrumbHwnd)
-            return
-        DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))
-        return true  ; デフォルト処理をスキップ
-    }
-
-    static _OnBreadcrumbClick() {
-        tv := this.GuiObj["FolderTree"]
-        id := tv.GetSelection()
-        if (id = 0)
-            return
-
-        ; 現在のパスから各階層をメニューに表示
-        pathParts := []
-        currID := id
-        while (currID != 0) {
-            pathParts.InsertAt(1, { id: currID, name: tv.GetText(currID) })
-            currID := tv.GetParent(currID)
-        }
-
-        if (pathParts.Length = 0)
-            return
-
-        ; ポップアップメニューを作成
-        bcMenu := Menu()
-        for i, part in pathParts {
-            partID := part.id
-            indent := ""
-            loop i - 1
-                indent .= "    "
-            bcMenu.Add(indent . part.name, ((pid, *) => this._JumpToTreeItem(pid)).Bind(partID))
-        }
-        ; Esc ホットキーを一時無効化（メニューの Esc 閉じを AHK が横取りするため）
-        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("Esc", "Off")
-        HotIf()
-        bcMenu.Show()
-        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("Esc", "On")
-        HotIf()
-    }
-
-    static _JumpToTreeItem(id) {
-        tv := this.GuiObj["FolderTree"]
-        tv.Modify(id, "Select Vis")
-        if (tv.GetChild(id)) {
-            tv.Modify(id, "Expand")
-            this._OnItemExpand(tv, id)
-        }
-        tv.Focus()
     }
 
     static _GetActiveWindowPath() {
