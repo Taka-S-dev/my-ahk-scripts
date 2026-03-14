@@ -10,7 +10,7 @@
 ;
 ;
 ; Usage Example (Main.ahk):
-;   #Include ui\Navi.ahk
+;   #Include ui\navi\Navi.ahk
 ;   Navi.Init()
 ;   vk1D & f:: Navi.Show() ; 無変換 + f で起動
 ;
@@ -25,19 +25,19 @@
 #Include *i Navi.DetailList.ahk
 #Include *i Navi.Breadcrumb.ahk
 #Include *i Navi.Mark.ahk
-#Include ..\lib\TempCopy.ahk
+#Include ..\..\lib\TempCopy.ahk
 
 class Navi {
     ; --- クラス定数 ---
     static GUI_WIDTH := 450
     static GUI_HEIGHT_APPROX := 565
     static WINDOW_FRAME_WIDTH := 14  ; ウィンドウフレーム補正値（Win10/11標準テーマ）
-    static IniPath := A_ScriptDir "\ui\Navi.ini"
+    static IniPath := A_ScriptDir "\ui\navi\Navi.ini"
     static ExplorerPath := ""
     static TOOLTIP_ERROR_DURATION := 2000
     static TOOLTIP_SUCCESS_DURATION := 1000
     static TOOLTIP_COPY_DURATION := 2000
-    static TEMP_DIR_SUBPATH := "\ui\NaviTemp"
+    static TEMP_DIR_SUBPATH := "\temp"
     static TEMP_PREFIX := "TEMP_"
 
     ; --- アクションメニュー用の定数 ---

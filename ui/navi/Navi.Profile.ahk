@@ -152,7 +152,7 @@ class NaviProfile {
     ; ==============================================================================
 
     static _GetProfilesDir() {
-        return A_ScriptDir . "\ui\Navi_profiles"
+        return A_ScriptDir . "\ui\navi\navi_profiles"
     }
 
     static GetProfileList() {

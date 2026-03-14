@@ -313,10 +313,19 @@ OpenAI 互換のエンドポイントであれば利用可能です。
 │   └── DateTimeInsert.ahk
 ├── lib/                # 共有ライブラリ
 │   └── TempCopy.ahk            # 一時コピーユーティリティ
+├── temp/               # 一時コピーファイル置き場（TempCopy.ahk が使用）
 ├── ui/                 # GUI 関連クラス
-│   ├── Navi.ahk
-│   ├── Navi.Search.ahk         # Navi 用ローカル検索モジュール
-│   ├── Navi.ContextMenu.ahk    # Navi 用右クリックメニュー（IContextMenu COM）
+│   ├── navi/               # フォルダナビゲーター
+│   │   ├── Navi.ahk            # メインクラス・エントリーポイント
+│   │   ├── Navi.Filter.ahk     # フォルダフィルター（fd 連携含む）
+│   │   ├── Navi.Search.ahk     # ローカルキーワード検索
+│   │   ├── Navi.ContextMenu.ahk # 右クリックメニュー（IContextMenu COM）
+│   │   ├── Navi.Action.ahk     # アクションメニュー
+│   │   ├── Navi.Tab.ahk        # タブ管理
+│   │   ├── Navi.Profile.ahk    # プロファイル管理
+│   │   ├── Navi.Mark.ahk       # マーク / マークフィルター
+│   │   ├── Navi.Breadcrumb.ahk # パンくずリスト
+│   │   └── Navi.DetailList.ahk # 詳細ファイルリスト
 │   ├── TempMemo.ahk
 │   ├── SnippetPicker.ahk
 │   ├── HotstringManager.ahk

@@ -48,7 +48,7 @@ class NaviSearch {
     static DEFAULT_TIMEOUT_SEC := 10    ; デフォルトタイムアウト（秒）、0=無制限
     static ExcludeDirs := []            ; 実行時に読み込まれる除外リスト
     static TimeoutMs := 10000           ; 実行時タイムアウト（ミリ秒）
-    static IniPath := A_ScriptDir "\ui\Navi.ini"
+    static IniPath := A_ScriptDir "\ui\navi\Navi.ini"
     ; UI/タイマー定数
     static UI_MARGIN := 12              ; ダイアログ配置用の汎用マージン
     static TIMER_TICK_MS := 10          ; ディレクトリスキャンのタイマー間隔
