@@ -10,7 +10,7 @@
 
 class TempCopy {
     ; --- クラス定数 ---
-    static TEMP_DIR_SUBPATH := "\ui\NaviTemp"
+    static TEMP_DIR_SUBPATH := "\temp"
     static TEMP_PREFIX := "TEMP_"
     static TOOLTIP_ERROR_DURATION := 2000
     static TOOLTIP_SUCCESS_DURATION := 1000

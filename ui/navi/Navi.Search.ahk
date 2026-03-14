@@ -48,7 +48,7 @@ class NaviSearch {
     static DEFAULT_TIMEOUT_SEC := 10    ; デフォルトタイムアウト（秒）、0=無制限
     static ExcludeDirs := []            ; 実行時に読み込まれる除外リスト
     static TimeoutMs := 10000           ; 実行時タイムアウト（ミリ秒）
-    static IniPath := A_ScriptDir "\ui\Navi.ini"
+    static IniPath := A_ScriptDir "\ui\navi\Navi.ini"
     ; UI/タイマー定数
     static UI_MARGIN := 12              ; ダイアログ配置用の汎用マージン
     static TIMER_TICK_MS := 10          ; ディレクトリスキャンのタイマー間隔
@@ -1580,8 +1580,8 @@ class NaviSearch {
             ; NMCUSTOMDRAW.dwItemSpec (HTREEITEM)  offset (64bit:56 / 32bit:36)
             specOff := (A_PtrSize = 8) ? 56 : 36
             itemId  := NumGet(lParam, specOff, "ptr")
-            ; フィルタマッチノードは Navi の filter ハンドラーに委譲（優先度: filter > search）
-            if (NaviSearch._NaviRef != "" && NaviSearch._NaviRef._FilterMatchIdSet.Has(itemId))
+            ; フィルタマッチノードは NaviFilter の filter ハンドラーに委譲（優先度: filter > search）
+            if (NaviFilter._FilterMatchIdSet.Has(itemId))
                 return
             if (NaviSearch._HighlightedIdSet.Has(itemId)) {
                 ; NMTVCUSTOMDRAW.clrText  offset (64bit:80 / 32bit:48)

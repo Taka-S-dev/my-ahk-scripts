@@ -159,7 +159,7 @@ x:: ExcelFontStyle.SetFontColorStrikethrough()
 ; ------------------------------------------------------------
 ;  Navi ショートカット定義
 ; ------------------------------------------------------------
-#Include "ui\Navi.ahk"      ; ナビゲーション / ランチャ UI
+#Include "ui\navi\Navi.ahk"  ; ナビゲーション / ランチャ UI
 
 #HotIf GetKeyState(MOD_KEY, "P")
 ; Navi: GUI 起動
