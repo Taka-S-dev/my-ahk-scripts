@@ -79,8 +79,11 @@ class Navi {
     static _FdIndexPid      := 0     ; fd 非同期インデックス構築のプロセスID
     static _FdIndexFile     := ""    ; fd 出力先一時ファイル
     static _FdIndexRoot     := ""    ; 非同期構築中のルートパス
+    static _FdIndexStartMs  := 0     ; fd 起動時刻（A_TickCount）タイムアウト判定用
+    static _FdIndexTimedOut := false ; タイムアウト強制終了フラグ
     static _FdPollCb        := ""    ; fd 完了ポーリングタイマーコールバック
     static _OnIndexReadyCb  := ""    ; fd 完了後に呼ぶコールバック
+    static FD_INDEX_TIMEOUT_MS := 10000  ; フィルターインデックス構築タイムアウト(ms)
     static _FilterMatchIdSet := Map() ; マッチノードID集合（カスタムドロー用）
     static _FilterTvHwnd     := 0     ; フィルタカスタムドロー対象 TreeView の Hwnd
     static _FilterDrawHandler := ""   ; WM_NOTIFY ハンドラー参照
@@ -698,17 +701,60 @@ class Navi {
         parentGui.Opt("+Disabled")
         settGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "Navi 設定")
         settGui.SetFont("s10", "Yu Gothic UI")
+        settGui.MarginX := 16
+        settGui.MarginY := 12
 
-        settGui.Add("Text", "xm", "動作")
-        autoMinCb := settGui.Add("CheckBox", "xm y+6", "アクション実行後に自動最小化する（ピン留めON時は無効）")
+        ; --- 外部ファイラー ---
+        settGui.SetFont("s10 Bold")
+        settGui.Add("Text", "xm", "外部ファイラー")
+        settGui.SetFont("s10 Norm")
+        explorerPath := IniRead(this.IniPath, "Settings", "ExplorerPath", "explorer.exe")
+        useDefaultCb := settGui.Add("CheckBox", "xm y+8", "標準エクスプローラーを使用する")
+        useDefaultCb.Value := (explorerPath == "explorer.exe") ? 1 : 0
+        explorerEdit := settGui.Add("Edit", "xm y+6 w320", explorerPath == "explorer.exe" ? "" : explorerPath)
+        explorerEdit.Enabled := (explorerPath != "explorer.exe")
+        btnBrowseExplorer := settGui.Add("Button", "x+4 yp w40 h26", "...")
+        btnBrowseExplorer.Enabled := (explorerPath != "explorer.exe")
+        useDefaultCb.OnEvent("Click", (*) => (
+            useDefaultCb.Value ? (explorerEdit.Enabled := false, btnBrowseExplorer.Enabled := false)
+                               : (explorerEdit.Enabled := true,  btnBrowseExplorer.Enabled := true)
+        ))
+        btnBrowseExplorer.OnEvent("Click", (*) => (
+            sel := FileSelect(3, explorerEdit.Value, "ファイラーを選択", "(*.exe)"),
+            sel != "" ? explorerEdit.Value := sel : 0
+        ))
+
+        ; --- 動作 ---
+        settGui.Add("Text", "xm y+14 w400 0x10")
+        settGui.SetFont("s10 Bold")
+        settGui.Add("Text", "xm y+10", "動作")
+        settGui.SetFont("s10 Norm")
+        autoMinCb := settGui.Add("CheckBox", "xm y+8", "アクション実行後に自動最小化する（ピン留めON時は無効）")
         autoMinCb.Value := (IniRead(this.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1") ? 1 : 0
-        autoMinCb.OnEvent("Click", (*) => IniWrite(autoMinCb.Value, this.IniPath, "Settings", "AutoMinimizeOnAction"))
 
-        settGui.Add("Text", "xm y+12 w380 0x10")  ; 区切り線
-        settGui.Add("Text", "xm y+8", "フォルダフィルター")
-        fdFilterCb := settGui.Add("CheckBox", "xm y+6", "フォルダフィルターを高速化する（fd.exe が必要）")
+        ; --- フォルダフィルター ---
+        settGui.Add("Text", "xm y+14 w400 0x10")
+        settGui.SetFont("s10 Bold")
+        settGui.Add("Text", "xm y+10", "フォルダフィルター")
+        settGui.SetFont("s10 Norm")
+        fdFilterCb := settGui.Add("CheckBox", "xm y+8", "高速化する（fd.exe が必要）")
         fdFilterCb.Value := (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") != "0") ? 1 : 0
-        fdFilterCb.OnEvent("Click", (*) => IniWrite(fdFilterCb.Value, this.IniPath, "Search", "UseFdForFilter"))
+        settGui.Add("Text", "xm y+10", "最大階層深度（0 = 無制限）:")
+        depthEdit := settGui.Add("Edit", "x+8 yp-2 w50 Number", IniRead(this.IniPath, "Search", "FilterMaxDepth", "8"))
+
+        ; --- OK ボタン ---
+        settGui.Add("Text", "xm y+14 w400 0x10")
+        btnOK := settGui.Add("Button", "xm y+10 w80 Default", "OK")
+        btnOK.OnEvent("Click", (*) => (
+            this.ExplorerPath := useDefaultCb.Value ? "explorer.exe" : explorerEdit.Value,
+            IniWrite(this.ExplorerPath, this.IniPath, "Settings", "ExplorerPath"),
+            IniWrite(autoMinCb.Value, this.IniPath, "Settings", "AutoMinimizeOnAction"),
+            IniWrite(fdFilterCb.Value, this.IniPath, "Search", "UseFdForFilter"),
+            IniWrite(depthEdit.Value, this.IniPath, "Search", "FilterMaxDepth"),
+            settGui.Destroy(),
+            parentGui.Opt("-Disabled +AlwaysOnTop"),
+            parentGui.Show()
+        ))
 
         _close := (*) => (settGui.Destroy(), parentGui.Opt("-Disabled +AlwaysOnTop"), parentGui.Show())
         settGui.OnEvent("Close", _close)
@@ -718,6 +764,7 @@ class Navi {
         settGui.Show("Hide")
         settGui.GetPos(, , &sw, &sh)
         settGui.Show("x" . px + (pw - sw) // 2 . " y" . py + (ph - sh) // 2)
+        btnOK.Focus()
     }
 
     static _ShowEntryGui(editGui, lv, row := 0) {
@@ -1049,13 +1096,16 @@ class Navi {
         tmpFile := A_Temp . "\navi_fidx_" . A_TickCount . ".txt"
         ; 末尾 \ をエスケープ（C ランタイムの \" 解析対策）
         safeRoot := (SubStr(rootPath, -1) = "\") ? rootPath . "\" : rootPath
-        cmd := '"' . fdPath . '" --type d --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
+        maxDepth := Integer(IniRead(this.IniPath, "Search", "FilterMaxDepth", "8"))
+        depthOpt := (maxDepth > 0) ? " --max-depth " . maxDepth : ""
+        cmd := '"' . fdPath . '" --type d' . depthOpt . ' --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
         pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
         if (pid = 0)
             return false
-        this._FdIndexPid  := pid
-        this._FdIndexFile := tmpFile
-        this._FdIndexRoot := rootPath
+        this._FdIndexPid     := pid
+        this._FdIndexFile    := tmpFile
+        this._FdIndexRoot    := rootPath
+        this._FdIndexStartMs := A_TickCount
         cb := () => this._PollFdIndex()
         this._FdPollCb := cb
         SetTimer(cb, 200)
@@ -1068,26 +1118,35 @@ class Navi {
      */
     static _PollFdIndex() {
         if (this._FdIndexPid = 0 || ProcessExist(this._FdIndexPid)) {
-            ; fd 実行中: ステータスバーにアニメーションドットを表示
-            try {
-            if (this.GuiObj && WinExist(this.GuiObj)) {
-                static dots := [" .", " ..", " ..."]
-                static frame := 0
-                frame := Mod(frame, 3) + 1
-                this.GuiObj._sbRef.SetText(" インデックス構築中" . dots[frame])
+            ; タイムアウトチェック: 時間超過なら fd を強制終了して部分結果を使う
+            if (this._FdIndexPid != 0 && (A_TickCount - this._FdIndexStartMs) > this.FD_INDEX_TIMEOUT_MS) {
+                try ProcessClose(this._FdIndexPid)
+                this._FdIndexPid := 0
+                ; タイムアウトフラグを立てて完了処理へ（部分結果を利用）
+                this._FdIndexTimedOut := true
+            } else {
+                ; fd 実行中: ステータスバーにアニメーションドットを表示
+                try {
+                    if (this.GuiObj && WinExist(this.GuiObj)) {
+                        static dots := [" .", " ..", " ..."]
+                        static frame := 0
+                        frame := Mod(frame, 3) + 1
+                        this.GuiObj._sbRef.SetText(" インデックス構築中" . dots[frame])
+                    }
+                }
+                return
             }
         }
-            return
-        }
-        ; 完了: タイマーを停止
+        ; 完了（正常 or タイムアウト）: タイマーを停止
         SetTimer(this._FdPollCb, 0)
         this._FdPollCb := ""
         this._FdIndexPid := 0
-        ; 結果を読み込んでインデックスを構築（Loop Read で行単位処理: 大ファイル対策）
+        ; 結果を読み込んでインデックスを構築（fd は UTF-8 出力のため明示指定）
         this._FolderIndex := []
         try {
-            loop read, this._FdIndexFile {
-                p := Trim(A_LoopReadLine)
+            raw := FileRead(this._FdIndexFile, "UTF-8")
+            for line in StrSplit(raw, "`n", "`r") {
+                p := Trim(line)
                 if (p = "")
                     continue
                 if (SubStr(p, -1) = "\" && StrLen(p) > 3)
@@ -1099,10 +1158,19 @@ class Navi {
         }
         try FileDelete(this._FdIndexFile)
         this._FdIndexFile := ""
+        timedOut := this._FdIndexTimedOut
+        this._FdIndexTimedOut := false
         this._IndexedRoot := this._FdIndexRoot
         this._FdIndexRoot := ""
-        ; ステータスバーを通常表示に戻す
-        this._UpdateStatusBar()
+        ; ステータスバーを通常表示に戻す（タイムアウト時は警告表示）
+        if (timedOut) {
+            try {
+                if (this.GuiObj && WinExist(this.GuiObj))
+                    this.GuiObj._sbRef.SetText(" ⚠ インデックス構築タイムアウト（部分結果: " . this._FolderIndex.Length . " 件）")
+            }
+        } else {
+            this._UpdateStatusBar()
+        }
         ; 保留コールバックがあれば実行（フィルタ再適用など）
         if (this._OnIndexReadyCb != "") {
             cb := this._OnIndexReadyCb
@@ -1125,8 +1193,9 @@ class Navi {
         }
         if (this._FdPollCb != "")
             SetTimer(this._FdPollCb, 0)
-        this._FdPollCb      := ""
-        this._OnIndexReadyCb := ""
+        this._FdPollCb        := ""
+        this._FdIndexTimedOut := false
+        this._OnIndexReadyCb  := ""
     }
 
     /**
@@ -2287,7 +2356,7 @@ class Navi {
     ; --- プロファイル機能 ---
 
     static _GetProfilesDir() {
-        return A_ScriptDir . "\ui\profiles"
+        return A_ScriptDir . "\ui\Navi_profiles"
     }
 
     static _GetProfileList() {
