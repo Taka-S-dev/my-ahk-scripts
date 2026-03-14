@@ -178,7 +178,7 @@ class NaviTab {
     static _GetLiveState() {
         nv := this._navi
         marks := Map()
-        for k, v in nv._MarkedPaths
+        for k, v in NaviMark._MarkedPaths
             marks[k] := v
         tv    := nv.GuiObj["FolderTree"]
         selPath := ""
@@ -189,7 +189,7 @@ class NaviTab {
             root:       nv.lastRoot,
             filter:     nv.GuiObj["TreeFilter"].Value,
             marks:      marks,
-            markFilter: nv._MarkFilterActive,
+            markFilter: NaviMark._MarkFilterActive,
             path:       selPath
         }
     }
@@ -238,18 +238,18 @@ class NaviTab {
         rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
         nv.GuiObj["TreeFilter"].Value := state.filter
         if (state.markFilter && rootPath != "") {
-            nv._MarkedPaths    := state.marks
-            nv._MarkFilterActive := true
-            nv._ApplyMarkFilter(tv, rootPath)
+            NaviMark._MarkedPaths    := state.marks
+            NaviMark._MarkFilterActive := true
+            NaviMark._ApplyMarkFilter(tv, rootPath)
         } else if (state.filter != "" && rootPath != "") {
-            nv._MarkFilterActive := false
-            nv._MarkedPaths    := state.marks
+            NaviMark._MarkFilterActive := false
+            NaviMark._MarkedPaths    := state.marks
             NaviFilter.ApplyTreeFilter(state.filter)
         } else if (rootPath != "") {
-            nv._MarkFilterActive := false
+            NaviMark._MarkFilterActive := false
             nv._RefreshTree(tv, rootPath, false)
-            nv._MarkedPaths := state.marks
-            nv._RebuildMarkedIdSet(tv)
+            NaviMark._MarkedPaths := state.marks
+            NaviMark._RebuildMarkedIdSet(tv)
             NaviFilter.EnsureFilterDraw(tv)
             DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
         }
@@ -319,12 +319,12 @@ class NaviTab {
         tab := (n <= this._Tabs.Length) ? this._Tabs[n] : ""
         if (tab == "" || tab.root == "") {
             nv.GuiObj["TreeFilter"].Value := ""
-            nv._MarkFilterActive := false
+            NaviMark._MarkFilterActive := false
             rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
             if (rootPath != "")
                 nv._RefreshTree(tv, rootPath, false)
-            nv._MarkedPaths := Map()
-            nv._MarkedIdSet := Map()
+            NaviMark._MarkedPaths := Map()
+            NaviMark._MarkedIdSet := Map()
         } else {
             this._ApplyTabState(tab, tv)
         }
@@ -352,9 +352,9 @@ class NaviTab {
         this._CurrentTab := this._TabCount
         tv := nv.GuiObj["FolderTree"]
         nv.GuiObj["TreeFilter"].Value := ""
-        nv._MarkFilterActive := false
-        nv._MarkedPaths := Map()
-        nv._MarkedIdSet := Map()
+        NaviMark._MarkFilterActive := false
+        NaviMark._MarkedPaths := Map()
+        NaviMark._MarkedIdSet := Map()
         rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
         if (rootPath != "")
             nv._RefreshTree(tv, rootPath, false)
@@ -379,9 +379,9 @@ class NaviTab {
         tab := (this._CurrentTab <= this._Tabs.Length) ? this._Tabs[this._CurrentTab] : ""
         if (tab == "" || tab.root == "") {
             nv.GuiObj["TreeFilter"].Value := ""
-            nv._MarkFilterActive := false
-            nv._MarkedPaths := Map()
-            nv._MarkedIdSet := Map()
+            NaviMark._MarkFilterActive := false
+            NaviMark._MarkedPaths := Map()
+            NaviMark._MarkedIdSet := Map()
             rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
             if (rootPath != "")
                 nv._RefreshTree(tv, rootPath, false)

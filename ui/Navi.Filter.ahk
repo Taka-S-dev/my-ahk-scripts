@@ -333,7 +333,7 @@ class NaviFilter {
             tv.Delete()
             nv.FilesShown          := Map()
             this._FilterMatchIdSet := Map()
-            nv._MarkFilterActive   := false
+            NaviMark._MarkFilterActive := false
             NaviSearch._HighlightedIdSet := Map()
             if (results.Length == 0) {
                 tv.Add("(一致なし)", 0)
@@ -423,7 +423,7 @@ class NaviFilter {
                 }
             }
             ; フィルタ結果の上にマーク色を復元
-            nv._RebuildMarkedIdSet(tv)
+            NaviMark._RebuildMarkedIdSet(tv)
         } catch Any {
             ; GUI 破棄など想定内の例外は無視して finally でクリーンアップ
         } finally {
@@ -462,15 +462,15 @@ class NaviFilter {
         stageOff := (A_PtrSize = 8) ? 24 : 12
         stage    := NumGet(lParam, stageOff, "uint")
         if (stage = 0x1) {  ; CDDS_PREPAINT
-            return (NaviFilter._FilterMatchIdSet.Count > 0 || Navi._MarkedIdSet.Count > 0) ? 0x20 : ""
+            return (NaviFilter._FilterMatchIdSet.Count > 0 || NaviMark._MarkedIdSet.Count > 0) ? 0x20 : ""
         }
         if (stage = 0x10001) {  ; CDDS_ITEMPREPAINT
             specOff := (A_PtrSize = 8) ? 56 : 36
             itemId  := NumGet(lParam, specOff, "ptr")
             clrOff  := (A_PtrSize = 8) ? 80 : 48
             ; マーク色はフィルタマッチ色より優先
-            if (Navi._MarkedIdSet.Has(itemId)) {
-                NumPut("uint", Navi.MARK_COLOR, lParam, clrOff)
+            if (NaviMark._MarkedIdSet.Has(itemId)) {
+                NumPut("uint", NaviMark.MARK_COLOR, lParam, clrOff)
                 return 0
             }
             if (NaviFilter._FilterMatchIdSet.Has(itemId)) {

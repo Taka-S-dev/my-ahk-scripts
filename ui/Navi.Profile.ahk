@@ -124,9 +124,7 @@ class NaviProfile {
         NaviTab.LoadTabsFromIni()
 
         ; マーク状態をリセット
-        nv._MarkedPaths      := Map()
-        nv._MarkedIdSet      := Map()
-        nv._MarkFilterActive := false
+        NaviMark.Reset()
 
         ; ツリーを新プロファイルで復元
         tv := nv.GuiObj["FolderTree"]

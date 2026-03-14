@@ -24,6 +24,7 @@
 #Include *i Navi.Profile.ahk
 #Include *i Navi.DetailList.ahk
 #Include *i Navi.Breadcrumb.ahk
+#Include *i Navi.Mark.ahk
 #Include ..\lib\TempCopy.ahk
 
 class Navi {
@@ -68,11 +69,7 @@ class Navi {
     static DropdownGui := ""             ; ルート選択ドロップダウンGUI
     ; プロファイル関連状態は NaviProfile クラスで管理（Navi.Profile.ahk）
     ; フィルタ関連状態は NaviFilter クラスで管理（Navi.Filter.ahk）
-    static _MarkedPaths := Map()   ; マーク済みパス集合（小文字キー→元パス）
-    static _MarkedIdSet := Map()   ; マークノードID集合（カスタムドロー用）
-    static _MarkFilterActive := false   ; マークフィルタービュー中フラグ
-    static MARK_COLOR := 0x0000AA00  ; マーク着色色 BGR: 緑
-    static _LastTreeRootPath := ""      ; 前回の _RefreshTree ルートパス（マーク初期化判定用）
+    ; マーク関連状態・定数は NaviMark クラスで管理（Navi.Mark.ahk）
 
     ; --- アイコン管理 ---
     static _ILHandle := 0           ; TreeView 用 ImageList ハンドル
@@ -110,6 +107,7 @@ class Navi {
         NaviProfile.Init(this)
         NaviDetailList.Init(this)
         NaviBreadcrumb.Init(this)
+        NaviMark.Init(this)
     }
 
     static Show() {
@@ -273,9 +271,9 @@ class Navi {
         Hotkey("Left", (*) => this._HandleLeftKey(), "On")
         Hotkey("Right", (*) => this._HandleRightKey(), "On")
         Hotkey("RButton", (*) => this._HandleRButton(), "On")
-        Hotkey("!m", (*) => this._ToggleMark(), "On")
-        Hotkey("^m", (*) => this._ToggleMarkFilter(), "On")
-        Hotkey("!+m", (*) => this._ClearAllMarks(), "On")
+        Hotkey("!m",  (*) => NaviMark._ToggleMark(), "On")
+        Hotkey("^m",  (*) => NaviMark._ToggleMarkFilter(), "On")
+        Hotkey("!+m", (*) => NaviMark._ClearAllMarks(), "On")
         NaviTab.RegisterHotkeys()
         HotIf()
 
@@ -357,10 +355,7 @@ class Navi {
         ; フィルタータイマーを停止（GUI破棄後に ApplyTreeFilter が発火するのを防ぐ）
         NaviFilter.CancelDebounce()
         ; マーク状態をリセット
-        this._MarkedPaths := Map()
-        this._MarkedIdSet := Map()
-        this._MarkFilterActive := false
-        this._LastTreeRootPath := ""
+        NaviMark.Reset()
         ; プロファイルドロップダウンを閉じる
         NaviProfile.CloseProfileDropdown()
         ; 詳細リスト参照をリセット（+Owner で親破棄時に自動クローズされるため Destroy 不要）
@@ -880,12 +875,12 @@ class Navi {
         }
         tv.Delete()
         this.FilesShown := Map()  ; ノードIDが無効化されるためクリア
-        this._MarkedIdSet := Map()
-        this._MarkFilterActive := false
+        NaviMark._MarkedIdSet := Map()
+        NaviMark._MarkFilterActive := false
         ; 別ルートへ切り替え時はマークをリセット
-        if (rootPath != this._LastTreeRootPath) {
-            this._MarkedPaths := Map()
-            this._LastTreeRootPath := rootPath
+        if (rootPath != NaviMark._LastTreeRootPath) {
+            NaviMark._MarkedPaths := Map()
+            NaviMark._LastTreeRootPath := rootPath
         }
         if (!DirExist(rootPath)) {
             return
@@ -894,7 +889,7 @@ class Navi {
         this._LoadSub(tv, rootPath, rootID)
         this._ShowFilesIfEnabled(tv, rootID, rootPath)
         ; ツリー再構築後にマークノードIDを復元
-        this._RebuildMarkedIdSet(tv)
+        NaviMark._RebuildMarkedIdSet(tv)
         if (setFocus)
             tv.Focus()
         ; ツリー描画完了後 800ms でインデックスを先読み構築（フィルタ初回遅延を隠す）
@@ -904,153 +899,7 @@ class Navi {
         SetTimer(cb, -800)
     }
 
-    ; --- マーク / マークフィルター機能 ---
-
-    static _ToggleMark() {
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        tv := this.GuiObj["FolderTree"]
-        selId := tv.GetSelection()
-        if (!selId)
-            return
-        path := this._GetTVFullPath(tv, selId)
-        if (path == "")
-            return
-        key := StrLower(path)
-        if (this._MarkedPaths.Has(key))
-            this._MarkedPaths.Delete(key)
-        else
-            this._MarkedPaths[key] := path
-        this._RebuildMarkedIdSet(tv)
-        NaviFilter.EnsureFilterDraw(tv)
-        DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
-    }
-
-    static _ClearAllMarks() {
-        if (this._MarkedPaths.Count == 0 || !(this.GuiObj && WinExist(this.GuiObj)))
-            return
-        this._MarkedPaths := Map()
-        tv := this.GuiObj["FolderTree"]
-        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-        if (this._MarkFilterActive && rootPath != "") {
-            ; マークフィルタービューを終了して元のビューへ戻す
-            this._MarkFilterActive := false
-            query := Trim(this.GuiObj["TreeFilter"].Value)
-            if (query != "")
-                NaviFilter.ApplyTreeFilter(query)
-            else
-                this._RefreshTree(tv, rootPath, false)
-        } else {
-            this._MarkedIdSet := Map()
-            DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
-        }
-        this._UpdateStatusBar()
-    }
-
-
-
-    static _ToggleMarkFilter() {
-        if (this._MarkedPaths.Count == 0 || !(this.GuiObj && WinExist(this.GuiObj)))
-            return
-        tv := this.GuiObj["FolderTree"]
-        rootPath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-        if (rootPath == "")
-            return
-        if (this._MarkFilterActive) {
-            this._MarkFilterActive := false
-            query := Trim(this.GuiObj["TreeFilter"].Value)
-            if (query != "") {
-                ; フォルダフィルタービューへ戻す（ApplyTreeFilter 内でマーク色も復元）
-                NaviFilter.ApplyTreeFilter(query)
-            } else {
-                ; 全体ツリーへ戻してマーク色を復元
-                savedMarks := Map()
-                for k, v in this._MarkedPaths
-                    savedMarks[k] := v
-                this._RefreshTree(tv, rootPath, false)
-                this._MarkedPaths := savedMarks
-                this._RebuildMarkedIdSet(tv)
-                NaviFilter.EnsureFilterDraw(tv)
-                DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
-            }
-            this._UpdateStatusBar()
-        } else {
-            this._MarkFilterActive := true
-            this._ApplyMarkFilter(tv, rootPath)
-        }
-    }
-
-    static _ApplyMarkFilter(tv, rootPath) {
-        tv.Delete()
-        this.FilesShown := Map()
-        NaviFilter._FilterMatchIdSet := Map()
-        this._MarkedIdSet := Map()
-        NaviSearch._HighlightedIdSet := Map()
-
-        rootBase := RTrim(rootPath, "\")
-        rootID := tv.Add(rootPath, 0, "Expand Icon1")
-        addedPaths := Map()
-        addedPaths[StrLower(rootBase)] := rootID
-
-        firstMark := true
-        for key, markedPath in this._MarkedPaths {
-            rel := SubStr(markedPath, StrLen(rootBase) + 2)
-            parts := StrSplit(rel, "\")
-            parentID := rootID
-            currentPath := rootBase
-            for i, part in parts {
-                currentPath .= "\" . part
-                pathKey := StrLower(currentPath)
-                isMatch := (i == parts.Length)
-                if addedPaths.Has(pathKey) {
-                    existingID := addedPaths[pathKey]
-                    if (isMatch)
-                        this._MarkedIdSet[existingID] := true
-                    parentID := existingID
-                } else {
-                    opts := isMatch ? "Bold" : ""
-                    if (isMatch && firstMark) {
-                        opts .= " Select"
-                        firstMark := false
-                    }
-                    isDir := DirExist(currentPath) ? true : false
-                    iconStr := isDir ? "Icon1" : this._GetFileIconStr(part)
-                    nodeID := tv.Add(part, parentID, opts . " " . iconStr)
-                    if (isMatch)
-                        this._MarkedIdSet[nodeID] := true
-                    addedPaths[pathKey] := nodeID
-                    parentID := nodeID
-                    ; マークフォルダの子を読み込み手動展開できるようにする
-                    if (isMatch && isDir) {
-                        this._LoadSub(tv, currentPath, nodeID)
-                        this._ShowFilesIfEnabled(tv, nodeID, currentPath)
-                    }
-                }
-            }
-        }
-
-        ; 中間親ノードのみ展開（マークノード自体は折り畳み状態を維持）
-        for pathKey, nodeID in addedPaths {
-            if (nodeID != rootID && !this._MarkedIdSet.Has(nodeID) && tv.GetChild(nodeID) != 0)
-                tv.Modify(nodeID, "Expand")
-        }
-
-        NaviFilter.EnsureFilterDraw(tv)
-        this._UpdateStatusBar()
-    }
-
-    static _RebuildMarkedIdSet(tv) {
-        this._MarkedIdSet := Map()
-        if (this._MarkedPaths.Count == 0)
-            return
-        nodeId := tv.GetNext(0, "Full")  ; "Full" = 兄弟のみでなくツリー全体をDFS順に走査
-        while (nodeId) {
-            path := this._GetTVFullPath(tv, nodeId)
-            if (this._MarkedPaths.Has(StrLower(path)))
-                this._MarkedIdSet[nodeId] := true
-            nodeId := tv.GetNext(nodeId, "Full")
-        }
-    }
+    ; マーク / マークフィルター機能は NaviMark クラスで管理（Navi.Mark.ahk）
 
     static _LoadSub(tv, path, parentID) {
         loop files, path . "\*", "D" {
@@ -1110,7 +959,7 @@ class Navi {
         try {
             sb := this.GuiObj._sbRef
             base := " [Space]メニュー  [Enter]開く  [Ctrl+D]詳細  [F1]ヘルプ"
-            sb.SetText(this._MarkFilterActive ? base . "  [mark]" : base)
+            sb.SetText(NaviMark._MarkFilterActive ? base . "  [mark]" : base)
         }
     }
 
