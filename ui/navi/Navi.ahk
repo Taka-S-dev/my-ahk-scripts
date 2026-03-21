@@ -252,7 +252,7 @@ class Navi {
         btnProfile.OnEvent("Click", (*) => NaviProfile.OpenProfileDropdown())
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this._HandleActivate())
-        this.GuiObj.OnEvent("Close", (*) => (this.GuiObj := ""))
+        this.GuiObj.OnEvent("Close", (*) => this._OnXClose())
 
         ; ホットキー設定（Naviアクティブ時のみ）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
@@ -343,7 +343,25 @@ class Navi {
         tv.Focus()
     }
 
+    ; X ボタンで閉じた場合: GUI は AHK が破棄するため Destroy は不要
+    static _OnXClose() {
+        this._CleanupState()
+        this.GuiObj := ""
+    }
+
     static _DestroyGui() {
+        this._CleanupState()
+        if (this.GuiObj && WinExist(this.GuiObj)) {
+            ; 検索ウィンドウなど付随UIも確実に閉じる
+            try NaviSearch._DestroyJumpGui()
+            this._CloseDropdown()
+            this.GuiObj.Destroy()
+            this.GuiObj := ""
+        }
+    }
+
+    ; GUI 破棄・クローズ共通クリーンアップ（タブ保存・タイマー停止・状態リセット）
+    static _CleanupState() {
         ; 現在のタブ状態を保存してから破棄（次回起動時に復元できるようにする）
         NaviTab.SaveCurrentTab()
         NaviTab.SaveTabsToIni()
@@ -359,13 +377,6 @@ class Navi {
         NaviDetailList._guiObj := ""
         ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
         NaviTab.Cleanup()
-        if (this.GuiObj && WinExist(this.GuiObj)) {
-            ; 検索ウィンドウなど付随UIも確実に閉じる
-            try NaviSearch._DestroyJumpGui()
-            this._CloseDropdown()
-            this.GuiObj.Destroy()
-            this.GuiObj := ""
-        }
     }
 
     /**
