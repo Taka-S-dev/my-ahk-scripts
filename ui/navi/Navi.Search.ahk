@@ -1206,6 +1206,11 @@ class NaviSearch {
             return
         lv := this.JumpListView
         if !IsObject(lv) || lv.GetCount() = 0 {
+            ; 検索結果がなければフィルタジャンプへフォールバック
+            if (NaviFilter._FilterMatchIdSet.Count > 0) {
+                NaviFilter.JumpToMatch(navi.GuiObj["FolderTree"], delta)
+                return
+            }
             ToolTip("ヒットなし")
             SetTimer(() => ToolTip(), -navi.TOOLTIP_SUCCESS_DURATION)
             return

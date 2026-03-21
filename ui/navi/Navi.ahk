@@ -262,6 +262,8 @@ class Navi {
         Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
         Hotkey("^d", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
+        Hotkey("F3",  (*) => NaviFilter.JumpToMatch(this.GuiObj["FolderTree"], +1), "On")
+        Hotkey("+F3", (*) => NaviFilter.JumpToMatch(this.GuiObj["FolderTree"], -1), "On")
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
         Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
