@@ -375,6 +375,10 @@ class NaviFilter {
                         ; 既存ノードが今回の結果ではマッチノードになる場合は着色対象に追加
                         if (isMatch && !this._FilterMatchIdSet.Has(existingID))
                             this._FilterMatchIdSet[existingID] := true
+                        ; このノードに実の子が追加される: プレースホルダーのみなら削除
+                        firstChild := tv.GetChild(existingID)
+                        if (firstChild != 0 && tv.GetText(firstChild) == "...loading..." && tv.GetNext(firstChild) == 0)
+                            tv.Delete(firstChild)
                         parentID := existingID
                     } else {
                         opts := isMatch ? "Bold" : ""
@@ -383,8 +387,10 @@ class NaviFilter {
                             firstMatch := false
                         }
                         nodeID := tv.Add(part, parentID, opts . " Icon1")
-                        if (isMatch)
+                        if (isMatch) {
                             this._FilterMatchIdSet[nodeID] := true
+                            tv.Add("...loading...", nodeID)  ; ノード作成直後に追加して展開ボタンを即表示
+                        }
                         addedPaths[key] := nodeID
                         parentID        := nodeID
                     }
@@ -393,9 +399,12 @@ class NaviFilter {
                 if (Mod(idx, 50) = 0)
                     Sleep(0)
             }
-            ; 子を持つノードを展開（Add 時点では子がないため "Expand" が無効なため後処理）
+            ; 子を持つノードを展開（"...loading..." プレースホルダーのみのノードは展開しない）
             for _, nodeID in addedPaths {
-                if (nodeID != rootID && tv.GetChild(nodeID) != 0)
+                if (nodeID == rootID)
+                    continue
+                child := tv.GetChild(nodeID)
+                if (child != 0 && tv.GetText(child) != "...loading...")
                     tv.Modify(nodeID, "Expand")
             }
             this.EnsureFilterDraw(tv)

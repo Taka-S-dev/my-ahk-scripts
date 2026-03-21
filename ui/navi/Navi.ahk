@@ -910,13 +910,38 @@ class Navi {
 
     static _OnItemExpand(tv, id) {
         child := tv.GetChild(id)
-        if (child == 0 || tv.GetText(child) != "...loading...") {
+        if (child != 0 && tv.GetText(child) == "...loading...") {
+            tv.Delete(child)
+            this._LoadSub(tv, this._GetTVFullPath(tv, id), id)
+            ; ファイル表示モードがONなら展開と同時にファイルも自動表示
+            this._ShowFilesIfEnabled(tv, id, this._GetTVFullPath(tv, id))
             return
         }
-        tv.Delete(child)
-        this._LoadSub(tv, this._GetTVFullPath(tv, id), id)
-        ; ファイル表示モードがONなら展開と同時にファイルも自動表示
-        this._ShowFilesIfEnabled(tv, id, this._GetTVFullPath(tv, id))
+        ; フィルタ中は未ロードの子フォルダを動的追加
+        if (NaviFilter._FilterMatchIdSet.Count > 0)
+            this._LoadFilterSub(tv, id)
+    }
+
+    ; フィルタ中: フィルタツリーに未追加の子フォルダを動的に追加する
+    static _LoadFilterSub(tv, parentID) {
+        fullPath := this._GetTVFullPath(tv, parentID)
+        if (!DirExist(fullPath))
+            return
+        ; 既存の子ノード名を収集（フィルタ結果として既に追加済みのもの）
+        existing := Map()
+        childID := tv.GetChild(parentID)
+        while (childID != 0) {
+            existing[StrLower(tv.GetText(childID))] := true
+            childID := tv.GetNext(childID)
+        }
+        ; 未追加のサブフォルダを追加（通常ツリーと同じ lazy expand 形式で）
+        loop files, fullPath . "\*", "D" {
+            if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H"))
+                continue
+            if (!existing.Has(StrLower(A_LoopFileName)))
+                tv.Add("...loading...", tv.Add(A_LoopFileName, parentID, "Icon1"))
+        }
+        this._ShowFilesIfEnabled(tv, parentID, fullPath)
     }
 
     static _ShowFilesIfEnabled(tv, nodeID, fullPath) {
