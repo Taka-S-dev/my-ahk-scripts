@@ -514,8 +514,8 @@ class NaviFilter {
         }
         if (matches.Length == 0)
             return
-        ; 現在の選択位置を探す
-        selID  := tv.GetSelection()
+        ; 現在の選択位置を探す（フィルタ入力中は先頭からスタート）
+        selID  := this._navi._TreeFilterFocused ? 0 : tv.GetSelection()
         curIdx := 0
         for i, mid in matches {
             if (mid == selID) {
@@ -529,5 +529,6 @@ class NaviFilter {
         else
             nextIdx := (curIdx <= 1) ? matches.Length : curIdx - 1
         tv.Modify(matches[nextIdx], "Select Vis")
+        tv.Focus()
     }
 }
