@@ -496,4 +496,38 @@ class NaviFilter {
             }
         }
     }
+
+    /**
+     * フィルタマッチノード間を F3 / Shift+F3 でジャンプ
+     * dir: +1=次, -1=前
+     */
+    static JumpToMatch(tv, dir) {
+        if (this._FilterMatchIdSet.Count == 0)
+            return
+        ; ツリー順にマッチノードを収集
+        matches := []
+        id := tv.GetNext(0, "Full")
+        while (id != 0) {
+            if (this._FilterMatchIdSet.Has(id))
+                matches.Push(id)
+            id := tv.GetNext(id, "Full")
+        }
+        if (matches.Length == 0)
+            return
+        ; 現在の選択位置を探す
+        selID  := tv.GetSelection()
+        curIdx := 0
+        for i, mid in matches {
+            if (mid == selID) {
+                curIdx := i
+                break
+            }
+        }
+        ; 循環ジャンプ
+        if (dir > 0)
+            nextIdx := (curIdx == 0 || curIdx >= matches.Length) ? 1 : curIdx + 1
+        else
+            nextIdx := (curIdx <= 1) ? matches.Length : curIdx - 1
+        tv.Modify(matches[nextIdx], "Select Vis")
+    }
 }
