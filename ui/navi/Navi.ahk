@@ -128,7 +128,7 @@ class Navi {
         this.GuiObj := ""
 
         this.GuiObj := Gui("+AlwaysOnTop +Resize", "Navi")
-        this.GuiObj.SetFont("s10", "Yu Gothic UI")
+        this.GuiObj.SetFont("s9", "Yu Gothic UI")
 
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
@@ -144,7 +144,7 @@ class Navi {
 
         ; --- タブバー（最上部）---
         _tabBarTopY_ := NaviTab.BuildTabBar(this.GuiObj)
-        this.GuiObj.SetFont("s10", "Yu Gothic UI")
+        this.GuiObj.SetFont("s9", "Yu Gothic UI")
 
         ; --- ヘッダー行（プロファイル・ルート選択・編集・設定・チェックボックス）---
         rootBtnText := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
@@ -153,7 +153,7 @@ class Navi {
         btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", NaviProfile.GetProfileBtnText())
         this.GuiObj._profileBtnHwnd := btnProfile.Hwnd
         ; › セパレーターで階層を表現
-        this.GuiObj.SetFont("s10", "Yu Gothic UI")
+        this.GuiObj.SetFont("s9", "Yu Gothic UI")
         this.GuiObj.Add("Text", "x+3 yp w14 h26 +0x201 vProfileSep", "›")  ; SS_CENTER|SS_NOTIFY
         ; Root は主役として大きめに
         rootBtn := this.GuiObj.Add("Button", "x+3 yp w190 h26 vRootBtn", rootBtnText)
@@ -180,7 +180,7 @@ class Navi {
         breadcrumb.OnEvent("Click", (*) => NaviBreadcrumb._OnClick())
         NaviBreadcrumb._hwnd := breadcrumb.Hwnd
         OnMessage(this.WM_SETCURSOR, NaviBreadcrumb._OnSetCursor.Bind(NaviBreadcrumb))
-        this.GuiObj.SetFont("s10", "Yu Gothic UI")
+        this.GuiObj.SetFont("s9", "Yu Gothic UI")
 
         ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
         filterToggle := this.GuiObj.Add("Button", "xm w28 h22 -Tabstop vFilterToggle", "📁")

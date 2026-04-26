@@ -48,7 +48,7 @@ class NaviTab {
     static BuildTabBar(guiObj) {
         nv := this._navi
         this._TabBtnCtrls := []
-        guiObj.SetFont("s8", "Yu Gothic UI")
+        guiObj.SetFont("s9", "Yu Gothic UI")
         Loop this.TAB_MAX {
             n    := A_Index
             w    := this.TAB_WIDTH
