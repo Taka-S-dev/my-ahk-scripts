@@ -33,6 +33,13 @@ class NaviFilter {
     static _FilterCancelled  := false  ; ルート切り替え時に強制中止するフラグ
     static _treeFilterCallback := ""   ; デバウンス用コールバック参照
 
+    ; --- ディレクトリ変更監視（FindFirstChangeNotification）---
+    static _WatchHandle     := 0       ; 監視ハンドル
+    static _WatchPollCb     := ""      ; 500ms ポーリングタイマー参照
+    static _WatchInvCb      := ""      ; デバウンス無効化タイマー参照
+    static WATCH_POLL_MS    := 500     ; ポーリング間隔(ms)
+    static WATCH_DEBOUNCE_MS := 1000   ; 変更検知後のデバウンス時間(ms)
+
     ; --- カスタムドロー ---
     static _FilterMatchIdSet := Map()  ; マッチノードID集合
     static _FilterTvHwnd     := 0      ; カスタムドロー対象 TreeView の Hwnd
@@ -146,6 +153,7 @@ class NaviFilter {
         this._FdIndexTimedOut := false
         this._IndexedRoot  := this._FdIndexRoot
         this._FdIndexRoot  := ""
+        this._StartDirWatch(this._IndexedRoot)
         ; ステータスバーを通常表示に戻す（タイムアウト時は警告表示）
         if (timedOut) {
             try {
@@ -205,6 +213,7 @@ class NaviFilter {
         }
         ; フォールバック: 同期 loop files
         this._BuildFolderIndex(rootPath)
+        this._StartDirWatch(rootPath)
         return true
     }
 
@@ -225,6 +234,7 @@ class NaviFilter {
      */
     static ResetForNewRoot() {
         this.CancelFdIndex()
+        this._StopDirWatch()
         this._FilterCancelled  := true
         this._FilterRunning    := false
         this._FilterPendingSet := false
@@ -244,6 +254,73 @@ class NaviFilter {
         if (this._indexBuildCallback != "") {
             SetTimer(this._indexBuildCallback, 0)
             this._indexBuildCallback := ""
+        }
+        this._StopDirWatch()
+    }
+
+    ; ==============================================================================
+    ; ディレクトリ変更監視（FindFirstChangeNotification + SetTimer ポーリング）
+    ; ネットワークパス非対応のため _IsNetworkPath チェックで除外する
+    ; ==============================================================================
+
+    /**
+     * rootPath の監視を開始する（インデックス構築完了後に呼ぶ）
+     * FILE_NOTIFY_CHANGE_DIR_NAME(0x2) のみ監視してフォルダ作成/削除/改名を検知する
+     */
+    static _StartDirWatch(rootPath) {
+        this._StopDirWatch()
+        if (this._IsNetworkPath(rootPath))
+            return
+        h := DllCall("FindFirstChangeNotificationW", "Str", rootPath, "Int", 1, "UInt", 0x2, "Ptr")
+        if (!h || h = -1)
+            return
+        this._WatchHandle := h
+        cb := () => this._PollDirWatch()
+        this._WatchPollCb := cb
+        SetTimer(cb, this.WATCH_POLL_MS)
+    }
+
+    ; ポーリングタイマー: 変更を検知したらデバウンスタイマーをセット
+    static _PollDirWatch() {
+        if (this._WatchHandle = 0)
+            return
+        if (DllCall("WaitForSingleObject", "Ptr", this._WatchHandle, "UInt", 0) != 0)
+            return
+        DllCall("FindNextChangeNotification", "Ptr", this._WatchHandle)
+        ; 連続変更をまとめるデバウンス（既存タイマーはリセット）
+        if (this._WatchInvCb != "")
+            SetTimer(this._WatchInvCb, 0)
+        cb := () => this._InvalidateIndex()
+        this._WatchInvCb := cb
+        SetTimer(cb, -this.WATCH_DEBOUNCE_MS)
+    }
+
+    ; インデックスを無効化し、フィルタ入力中なら自動再適用する
+    static _InvalidateIndex() {
+        this._WatchInvCb  := ""
+        this._IndexedRoot := ""
+        this._FolderIndex := []
+        nv := this._navi
+        try {
+            if (nv.GuiObj && WinExist(nv.GuiObj)) {
+                query := nv.GuiObj["TreeFilter"].Value
+                if (Trim(query) != "")
+                    SetTimer(() => this.ApplyTreeFilter(query), -1)
+            }
+        }
+    }
+
+    ; 監視を停止してハンドルを解放する
+    static _StopDirWatch() {
+        if (this._WatchPollCb != "")
+            SetTimer(this._WatchPollCb, 0)
+        if (this._WatchInvCb != "")
+            SetTimer(this._WatchInvCb, 0)
+        this._WatchPollCb := ""
+        this._WatchInvCb  := ""
+        if (this._WatchHandle != 0) {
+            DllCall("FindCloseChangeNotification", "Ptr", this._WatchHandle)
+            this._WatchHandle := 0
         }
     }
 
