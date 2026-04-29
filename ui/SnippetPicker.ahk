@@ -7,6 +7,7 @@
 ;               - マジックナンバーを定数化し、高い保守性と視認性を確保
 ; Version:      1.0.0
 ; License:      MIT
+; Requires:     modules\PlaceholderEngine.ahk
 ;
 ;
 ; Usage Example (Main.ahk):
@@ -18,51 +19,42 @@
 ; ==============================================================================
 
 #Requires AutoHotkey v2.0
+#Include "..\modules\PlaceholderEngine.ahk"
 
 class SnippetPicker {
     ; --- クラス定数 ---
-    static GUI_WIDTH := 600
+    static GUI_WIDTH   := 600
+    static GROUP_BTN_W := 130
+    static GEAR_BTN_W  := 30
     static LV_ROWS := 18
-    static BTN_WIDTH := 100
-    static COLOR_EDIT_BG := "E1ECF4"
-    static COLOR_HEADER := "004080"
     static FLAG_MODAL := 4096
     static SLEEP_PASTE := 100
     static TIMER_RESTORE := -500
 
     static IniPath := A_ScriptDir "\ui\SnippetsPicker.ini"
     static SnipList := []
-    static GuiObj := ""
-    static LvObj := ""
-
-    static SearchObj := ""
+    static GuiObj   := ""
+    static LvObj    := ""
+    static SearchObj  := ""
+    static GroupBtnObj := ""
+    static _GroupList  := []
+    static _LastGroup  := "*"
 
     static Init() {
         this._PrepareFile()
         this._LoadData()
         this._BuildGui()
+        this._RebuildGroupList()
     }
 
-    ; --- プレースホルダ置換エンジン ---
-    ; HotstringManager.ahk の置換ロジックを独立・整理
     static _ProcessPlaceholders(rawText) {
-        text := rawText
-
-        ; 1. クリップボード同期
-        text := StrReplace(text, "{{clip}}", A_Clipboard)
-
-        ; 2. 日付・時刻フォーマットの置換
-        text := StrReplace(text, "yyyy/mm/dd", FormatTime(, "yyyy/MM/dd"))
-        text := StrReplace(text, "yy/mm/dd", FormatTime(, "yy/MM/dd"))
-        text := StrReplace(text, "yymmdd", FormatTime(, "yyMMdd"))
-        text := StrReplace(text, "HH:mm", FormatTime(, "HH:mm"))
-
-        return text
+        return PlaceholderEngine.Apply(rawText)
     }
 
     ; --- 検索画面の表示 ---
     static Show() {
         this.SearchObj.Value := ""
+        this._RestoreGroup()
         this._FilterList("")
 
         CoordMode "Caret", "Screen"
@@ -103,16 +95,13 @@ class SnippetPicker {
     ;
     ; --- 管理画面（メインウィンドウの中央に配置） ---
     static _ShowEditGui() {
+        this._ChildOpen := true
         this.GuiObj.GetPos(&gx, &gy, &gw, &gh)
         this.GuiObj.Opt("+Disabled")
 
         editGui := Gui("+AlwaysOnTop -MaximizeBox", "登録内容の編集")
-        editGui.BackColor := this.COLOR_EDIT_BG
-        editGui.SetFont("s11 Bold", "Segoe UI")
-        editGui.Add("Text", "xm w580 Center c" this.COLOR_HEADER, "--- 登録内容の編集 ---")
-        editGui.SetFont("s10 Norm", "Segoe UI")
+        editGui.SetFont("s10", "Segoe UI")
 
-        ; 【修正】構文エラーの原因となっていた改行を削除しました
         lv := editGui.Add("ListView", "xm r15 w580 Grid", ["グループ", "名称", "内容"])
         lv.ModifyCol(1, 100), lv.ModifyCol(2, 120), lv.ModifyCol(3, 330)
 
@@ -139,6 +128,11 @@ class SnippetPicker {
 
         editGui.OnEvent("Close", (*) => this._CleanupEditGui(editGui))
 
+        HotIfWinActive("ahk_id " editGui.Hwnd)
+        Hotkey("Del", (*) => this._DeleteItem(lv, editGui), "On")
+        Hotkey("Esc", (*) => this._CleanupEditGui(editGui), "On")
+        HotIf()
+
         editGui.Show("Hide")
         editGui.GetPos(&ex, &ey, &ew, &eh)
         editGui.Show("x" . gx + (gw - ew) // 2 . " y" . gy + (gh - eh) // 2)
@@ -159,6 +153,17 @@ class SnippetPicker {
         entryGui.Add("Edit", "w400 vName", row ? lv.GetText(row, 2) : "")
         entryGui.Add("Text", , "内容:")
         entryGui.Add("Edit", "w400 r10 vContent", row ? lv.GetText(row, 3) : "")
+        entryGui.Add("Button", "x+5 yp w24 h24", "?").OnEvent("Click", (*) => MsgBox(
+            "{{clip}}     クリップボードの内容`n"
+            "yyyy/mm/dd  今日の日付 (例: 2025/04/29)`n"
+            "yyyy/mm     今月      (例: 2025/04)`n"
+            "yyyymm      今月      (例: 202504)`n"
+            "yy/mm/dd    今日の日付 (例: 25/04/29)`n"
+            "yy/mm       今月      (例: 25/04)`n"
+            "yymmdd      今日の日付 (例: 250429)`n"
+            "yymm        今月      (例: 2504)`n"
+            "HH:mm       現在時刻  (例: 09:30)",
+            "使えるプレースホルダー", "Iconi Owner" . entryGui.Hwnd))
 
         btnOk := entryGui.Add("Button", "xm w100 Default", "OK")
         btnOk.OnEvent("Click", (*) => this._ProcessEntry(parentGui, entryGui, lv, row))
@@ -188,6 +193,7 @@ class SnippetPicker {
 
     static _CleanupEditGui(editGui) {
         editGui.Destroy()
+        this._ChildOpen := false
         this.GuiObj.Opt("-Disabled")
         this.GuiObj.Show()
     }
@@ -291,6 +297,7 @@ class SnippetPicker {
 
         }
         this._LoadData()
+        this._RebuildGroupList()
         this._FilterList(this.SearchObj.Value)
     }
 
@@ -321,43 +328,131 @@ class SnippetPicker {
     }
 
     static _BuildGui() {
-        this.GuiObj := Gui("+AlwaysOnTop", "Snippets Picker [検索]")
+        this.GuiObj := Gui("+AlwaysOnTop", "Snippet Picker")
         this.GuiObj.SetFont("s10", "Segoe UI")
-        this.SearchObj := this.GuiObj.AddEdit("xm w" this.GUI_WIDTH)
+        searchW := this.GUI_WIDTH - this.GROUP_BTN_W - this.GEAR_BTN_W - 16
+        this.SearchObj := this.GuiObj.AddEdit("xm w" searchW " h24")
+        SendMessage(0x1501, 1, StrPtr("🔍  検索..."), this.SearchObj)  ; EM_SETCUEBANNER
         this.SearchObj.OnEvent("Change", (ed, *) => this._FilterList(ed.Value))
-        this.LvObj := this.GuiObj.AddListView("xm w" this.GUI_WIDTH " r" this.LV_ROWS " -Multi Grid", ["グループ", "名称",
-            "内容"])
+        this.GroupBtnObj := this.GuiObj.AddButton("x+8 yp w" this.GROUP_BTN_W " h24 -Tabstop", "*")
+        this.GroupBtnObj.OnEvent("Click", (*) => this._ShowGroupPicker())
+        this.GuiObj.AddButton("x+8 yp w" this.GEAR_BTN_W " h24 -Tabstop", "⚙").OnEvent("Click", (*) => this._ShowEditGui())
+        this.LvObj := this.GuiObj.AddListView("xm w" this.GUI_WIDTH " r" this.LV_ROWS " -Multi Grid", ["グループ", "名称", "内容"])
         this.LvObj.ModifyCol(1, 80), this.LvObj.ModifyCol(2, 150)
         this.LvObj.OnEvent("DoubleClick", (*) => this._InsertSelected())
 
-        this.GuiObj.AddButton("xm w" this.BTN_WIDTH " Default -Tabstop", "Insert").OnEvent("Click", (*) => this._InsertSelected())
-        this.GuiObj.AddButton("x+5 w" this.BTN_WIDTH " -Tabstop", "Manage").OnEvent("Click", (*) => this._ShowEditGui())
-        this.GuiObj.AddButton("x+5 w" this.BTN_WIDTH " -Tabstop", "Reload").OnEvent("Click", (*) => (this._LoadData(),
-        this._FilterList()))
 
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("Enter", (*) => this._InsertSelected(), "On"), Hotkey("Esc", (*) => this.GuiObj.Hide(), "On")
+        Hotkey("Enter", (*) => this._OnEnter(), "On")
+        Hotkey("Down",  (*) => this._NavList(1), "On")
+        Hotkey("Up",    (*) => this._NavList(-1), "On")
+        Hotkey("Esc",   (*) => (this.SearchObj.Value != "" ? (this.SearchObj.Value := "", this._FilterList("")) : this.GuiObj.Hide()), "On")
+        Hotkey("^g",    (*) => this._ShowGroupPicker(), "On")
         HotIf()
+
+        OnMessage(0x0006, (w,l,m,h) => SnippetPicker._OnActivate(w,l,m,h))  ; WM_ACTIVATE
+        SetTimer(ObjBindMethod(SnippetPicker, "_HoverTick"), 80)             ; ホバーツールチップ
     }
 
     static _FilterList(query := "") {
         ; --- クイックトリガー（置換エンジン適用） ---
         if (query == ";today") {
             this.GuiObj.Hide()
-            ; yyyy/mm/dd を置換エンジンに渡して実行
             this._QuickPaste(this._ProcessPlaceholders("yyyy/mm/dd"))
             return
         }
 
+        group := this._LastGroup
+        try this.GroupBtnObj.Text := group
+
+        ; グループ列: *表示時のみ表示、絞り込み時は非表示
+        if (group = "*") {
+            this.LvObj.ModifyCol(1, 80)
+            this.LvObj.ModifyCol(2, 150)
+        } else {
+            this.LvObj.ModifyCol(1, 0)
+            this.LvObj.ModifyCol(2, 230)
+        }
+        SendMessage(0x101E, 2, -2, , "ahk_id " this.LvObj.Hwnd)  ; 最終列を残り幅で埋める
+
+        ; プレフィックスで検索列を切り替え: g:→グループ  c:→内容  なし→名称
+        searchField := "title"
+        searchQuery := query
+        if (SubStr(query, 1, 2) = "g:") {
+            searchField := "group"
+            searchQuery := SubStr(query, 3)
+        } else if (SubStr(query, 1, 2) = "c:") {
+            searchField := "content"
+            searchQuery := SubStr(query, 3)
+        }
+
         this.LvObj.Delete()
         for item in this.SnipList {
-            if (query == "" || InStr(item.group, query) || InStr(item.title, query) || InStr(item.content, query)) {
+            groupMatch := (group = "*" || item.group = group)
+            queryMatch := (searchQuery = "")
+                || (searchField = "title"   && InStr(item.title,   searchQuery))
+                || (searchField = "group"   && InStr(item.group,   searchQuery))
+                || (searchField = "content" && InStr(item.content, searchQuery))
+            if (groupMatch && queryMatch)
                 this.LvObj.Add(, item.group, item.title, StrReplace(item.content, "`r`n", " "))
+        }
+        if (this.LvObj.GetCount() > 0)
+            this.LvObj.Modify(1, "Select Focus")
+
+        try this.GuiObj.Title := "Snippet Picker  [" this.LvObj.GetCount() " 件]"
+    }
+
+    static _RebuildGroupList() {
+        this._GroupList := ["*"]
+        seen := Map()
+        for item in this.SnipList {
+            if !seen.Has(item.group) {
+                seen[item.group] := true
+                this._GroupList.Push(item.group)
             }
         }
-        if (this.LvObj.GetCount() > 0) {
-            this.LvObj.Modify(1, "Select Focus")
+    }
+
+    static _RestoreGroup() {
+        for g in this._GroupList {
+            if (g = this._LastGroup)
+                return
         }
+        this._LastGroup := "*"
+    }
+
+    static _ImeGuard  := false
+    static _HoverRow  := 0
+    static _ChildOpen := false
+
+    static _NavList(dir) {
+        count   := this.LvObj.GetCount()
+        current := this.LvObj.GetNext(0, "F")
+        next    := (current = 0) ? 1 : Max(1, Min(count, current + dir))
+        if (next > 0)
+            this.LvObj.Modify(next, "Select Focus Vis")
+    }
+
+    static _OnEnter() {
+        if (this._ImeGuard)
+            return
+        if (this._IsImeComposing()) {
+            this._ImeGuard := true
+            Send("{Enter}")
+            this._ImeGuard := false
+        } else {
+            this._InsertSelected()
+        }
+    }
+
+    static _IsImeComposing() {
+        hwnd := this.SearchObj.Hwnd
+        hIMC := DllCall("imm32\ImmGetContext", "ptr", hwnd, "ptr")
+        if !hIMC
+            return false
+        len := DllCall("imm32\ImmGetCompositionStringW", "ptr", hIMC, "uint", 0x8, "ptr", 0, "uint", 0, "int")
+        DllCall("imm32\ImmReleaseContext", "ptr", hwnd, "ptr", hIMC)
+        return len > 0
     }
 
     static _InsertSelected() {
@@ -379,6 +474,161 @@ class SnippetPicker {
         }
     }
 
+    ; グループ選択フローティングピッカー
+    static _ShowGroupPicker() {
+        this._ChildOpen := true
+        gpGui := Gui("+AlwaysOnTop +ToolWindow", "グループ")
+        gpGui.SetFont("s10", "Segoe UI")
+
+        filterEdit := gpGui.AddEdit("xm w200 h24")
+        SendMessage(0x1501, 1, StrPtr("名前でフィルター..."), filterEdit)  ; EM_SETCUEBANNER
+
+        lv := gpGui.AddListView("xm w200 r8 -Multi +0x4000", [""])
+        SendMessage(0x101E, 0, -2, , "ahk_id " lv.Hwnd)
+        lv.OnEvent("DoubleClick", (*) => SnippetPicker._ApplyGroupPicker(gpGui, lv))
+
+        gpGui.Add("Text", "xm w200 Center", "↑↓: 移動  Enter: 選択  Esc: 閉じる")
+
+        ; フィルター処理
+        filterEdit.OnEvent("Change", (ed, *) => SnippetPicker._FilterGroupList(lv, ed.Value))
+        SnippetPicker._FilterGroupList(lv, "")  ; 初期表示
+
+        closeGp := (*) => (SnippetPicker._ChildOpen := false, gpGui.Destroy(), SnippetPicker.SearchObj.Focus())
+
+        HotIfWinActive("ahk_id " gpGui.Hwnd)
+        Hotkey("Enter", (*) => SnippetPicker._ApplyGroupPicker(gpGui, lv), "On")
+        Hotkey("Down",  (*) => SnippetPicker._NavGroupList(lv, 1), "On")
+        Hotkey("Up",    (*) => SnippetPicker._NavGroupList(lv, -1), "On")
+        Hotkey("Esc",   closeGp, "On")
+        HotIf()
+        gpGui.OnEvent("Close", closeGp)
+
+        ; グループボタンの直下に配置
+        this.GroupBtnObj.GetPos(&bx, &by, , &bh)
+        pt := Buffer(8, 0)
+        NumPut("int", bx, pt, 0)
+        NumPut("int", by + bh, pt, 4)
+        DllCall("ClientToScreen", "ptr", this.GuiObj.Hwnd, "ptr", pt)
+        gpGui.Show("Hide")
+        gpGui.GetPos(, , &pw, &ph)
+        px := NumGet(pt, 0, "int"), py := NumGet(pt, 4, "int")
+        this._EnsureInScreen(&px, &py, pw, ph)
+        gpGui.Show("x" px " y" py)
+        filterEdit.Focus()
+    }
+
+    static _FilterGroupList(lv, query) {
+        lv.Delete()
+        for g in SnippetPicker._GroupList {
+            if (query = "" || InStr(g, query))
+                lv.Add(, g)
+        }
+        if (lv.GetCount() > 0)
+            lv.Modify(1, "Select Focus")
+    }
+
+    static _NavGroupList(lv, dir) {
+        count   := lv.GetCount()
+        current := lv.GetNext(0, "F")
+        next    := (current = 0) ? 1 : Max(1, Min(count, current + dir))
+        if (next > 0)
+            lv.Modify(next, "Select Focus Vis")
+    }
+
+    static _ApplyGroupPicker(gpGui, lv) {
+        row := lv.GetNext(0, "F")
+        if (!row)
+            return
+        SnippetPicker._LastGroup := lv.GetText(row, 1)
+        SnippetPicker._ChildOpen := false
+        gpGui.Destroy()
+        SnippetPicker._FilterList(SnippetPicker.SearchObj.Value)
+        SnippetPicker.SearchObj.Focus()
+    }
+
+    ; フォーカス外れで自動 Hide (WM_ACTIVATE)
+    static _OnActivate(wParam, lParam, msg, hwnd) {
+        if (!SnippetPicker.GuiObj || hwnd != SnippetPicker.GuiObj.Hwnd)
+            return
+        if ((wParam & 0xFFFF) != 0)  ; WA_INACTIVE 以外は無視
+            return
+        if (SnippetPicker._ChildOpen)  ; 子ダイアログが開いている間は Hide しない
+            return
+        SnippetPicker.GuiObj.Hide()
+        ToolTip()
+    }
+
+    ; ホバーツールチップ（タイマー駆動）
+    ; - 検索フィールド: プレフィックスヒント
+    ; - ListView 内容列: フル内容
+    static _HoverTick() {
+        if (!SnippetPicker.LvObj || !SnippetPicker.GuiObj)
+            return
+        if (!WinActive("ahk_id " SnippetPicker.GuiObj.Hwnd)) {
+            if (SnippetPicker._HoverRow) {
+                ToolTip()
+                SnippetPicker._HoverRow := 0
+            }
+            return
+        }
+
+        CoordMode "Mouse", "Screen"
+        MouseGetPos(&mx, &my, , &ctrlHwnd, 2)
+
+        ; 検索フィールド上: プレフィックスヒントを表示
+        if (ctrlHwnd = SnippetPicker.SearchObj.Hwnd) {
+            if (SnippetPicker._HoverRow != -1) {
+                SnippetPicker._HoverRow := -1
+                ToolTip("g: グループ列  /  c: 内容列  /  プレフィックスなし: 名称列")
+            }
+            return
+        }
+
+        ; ListView 以外: ツールチップを消す
+        if (ctrlHwnd != SnippetPicker.LvObj.Hwnd) {
+            if (SnippetPicker._HoverRow) {
+                ToolTip()
+                SnippetPicker._HoverRow := 0
+            }
+            return
+        }
+
+        ; ListView: 内容列のみフル内容を表示
+        lv_hwnd := SnippetPicker.LvObj.Hwnd
+        pt := Buffer(8, 0)
+        NumPut("int", mx, pt, 0)
+        NumPut("int", my, pt, 4)
+        DllCall("ScreenToClient", "ptr", lv_hwnd, "ptr", pt)
+        cx := NumGet(pt, 0, "int")
+        cy := NumGet(pt, 4, "int")
+
+        buf := Buffer(24, 0)
+        NumPut("int", cx, buf, 0)
+        NumPut("int", cy, buf, 4)
+        idx := SendMessage(0x1039, 0, buf.Ptr, , "ahk_id " lv_hwnd)  ; LVM_SUBITEMHITTEST
+        row := (idx < 0) ? 0 : idx + 1
+        col := NumGet(buf, 16, "int")  ; iSubItem (0-based)
+
+        cacheKey := row * 10 + col
+        if (cacheKey = SnippetPicker._HoverRow)
+            return
+        SnippetPicker._HoverRow := cacheKey
+
+        if (!row || col != 2) {
+            ToolTip()
+            return
+        }
+
+        dispG := SnippetPicker.LvObj.GetText(row, 1)
+        dispT := SnippetPicker.LvObj.GetText(row, 2)
+        for item in SnippetPicker.SnipList {
+            if (item.group = dispG && item.title = dispT) {
+                ToolTip(item.content)
+                return
+            }
+        }
+    }
+
     static _QuickPaste(text) {
         oldClip := ClipboardAll()
         A_Clipboard := text
@@ -392,7 +642,6 @@ class SnippetPicker {
         if !DirExist(A_ScriptDir "\ui") {
             DirCreate(A_ScriptDir "\ui")
         }
-        ; 【修正】INIファイルが存在しない場合、空のファイルを作成する
         if !FileExist(this.IniPath) {
             FileAppend("", this.IniPath, "UTF-8")
         }
