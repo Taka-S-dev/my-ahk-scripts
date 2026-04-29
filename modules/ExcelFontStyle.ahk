@@ -1,17 +1,24 @@
 ; ==============================================================================
-; Module:       ExcelControl.ahk
-; Description:  Excel操作に関連する機能 (パレット操作ベース版)
+; Module:       ExcelFontStyle.ahk
+; Description:  Excel操作に関連する機能
 ;               - 選択中の文字列を赤色に変更
 ;               - 選択中の文字列を黒色(自動)に変更
 ;               - 選択範囲の取り消し線(Strikethrough)を切り替え
-; Version:      1.0.0
+;               - セルの背景色トグル
+;               - 行・列の挿入/削除
+;               - セルの結合/解除トグル
+; Version:      1.1.0
 ; License:      MIT
 ;
-; Usage Example:
-;   #Include ExcelControl.ahk
-;   vk1D & r::  ExcelControl.SetFontColorRed()           ; 無変換 + e で赤字
-;   vk1D & q::  ExcelControl.SetFontColorBlack()         ; 無変換 + q で黒字
-;   vk1D & k::  ExcelControl.SetFontColorStrikethrough() ; 無変換 + k で取り消し線
+; Usage Example (Main.ahk):
+;   #Include modules\ExcelFontStyle.ahk
+;   #HotIf WinActive("ahk_class XLMAIN") && GetKeyState("vk1D", "P")
+;   e:: ExcelFontStyle.SetFontColorRed()
+;   x:: ExcelFontStyle.SetFontColorStrikethrough()
+;   g:: ExcelFontStyle.ToggleFillColor(0x808080)
+;   i:: ExcelFontStyle.InsertRow()
+;   d:: ExcelFontStyle.DeleteRow()
+;   n:: ExcelFontStyle.ToggleMerge()
 ;
 ; ==============================================================================
 
@@ -50,5 +57,67 @@ class ExcelFontStyle {
         Send("{Alt}hfn")
         Sleep(200)
         Send("!k{Enter}")
+    }
+
+    /**
+     * セルの背景色を指定色と塗りつぶしなしでトグル
+     * color: BGR形式の色コード (例: 0x808080)
+     */
+    static ToggleFillColor(color) {
+        if !WinActive("ahk_class XLMAIN")
+            return
+        try {
+            xl  := ComObjActive("Excel.Application")
+            sel := xl.Selection
+            if (sel.Interior.Color = color)
+                sel.Interior.ColorIndex := -4142  ; xlColorIndexNone
+            else
+                sel.Interior.Color := color
+        } catch Error as e {
+            MsgBox("Excel操作失敗: " . e.Message)
+        }
+    }
+
+    static InsertRow() {
+        if !WinActive("ahk_class XLMAIN")
+            return
+        Send("+{Space}")   ; 行全体を選択
+        Send("^+{+}")      ; 行挿入
+    }
+
+    static InsertColumn() {
+        if !WinActive("ahk_class XLMAIN")
+            return
+        Send("^{Space}")   ; 列全体を選択
+        Send("^+{+}")      ; 列挿入
+    }
+
+    static DeleteRow() {
+        if !WinActive("ahk_class XLMAIN")
+            return
+        Send("+{Space}")   ; 行全体を選択
+        Send("^{-}")       ; 行削除
+    }
+
+    static DeleteColumn() {
+        if !WinActive("ahk_class XLMAIN")
+            return
+        Send("^{Space}")   ; 列全体を選択
+        Send("^{-}")       ; 列削除
+    }
+
+    static ToggleMerge() {
+        if !WinActive("ahk_class XLMAIN")
+            return
+        try {
+            isMerged := ComObjActive("Excel.Application").Selection.MergeCells
+        } catch Error as e {
+            MsgBox("Excel操作失敗: " . e.Message)
+            return
+        }
+        if (isMerged)
+            Send("{Alt}hmu")   ; 結合解除
+        else
+            Send("{Alt}hmm")   ; セルの結合（中央揃えなし）
     }
 }
