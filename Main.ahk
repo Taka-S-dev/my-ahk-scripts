@@ -98,6 +98,39 @@ ModifierKeyHandler.OnTap := (*) => ImeControl.Toggle(false)
 ; ------------------------------------------------------------
 
 ; ------------------------------------------------------------
+; Excel専用ホットキー（VimNavigation より優先）
+; 使用する場合は /* と */ を外してください
+; ------------------------------------------------------------
+/*
+#Include modules\ExcelFontStyle.ahk
+#HotIf WinActive("ahk_class XLMAIN") && GetKeyState(MOD_KEY, "P")
+
+; 無変換 + e で赤字
+e:: ExcelFontStyle.SetFontColorRed()
+
+; 無変換 + q で黒字 (Ctrl+Qよりさらに押しやすい)
+q:: ExcelFontStyle.SetFontColorBlack()
+
+; 無変換 + x で取り消し線
+x:: ExcelFontStyle.SetFontColorStrikethrough()
+
+; 無変換 + g でグレー塗りつぶし
+g:: ExcelFontStyle.ToggleFillColor(0x808080)
+
+; 無変換 + i で行挿入 / Shift+i で列挿入
+i:: ExcelFontStyle.InsertRow()
++i:: ExcelFontStyle.InsertColumn()
+
+; 無変換 + d で行削除 / Shift+d で列削除
+d:: ExcelFontStyle.DeleteRow()
++d:: ExcelFontStyle.DeleteColumn()
+
+; 無変換 + n でセル結合/解除トグル
+n:: ExcelFontStyle.ToggleMerge()
+#HotIf
+*/
+
+; ------------------------------------------------------------
 ;  Vim 風ナビゲーション定義
 ; ------------------------------------------------------------
 #Include "modules\VimNavigation.ahk"                    ; Vim 風キーバインド
@@ -134,25 +167,6 @@ d:: VimNavigation.HandleDoubleKey("d", VimNavigation.DeleteLine)
 y:: VimNavigation.HandleDoubleKey("y", VimNavigation.CopyLine)
 #HotIf
 
-; ------------------------------------------------------------
-; Excel専用ホットキー
-; ------------------------------------------------------------
-; 使用する場合は、以下のコメントアウト（/* と */）を外してください。
-; これにより、Excelがアクティブな時だけ以下のショートカットが有効になります。
-/*
-#Include modules\ExcelFontStyle.ahk
-#HotIf WinActive("ahk_class XLMAIN") && GetKeyState(MOD_KEY, "P")
-
-; 無変換 + e で赤字
-e:: ExcelFontStyle.SetFontColorRed()
-
-; 無変換 + q で黒字 (Ctrl+Qよりさらに押しやすい)
-q:: ExcelFontStyle.SetFontColorBlack()
-
-; 無変換 + x で取り消し線
-x:: ExcelFontStyle.SetFontColorStrikethrough()
-#HotIf
-*/
 
 ; ============================================================
 ; UI components
