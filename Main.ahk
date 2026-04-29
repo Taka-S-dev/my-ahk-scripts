@@ -53,6 +53,7 @@ MOD_KEY := "vk1D" ; デフォルト：無変換キー
 
 commonIni := StrReplace(A_ScriptFullPath, ".ahk", ".ini")
 FolderToggle.Init(commonIni)
+FolderToggle.BuildTrayMenu()
 MButton:: FolderToggle.Execute()
 
 ; ------------------------------------------------------------
