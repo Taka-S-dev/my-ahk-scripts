@@ -369,8 +369,9 @@ class Navi {
         NaviTab.SaveTabsToIni()
         ; パンくず監視タイマーを停止
         NaviBreadcrumb.StopWatcher()
-        ; フィルタータイマーを停止（GUI破棄後に ApplyTreeFilter が発火するのを防ぐ）
+        ; フィルタータイマーとディレクトリ監視を停止（GUI破棄後に発火するのを防ぐ）
         NaviFilter.CancelDebounce()
+        NaviFilter._StopDirWatch()
         ; マーク状態をリセット
         NaviMark.Reset()
         ; プロファイルドロップダウンを閉じる

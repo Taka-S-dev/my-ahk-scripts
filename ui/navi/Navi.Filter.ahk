@@ -33,12 +33,15 @@ class NaviFilter {
     static _FilterCancelled  := false  ; ルート切り替え時に強制中止するフラグ
     static _treeFilterCallback := ""   ; デバウンス用コールバック参照
 
-    ; --- ディレクトリ変更監視（FindFirstChangeNotification）---
-    static _WatchHandle     := 0       ; 監視ハンドル
-    static _WatchPollCb     := ""      ; 500ms ポーリングタイマー参照
-    static _WatchInvCb      := ""      ; デバウンス無効化タイマー参照
-    static WATCH_POLL_MS    := 500     ; ポーリング間隔(ms)
-    static WATCH_DEBOUNCE_MS := 1000   ; 変更検知後のデバウンス時間(ms)
+    ; --- ディレクトリ変更監視（ReadDirectoryChangesW + Overlapped I/O）---
+    static _DirHandle     := 0    ; CreateFile ハンドル
+    static _DirEvent      := 0    ; OVERLAPPED 用イベントハンドル
+    static _DirOvBuf      := ""   ; OVERLAPPED 構造体バッファ（操作中は解放不可）
+    static _DirNotifyBuf  := ""   ; ReadDirectoryChangesW 通知バッファ（同上）
+    static _WatchPollCb   := ""   ; 500ms ポーリングタイマー参照
+    static _WatchInvCb    := ""   ; デバウンス無効化タイマー参照
+    static WATCH_POLL_MS    := 500
+    static WATCH_DEBOUNCE_MS := 1000
 
     ; --- カスタムドロー ---
     static _FilterMatchIdSet := Map()  ; マッチノードID集合
@@ -255,7 +258,6 @@ class NaviFilter {
             SetTimer(this._indexBuildCallback, 0)
             this._indexBuildCallback := ""
         }
-        this._StopDirWatch()
     }
 
     ; ==============================================================================
@@ -265,29 +267,76 @@ class NaviFilter {
 
     /**
      * rootPath の監視を開始する（インデックス構築完了後に呼ぶ）
-     * FILE_NOTIFY_CHANGE_DIR_NAME(0x2) のみ監視してフォルダ作成/削除/改名を検知する
+     * CreateFile + ReadDirectoryChangesW + Overlapped I/O で
+     * FILE_NOTIFY_CHANGE_DIR_NAME のみ監視する
      */
     static _StartDirWatch(rootPath) {
         this._StopDirWatch()
         if (this._IsNetworkPath(rootPath))
             return
-        h := DllCall("FindFirstChangeNotificationW", "Str", rootPath, "Int", 1, "UInt", 0x2, "Ptr")
-        if (!h || h = -1)
+        ; ディレクトリハンドルを開く（FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED）
+        hDir := DllCall("CreateFileW"
+            , "Str",  rootPath
+            , "UInt", 0x00000001    ; FILE_LIST_DIRECTORY
+            , "UInt", 0x00000007    ; FILE_SHARE_READ | WRITE | DELETE
+            , "Ptr",  0
+            , "UInt", 3             ; OPEN_EXISTING
+            , "UInt", 0x42000000    ; FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED
+            , "Ptr",  0, "Ptr")
+        if (!hDir || hDir = -1)
             return
-        this._WatchHandle := h
+        ; 自動リセットイベント（WaitForSingleObject が検知と同時にリセット）
+        hEvent := DllCall("CreateEventW", "Ptr", 0, "Int", 0, "Int", 0, "Ptr", 0, "Ptr")
+        if (!hEvent) {
+            DllCall("CloseHandle", "Ptr", hDir)
+            return
+        }
+        ; OVERLAPPED 構造体（hEvent オフセット: 64bit=24, 32bit=16）
+        ovBuf     := Buffer(A_PtrSize = 8 ? 32 : 20, 0)
+        NumPut("Ptr", hEvent, ovBuf, A_PtrSize = 8 ? 24 : 16)
+        notifyBuf := Buffer(4096, 0)
+        ; 非同期 ReadDirectoryChangesW を発行
+        ok := DllCall("ReadDirectoryChangesW"
+            , "Ptr",  hDir
+            , "Ptr",  notifyBuf
+            , "UInt", notifyBuf.Size
+            , "Int",  1             ; bWatchSubtree
+            , "UInt", 0x00000002    ; FILE_NOTIFY_CHANGE_DIR_NAME
+            , "UInt*", 0
+            , "Ptr",  ovBuf
+            , "Ptr",  0, "Int")
+        if (!ok) {
+            DllCall("CloseHandle", "Ptr", hEvent)
+            DllCall("CloseHandle", "Ptr", hDir)
+            return
+        }
+        this._DirHandle    := hDir
+        this._DirEvent     := hEvent
+        this._DirOvBuf     := ovBuf
+        this._DirNotifyBuf := notifyBuf
         cb := () => this._PollDirWatch()
         this._WatchPollCb := cb
         SetTimer(cb, this.WATCH_POLL_MS)
     }
 
-    ; ポーリングタイマー: 変更を検知したらデバウンスタイマーをセット
+    ; ポーリングタイマー: イベント検知→再発行→デバウンス
     static _PollDirWatch() {
-        if (this._WatchHandle = 0)
+        if (this._DirHandle = 0)
             return
-        if (DllCall("WaitForSingleObject", "Ptr", this._WatchHandle, "UInt", 0) != 0)
+        ; 自動リセットイベントをノンブロッキングで確認
+        if (DllCall("WaitForSingleObject", "Ptr", this._DirEvent, "UInt", 0) != 0)
             return
-        DllCall("FindNextChangeNotification", "Ptr", this._WatchHandle)
-        ; 連続変更をまとめるデバウンス（既存タイマーはリセット）
+        ; 変更を検知: 次の変更に備えて ReadDirectoryChangesW を再発行
+        DllCall("ReadDirectoryChangesW"
+            , "Ptr",  this._DirHandle
+            , "Ptr",  this._DirNotifyBuf
+            , "UInt", this._DirNotifyBuf.Size
+            , "Int",  1
+            , "UInt", 0x00000002
+            , "UInt*", 0
+            , "Ptr",  this._DirOvBuf
+            , "Ptr",  0, "Int")
+        ; デバウンス（連続変更をまとめる）
         if (this._WatchInvCb != "")
             SetTimer(this._WatchInvCb, 0)
         cb := () => this._InvalidateIndex()
@@ -310,7 +359,7 @@ class NaviFilter {
         }
     }
 
-    ; 監視を停止してハンドルを解放する
+    ; 監視を停止してハンドルをすべて解放する
     static _StopDirWatch() {
         if (this._WatchPollCb != "")
             SetTimer(this._WatchPollCb, 0)
@@ -318,10 +367,17 @@ class NaviFilter {
             SetTimer(this._WatchInvCb, 0)
         this._WatchPollCb := ""
         this._WatchInvCb  := ""
-        if (this._WatchHandle != 0) {
-            DllCall("FindCloseChangeNotification", "Ptr", this._WatchHandle)
-            this._WatchHandle := 0
+        if (this._DirHandle != 0) {
+            DllCall("CancelIo", "Ptr", this._DirHandle)
+            DllCall("CloseHandle", "Ptr", this._DirHandle)
+            this._DirHandle := 0
         }
+        if (this._DirEvent != 0) {
+            DllCall("CloseHandle", "Ptr", this._DirEvent)
+            this._DirEvent := 0
+        }
+        this._DirOvBuf    := ""
+        this._DirNotifyBuf := ""
     }
 
     ; ==============================================================================
