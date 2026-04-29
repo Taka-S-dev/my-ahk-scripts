@@ -9,6 +9,7 @@
 ; Author:       Taka-S-dev
 ; Version:      1.1.0
 ; License:      MIT
+; Requires:     modules\PlaceholderEngine.ahk
 ; Usage Example (Main.ahk):
 ;   #Include modules\HotstringManager.ahk
 ;   HotstringManager.Init()
@@ -17,6 +18,7 @@
 ; ==============================================================================
 
 #Requires AutoHotkey v2.0
+#Include "..\modules\PlaceholderEngine.ahk"
 
 class HotstringManager {
     ; --- クラス定数（可読性と保守性のための定数値） ---
@@ -54,21 +56,8 @@ class HotstringManager {
         A_TrayMenu.Add("Hotstring Manager (&H)", (*) => this.Show())
     }
 
-    ; --- プレースホルダ置換エンジン（拡張性を維持しつつシンプルに） ---
     static _ApplyPlaceholders(rawText) {
-        text := rawText
-
-        ; 1. クリップボード同期
-        ; "{{clip}}" を基本に、片側の波括弧が欠けたケースも吸収（{clip}}, {{clip}, {clip}）
-        text := RegExReplace(text, "\{{1,2}\s*clip\s*\}{1,2}", A_Clipboard)
-
-        ; 2. 基本の日付・時刻フォーマット
-        text := StrReplace(text, "yymmdd", FormatTime(, "yyMMdd"))
-        text := StrReplace(text, "yy/mm/dd", FormatTime(, "yy/MM/dd"))
-        text := StrReplace(text, "yyyy/mm/dd", FormatTime(, "yyyy/MM/dd"))
-        text := StrReplace(text, "HH:mm", FormatTime(, "HH:mm"))
-
-        return text
+        return PlaceholderEngine.Apply(rawText)
     }
 
     ; --- 内部ロジック：ホットストリングの実行と動的登録 ---
