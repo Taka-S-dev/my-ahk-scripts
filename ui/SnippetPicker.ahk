@@ -48,7 +48,7 @@ class SnippetPicker {
     }
 
     static _ProcessPlaceholders(rawText) {
-        return PlaceholderEngine.Apply(rawText)
+        return PlaceholderEngine.Apply(rawText)  ; {text, cursorOffset}
     }
 
     ; --- 検索画面の表示 ---
@@ -152,9 +152,13 @@ class SnippetPicker {
 
         entryGui.Add("Edit", "w400 vName", row ? lv.GetText(row, 2) : "")
         entryGui.Add("Text", , "内容:")
-        entryGui.Add("Edit", "w400 r10 vContent", row ? lv.GetText(row, 3) : "")
+        entryGui.Add("Edit", "w400 r10 vContent +0x80 +0x100000 -Wrap", row ? lv.GetText(row, 3) : "")
         entryGui.Add("Button", "x+5 yp w24 h24", "?").OnEvent("Click", (*) => MsgBox(
-            "{{clip}}     クリップボードの内容`n"
+            "{{clip}}        クリップボードの内容`n"
+            "{{cursor}}      挿入後のカーソル位置`n"
+            "{{N:ラベル}}    穴埋めフィールド (例: {{1:会社名}})`n"
+            "                複数フィールドは番号順に入力フォームが表示されます`n"
+            "`n"
             "yyyy/mm/dd  今日の日付 (例: 2025/04/29)`n"
             "yyyy/mm     今月      (例: 2025/04)`n"
             "yyyymm      今月      (例: 202504)`n"
@@ -285,16 +289,17 @@ class SnippetPicker {
     }
 
     static _SaveList(lv) {
-        if FileExist(this.IniPath) {
-
+        if FileExist(this.IniPath)
             FileDelete(this.IniPath)
-        }
         loop lv.GetCount() {
-            group := lv.GetText(A_Index, 1), title := lv.GetText(A_Index, 2), content := lv.GetText(A_Index, 3)
-            contentSave := StrReplace(content, "`r`n", "\n")
-            contentSave := StrReplace(contentSave, "`n", "\n")
-            IniWrite('"' contentSave '"', this.IniPath, group, title)
-
+            group   := lv.GetText(A_Index, 1)
+            title   := lv.GetText(A_Index, 2)
+            content := lv.GetText(A_Index, 3)
+            contentSave := StrReplace(StrReplace(content, "`r`n", "\n"), "`n", "\n")
+            sec := "item_" A_Index
+            IniWrite(group,       this.IniPath, sec, "group")
+            IniWrite(title,       this.IniPath, sec, "title")
+            IniWrite(contentSave, this.IniPath, sec, "content")
         }
         this._LoadData()
         this._RebuildGroupList()
@@ -303,27 +308,51 @@ class SnippetPicker {
 
     static _LoadData() {
         this.SnipList := []
-        currentSection := "Default"
-        try {
-            content := FileRead(this.IniPath, "UTF-8")
-            for line in StrSplit(content, "`n", "`r") {
-                line := Trim(line)
-                if (line == "" || SubStr(line, 1, 1) == ";") {
-                    continue
-                }
-                if (RegExMatch(line, "^\[(.+)\]$", &match)) {
-                    currentSection := match[1]
+        ; 旧フォーマット（グループ名=セクション、タイトル=キー）を検出して移行
+        if FileExist(this.IniPath) {
+            raw := FileRead(this.IniPath, "UTF-8")
+            if !RegExMatch(raw, "m)^\[item_\d+\]")
+                this._MigrateOldFormat(raw)
+        }
+        i := 1
+        loop {
+            sec := "item_" i
+            try group := IniRead(this.IniPath, sec, "group")
+            catch
+                break
+            title   := IniRead(this.IniPath, sec, "title",   "")
+            content := IniRead(this.IniPath, sec, "content", "")
+            this.SnipList.Push({group: group, title: title, content: StrReplace(content, "\n", "`r`n")})
+            i++
+        }
+    }
 
-                    continue
-                }
-                pos := InStr(line, "=")
-                if (pos > 1) {
-                    key := Trim(SubStr(line, 1, pos - 1)), val := Trim(SubStr(line, pos + 1))
-
-                    val := RegExReplace(val, '^"|"$', '')
-                    this.SnipList.Push({ group: currentSection, title: key, content: StrReplace(val, "\n", "`r`n") })
-                }
+    ; 旧フォーマット（[グループ名] title=content）を新フォーマットに変換
+    static _MigrateOldFormat(raw) {
+        items := []
+        currentGroup := "Default"
+        for line in StrSplit(raw, "`n", "`r") {
+            line := Trim(line)
+            if (line = "" || SubStr(line, 1, 1) = ";")
+                continue
+            if RegExMatch(line, "^\[(.+)\]$", &m) {
+                currentGroup := m[1]
+                continue
             }
+            pos := InStr(line, "=")
+            if (pos > 1) {
+                t := Trim(SubStr(line, 1, pos - 1))
+                v := RegExReplace(Trim(SubStr(line, pos + 1)), '^"|"$', '')
+                items.Push({group: currentGroup, title: t, content: v})
+            }
+        }
+        if FileExist(this.IniPath)
+            FileDelete(this.IniPath)
+        for i, item in items {
+            sec := "item_" i
+            IniWrite(item.group,   this.IniPath, sec, "group")
+            IniWrite(item.title,   this.IniPath, sec, "title")
+            IniWrite(item.content, this.IniPath, sec, "content")
         }
     }
 
@@ -358,7 +387,8 @@ class SnippetPicker {
         ; --- クイックトリガー（置換エンジン適用） ---
         if (query == ";today") {
             this.GuiObj.Hide()
-            this._QuickPaste(this._ProcessPlaceholders("yyyy/mm/dd"))
+            result := this._ProcessPlaceholders("yyyy/mm/dd")
+            this._QuickPaste(result.text, result.cursorOffset)
             return
         }
 
@@ -387,14 +417,17 @@ class SnippetPicker {
         }
 
         this.LvObj.Delete()
-        for item in this.SnipList {
+        this._LvIndexMap := []
+        for i, item in this.SnipList {
             groupMatch := (group = "*" || item.group = group)
             queryMatch := (searchQuery = "")
                 || (searchField = "title"   && InStr(item.title,   searchQuery))
                 || (searchField = "group"   && InStr(item.group,   searchQuery))
                 || (searchField = "content" && InStr(item.content, searchQuery))
-            if (groupMatch && queryMatch)
+            if (groupMatch && queryMatch) {
                 this.LvObj.Add(, item.group, item.title, StrReplace(item.content, "`r`n", " "))
+                this._LvIndexMap.Push(i)
+            }
         }
         if (this.LvObj.GetCount() > 0)
             this.LvObj.Modify(1, "Select Focus")
@@ -421,9 +454,11 @@ class SnippetPicker {
         this._LastGroup := "*"
     }
 
-    static _ImeGuard  := false
-    static _HoverRow  := 0
-    static _ChildOpen := false
+    static _ImeGuard    := false
+    static _HoverRow    := 0
+    static _ChildOpen   := false
+    static _FillInState := ""
+    static _LvIndexMap  := []
 
     static _NavList(dir) {
         count   := this.LvObj.GetCount()
@@ -458,20 +493,141 @@ class SnippetPicker {
     static _InsertSelected() {
 
         row := this.LvObj.GetNext(0, "F")
-        if (row == 0) {
+        if (row = 0 || row > this._LvIndexMap.Length)
             return
-        }
 
-        dispG := this.LvObj.GetText(row, 1), dispT := this.LvObj.GetText(row, 2)
-        for item in this.SnipList {
-            if (item.group == dispG && item.title == dispT) {
-                this.GuiObj.Hide()
-                ; 挿入前に置換エンジンを実行
-                processedContent := this._ProcessPlaceholders(item.content)
-                this._QuickPaste(processedContent)
-                return
-            }
+        item := this.SnipList[this._LvIndexMap[row]]
+        this.GuiObj.Hide()
+        fillIns := PlaceholderEngine.ParseFillIns(item.content)
+        if (fillIns.Length > 0) {
+            this._ShowFillInGui(item.content, fillIns, item.title)
+        } else {
+            result := this._ProcessPlaceholders(item.content)
+            this._QuickPaste(result.text, result.cursorOffset)
         }
+    }
+
+    ; Fill In GUI — 1フィールドずつ Enter で確定、プレビューをリアルタイム更新
+    static _ShowFillInGui(content, fillIns, title := "") {
+        this._ChildOpen   := true
+        this._FillInState := {
+            content:    content,
+            fillIns:    fillIns,
+            confirmed:  Map(),
+            currentIdx: 1,
+            total:      fillIns.Length
+        }
+        s := this._FillInState
+
+        winTitle := title != "" ? "Fill In  —  " title : "Fill In"
+        dlg := Gui("+AlwaysOnTop -MaximizeBox", winTitle)
+        dlg.SetFont("s10", "Segoe UI")
+
+        dlg.SetFont("s8 cGray", "Segoe UI")
+        s.labelCtrl   := dlg.Add("Text", "xm w520", SnippetPicker._FillInLabelText(s))
+        dlg.SetFont("s10 cDefault", "Segoe UI")
+        s.inputCtrl   := dlg.Add("Edit", "xm w520", "")
+        dlg.Add("Text", "xm w520 0x10")
+        lineCount     := StrLen(content) - StrLen(StrReplace(content, "`n", "")) + 1
+        previewRows   := Max(4, Min(lineCount + 2, 20))
+        dlg.SetFont("s9", "Consolas")
+        s.previewCtrl := dlg.Add("Edit", "xm w520 r" previewRows " ReadOnly -Tabstop +0x800", "")
+        dlg.SetFont("s10 cDefault", "Segoe UI")
+
+        s.inputCtrl.OnEvent("Change", (*) => SnippetPicker._FillInUpdate())
+        dlg.OnEvent("Close", (*) => SnippetPicker._FillInClose())
+
+        HotIfWinActive("ahk_id " dlg.Hwnd)
+        Hotkey("Tab",    (*) => SnippetPicker._FillInAdvance(), "On")
+        Hotkey("+Tab",   (*) => SnippetPicker._FillInBack(),    "On")
+        Hotkey("Escape", (*) => SnippetPicker._FillInClose(),   "On")
+        HotIf()
+
+        s.dlg := dlg
+        SnippetPicker._FillInUpdate()
+
+        dlg.Show("Hide")
+        dlg.GetPos(, , &dw, &dh)
+        MonitorGetWorkArea(MonitorGetPrimary(), &mL, &mT, &mR, &mB)
+        dlg.Show("x" (mL + (mR - mL - dw) // 2) " y" (mT + (mB - mT - dh) // 2))
+        s.inputCtrl.Focus()
+        SendMessage(0xB1, 0, -1, s.inputCtrl)
+    }
+
+    static _FillInLabelText(s) {
+        fi := s.fillIns[s.currentIdx]
+        if (s.total = 1)
+            return fi.label "  — Tab で挿入"
+        suffix := (s.currentIdx = s.total) ? "  — Tab で挿入" : "  — Tab で次へ"
+        return fi.label "  (" s.currentIdx " / " s.total ")" suffix
+    }
+
+    static _FillInClose() {
+        SnippetPicker._ChildOpen := false
+        try SnippetPicker._FillInState.dlg.Destroy()
+        SnippetPicker._FillInState := ""
+    }
+
+    static _FillInUpdate() {
+        s := SnippetPicker._FillInState
+        if (s = "")
+            return
+        tmp := Map()
+        tmp[s.fillIns[s.currentIdx].index] := s.inputCtrl.Value "▌"
+        preview := PlaceholderEngine.ApplyFillIns(
+            PlaceholderEngine.ApplyFillIns(s.content, s.confirmed), tmp)
+        s.previewCtrl.Value := preview
+        cursorPos := InStr(preview, "▌")
+        if (cursorPos > 0) {
+            SendMessage(0xB1, cursorPos - 1, cursorPos - 1, s.previewCtrl)  ; EM_SETSEL
+            SendMessage(0xB7, 0, 0, s.previewCtrl)                           ; EM_SCROLLCARET
+        }
+    }
+
+    static _FillInAdvance() {
+        s := SnippetPicker._FillInState
+        if (s = "")
+            return
+        s.confirmed[s.fillIns[s.currentIdx].index] := s.inputCtrl.Value
+        if (s.currentIdx >= s.total) {
+            content   := s.content
+            confirmed := s.confirmed
+            SnippetPicker._FillInClose()
+            applied := PlaceholderEngine.ApplyFillIns(content, confirmed)
+            result  := SnippetPicker._ProcessPlaceholders(applied)
+            SnippetPicker._QuickPaste(result.text, result.cursorOffset)
+        } else {
+            s.currentIdx++
+            ; 次フィールドを confirmed から外す（戻ってきた場合に▌が機能するよう）
+            nextFiIdx  := s.fillIns[s.currentIdx].index
+            restoredVal := s.confirmed.Has(nextFiIdx) ? s.confirmed[nextFiIdx] : ""
+            if s.confirmed.Has(nextFiIdx)
+                s.confirmed.Delete(nextFiIdx)
+            s.labelCtrl.Text  := SnippetPicker._FillInLabelText(s)
+            s.inputCtrl.Value := restoredVal
+            s.inputCtrl.Focus()
+            SendMessage(0xB1, 0, -1, s.inputCtrl)
+
+            SnippetPicker._FillInUpdate()
+        }
+    }
+
+    static _FillInBack() {
+        s := SnippetPicker._FillInState
+        if (s = "" || s.currentIdx <= 1)
+            return
+        s.confirmed[s.fillIns[s.currentIdx].index] := s.inputCtrl.Value
+        s.currentIdx--
+        ; 前フィールドを confirmed から外す（_FillInUpdate で ▌ が機能するよう）
+        prevFiIdx := s.fillIns[s.currentIdx].index
+        restoredVal := s.confirmed.Has(prevFiIdx) ? s.confirmed[prevFiIdx] : ""
+        if s.confirmed.Has(prevFiIdx)
+            s.confirmed.Delete(prevFiIdx)
+        s.labelCtrl.Text  := SnippetPicker._FillInLabelText(s)
+        s.inputCtrl.Value := restoredVal
+        s.inputCtrl.Focus()
+        SendMessage(0xB1, 0, -1, s.inputCtrl)
+        SnippetPicker._FillInUpdate()
     }
 
     ; グループ選択フローティングピッカー
@@ -579,7 +735,7 @@ class SnippetPicker {
         if (ctrlHwnd = SnippetPicker.SearchObj.Hwnd) {
             if (SnippetPicker._HoverRow != -1) {
                 SnippetPicker._HoverRow := -1
-                ToolTip("g: グループ列  /  c: 内容列  /  プレフィックスなし: 名称列")
+                ToolTip("g: グループ列  /  c: 内容列  /  プレフィックスなし: 名称列`n{{cursor}}: 挿入後のカーソル位置を指定")
             }
             return
         }
@@ -629,12 +785,13 @@ class SnippetPicker {
         }
     }
 
-    static _QuickPaste(text) {
+    static _QuickPaste(text, cursorOffset := 0) {
         oldClip := ClipboardAll()
         A_Clipboard := text
         Sleep(this.SLEEP_PASTE)
         Send("^v")
-        ; 貼り付け後にクリップボードを復元
+        if (cursorOffset > 0)
+            Send("{Left " cursorOffset "}")
         SetTimer((*) => (A_Clipboard := oldClip), this.TIMER_RESTORE)
     }
 
