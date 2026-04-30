@@ -29,8 +29,10 @@
 
 class Navi {
     ; --- クラス定数 ---
-    static GUI_WIDTH := 450
+    static GUI_WIDTH := 600
     static GUI_HEIGHT_APPROX := 565
+    static _savedW := 0
+    static _savedH := 0
     static WINDOW_FRAME_WIDTH := 14  ; ウィンドウフレーム補正値（Win10/11標準テーマ）
     static IniPath := A_ScriptDir "\ui\navi\Navi.ini"
     static ExplorerPath := ""
@@ -121,7 +123,7 @@ class Navi {
             } else {
                 this.GuiObj.Show()
                 WinActivate(this.GuiObj)
-                this.GuiObj["FolderTree"].Focus()
+                this.GuiObj["TreeFilter"].Focus()
             }
             return
         }
@@ -266,7 +268,7 @@ class Navi {
         Hotkey("+F3", (*) => NaviFilter.JumpToMatch(this.GuiObj["FolderTree"], -1), "On")
         Hotkey("F1", (*) => this._ShowHelp(), "On")
         Hotkey("Esc", (*) => this._HandleEsc(), "On")
-        Hotkey("~Down", (*) => this._HandleRootBtnDown(), "On")
+        Hotkey("Down", (*) => this._HandleRootBtnDown(), "On")
         Hotkey("Left", (*) => this._HandleLeftKey(), "On")
         Hotkey("Right", (*) => this._HandleRightKey(), "On")
         Hotkey("RButton", (*) => this._HandleRButton(), "On")
@@ -301,12 +303,13 @@ class Navi {
         monitorNum := this._GetMonitorFromPos(mX, mY)
         MonitorGetWorkArea(monitorNum, &waL, &waT, &waR, &waB)
 
-        winW := this.GUI_WIDTH + this.WINDOW_FRAME_WIDTH
-        winH := this.GUI_HEIGHT_APPROX
+        winW := (this._savedW > 0 ? this._savedW : this.GUI_WIDTH + this.WINDOW_FRAME_WIDTH)
+        winH := (this._savedH > 0 ? this._savedH : this.GUI_HEIGHT_APPROX)
         centerX := waL + (waR - waL - winW) // 2
         centerY := waT + (waB - waT - winH) // 2
 
-        this.GuiObj.Show("x" . centerX . " y" . centerY)
+        this.GuiObj.Show("x" . centerX . " y" . centerY . " w" . winW . " h" . winH)
+        this.GuiObj["TreeFilter"].Focus()
     }
 
     static _FocusPath(tv, targetPath) {
@@ -354,6 +357,11 @@ class Navi {
     static _DestroyGui() {
         this._CleanupState()
         if (this.GuiObj && WinExist(this.GuiObj)) {
+            this.GuiObj.GetPos(, , &_w_, &_h_)
+            if (_w_ > 0 && _h_ > 0) {
+                this._savedW := _w_
+                this._savedH := _h_
+            }
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
             this._CloseDropdown()
@@ -1356,8 +1364,12 @@ class Navi {
             ; ルートボタン → ツリーフィルター欄へ
             this.GuiObj["TreeFilter"].Focus()
         } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
-            ; ツリーフィルター欄 → ツリーへ
+            ; ツリーフィルター欄 → ツリーへ（Down は通さず先頭選択状態を維持）
             this.GuiObj["FolderTree"].Focus()
+        } else {
+            ; それ以外（ツリー上など）→ Down をツリーへ送る
+            PostMessage(0x0100, 0x28, 0, this._tvHwnd)  ; WM_KEYDOWN VK_DOWN
+            PostMessage(0x0101, 0x28, 0, this._tvHwnd)  ; WM_KEYUP
         }
     }
 
