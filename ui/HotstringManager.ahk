@@ -62,9 +62,15 @@ class HotstringManager {
 
     ; --- 内部ロジック：ホットストリングの実行と動的登録 ---
     static _SendProcessedText(repl) {
-        processed := this._ApplyPlaceholders(repl)
-        ; ホットストリングの自動バックスペース完了を待つため、少し遅延して貼り付け
-        SetTimer((*) => this._QuickPaste(processed), -30)
+        fillIns := PlaceholderEngine.ParseFillIns(repl)
+        if (fillIns.Length > 0) {
+            ; {{N:ラベル}} が含まれる場合は Fill In フォームを表示
+            SetTimer((*) => SnippetPicker._ShowFillInGui(repl, fillIns), -30)
+        } else {
+            result := this._ApplyPlaceholders(repl)
+            ; ホットストリングの自動バックスペース完了を待つため、少し遅延して貼り付け
+            SetTimer((*) => this._QuickPaste(result.text, result.cursorOffset), -30)
+        }
     }
 
     static _RegisterFromIni() {
@@ -311,11 +317,13 @@ class HotstringManager {
     }
 
     ; --- クリップボード経由での安全な貼り付け ---
-    static _QuickPaste(text) {
+    static _QuickPaste(text, cursorOffset := 0) {
         oldClip := ClipboardAll()
         A_Clipboard := text
         Sleep(this.SLEEP_PASTE)
         Send("^v")
+        if (cursorOffset > 0)
+            Send("{Left " cursorOffset "}")
         SetTimer((*) => (A_Clipboard := oldClip), this.TIMER_RESTORE)
     }
 }
