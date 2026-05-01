@@ -239,3 +239,14 @@ r:: WrapPalette.Execute()
 t:: TempCopy.Open(TempCopy.GetSelectedPath())
 #HotIf
 */
+
+; ------------------------------------------------------------
+;  QuickSwitch - ウィンドウ/URLジャンプ
+; ------------------------------------------------------------
+#Include "ui\QuickSwitch.ahk"
+QuickSwitch.Init()
+#HotIf GetKeyState("vk1D", "P")
+a:: QuickSwitch.Show()         ; デフォルトに直接ジャンプ（未設定時はメニュー）
++a:: QuickSwitch.ShowMenu()     ; 常にメニュー表示
+^+a:: QuickSwitch.ShowSettings() ; 設定画面
+#HotIf
