@@ -46,17 +46,6 @@ MOD_KEY := "vk1D" ; デフォルト：無変換キー
 #Include "tests\TestScript.ahk"                	   ; 検証用（通常は無効）
 
 ; ------------------------------------------------------------
-; Explorer / Tablacus 関連
-; ------------------------------------------------------------
-; モジュールの読み込み
-#Include modules\FolderToggle.ahk
-
-commonIni := StrReplace(A_ScriptFullPath, ".ahk", ".ini")
-FolderToggle.Init(commonIni)
-FolderToggle.BuildTrayMenu()
-MButton:: FolderToggle.Execute()
-
-; ------------------------------------------------------------
 ; IME 操作の定義 関連
 ; ------------------------------------------------------------
 #Include "modules\ImeControl.ahk"                  ; IME ON/OFF 制御
