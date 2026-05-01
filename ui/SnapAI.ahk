@@ -8,15 +8,14 @@
 ; Version:      1.0.0
 ; License:      MIT
 ;
-; Usage Example (Main.ahk):
-;   #Include "ui\SnapAI.ahk"
-;   SnapAI.Init()
-;   #HotIf GetKeyState("vk1D", "P")   ; 無変換キーを押しながら
-;   t:: SnapAI.Show()
-;   #HotIf
+; Usage:
+;   SnapAI.ahk を直接実行してください（スタートアップ登録推奨）
+;   ホットキーはファイル末尾で変更できます
 ;
 ; ==============================================================================
 #Requires AutoHotkey v2.0
+#SingleInstance Force
+SetWorkingDir A_ScriptDir
 
 class SnapAI {
     static GuiObj := ""
@@ -1131,3 +1130,13 @@ class SnapAI {
         return str
     }
 }
+
+; ============================================================
+; エントリーポイント
+; ============================================================
+SnapAI.Init()
+
+; ホットキー（好みに応じて変更してください）
+#HotIf GetKeyState("vk1D", "P")
+t:: SnapAI.Show()
+#HotIf

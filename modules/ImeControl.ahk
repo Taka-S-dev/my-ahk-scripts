@@ -36,8 +36,11 @@ class ImeControl {
     }
 
     static SetOpenStatus(open := true, hwnd := 0) {
-        if !hwnd
-            hwnd := WinGetID("A")
+        if !hwnd {
+            try hwnd := WinGetID("A")
+            if !hwnd
+                return false
+        }
 
         try
             hwndFocus := ControlGetHwnd(ControlGetFocus("ahk_id " hwnd), "ahk_id " hwnd)
