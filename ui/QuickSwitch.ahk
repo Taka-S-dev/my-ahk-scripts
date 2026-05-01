@@ -203,7 +203,7 @@ class QuickSwitch {
                     else
                         HotIf(this._hotifFn)
                     try {
-                        Hotkey(key, this._MakeJumpCallback(name))
+                        Hotkey(key, this._MakeJumpCallback(name), "On")
                         this._registeredKeys.Push({key: key, global: isGlobal})
                     }
                 }
@@ -594,16 +594,14 @@ class QuickSwitch {
         listKeyEdit  := dg.Add("Edit", "w160", isNew ? "" : lv.GetText(row, 5))
         btnCapture2  := dg.Add("Button", "x+8 yp-1 w90", "キー入力...")
 
-        dg.Add("Text", "y+6 c808080", "※URL・exeパス・フォルダパス等。パターンのみでも可。両方設定時はパターン優先。")
-
         btnOk     := dg.Add("Button", "y+12 w80 Default", "OK")
         btnCancel := dg.Add("Button", "x+10 w80", "キャンセル")
 
         btnOk.OnEvent("Click",       (*) => this._SaveEntry(dg, lv, row, isNew, nameEdit, patEdit, urlEdit, keyEdit, listKeyEdit))
         btnCancel.OnEvent("Click",   (*) => dg.Destroy())
         btnPick.OnEvent("Click",     (*) => this._PickWindow(dg, patEdit))
-        btnCapture.OnEvent("Click",  (*) => this._CaptureKey(keyEdit))
-        btnCapture2.OnEvent("Click", (*) => this._CaptureKey(listKeyEdit))
+        btnCapture.OnEvent("Click",  (*) => this._CaptureKey(keyEdit, dg.Hwnd))
+        btnCapture2.OnEvent("Click", (*) => this._CaptureKey(listKeyEdit, dg.Hwnd))
         dg.OnEvent("Close",        (*) => dg.Destroy())
         dg.Show("AutoSize")
         nameEdit.Focus()
@@ -644,10 +642,10 @@ class QuickSwitch {
     }
 
     ; キー/マウスボタンをキャプチャしてショートカットキーフィールドに入力
-    static _CaptureKey(keyEdit) {
+    static _CaptureKey(keyEdit, ownerHwnd := 0) {
         static modKeys := ["LControl","RControl","LShift","RShift","LAlt","RAlt","LWin","RWin"]
 
-        capGui := Gui("+AlwaysOnTop -SysMenu +ToolWindow", "キー割り当て")
+        capGui := Gui("+AlwaysOnTop -SysMenu +ToolWindow" . (ownerHwnd ? " +Owner" . ownerHwnd : ""), "キー割り当て")
         capGui.SetFont("s10", "Segoe UI")
         capGui.MarginX := 15
         capGui.MarginY := 12
