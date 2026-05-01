@@ -46,17 +46,6 @@ MOD_KEY := "vk1D" ; デフォルト：無変換キー
 #Include "tests\TestScript.ahk"                	   ; 検証用（通常は無効）
 
 ; ------------------------------------------------------------
-; Explorer / Tablacus 関連
-; ------------------------------------------------------------
-; モジュールの読み込み
-#Include modules\FolderToggle.ahk
-
-commonIni := StrReplace(A_ScriptFullPath, ".ahk", ".ini")
-FolderToggle.Init(commonIni)
-FolderToggle.BuildTrayMenu()
-MButton:: FolderToggle.Execute()
-
-; ------------------------------------------------------------
 ; IME 操作の定義 関連
 ; ------------------------------------------------------------
 #Include "modules\ImeControl.ahk"                  ; IME ON/OFF 制御
@@ -239,3 +228,14 @@ r:: WrapPalette.Execute()
 t:: TempCopy.Open(TempCopy.GetSelectedPath())
 #HotIf
 */
+
+; ------------------------------------------------------------
+;  QuickSwitch - ウィンドウ/URLジャンプ
+; ------------------------------------------------------------
+#Include "ui\QuickSwitch.ahk"
+QuickSwitch.Init()
+#HotIf GetKeyState("vk1D", "P")
+a:: QuickSwitch.Show()         ; デフォルトに直接ジャンプ（未設定時はメニュー）
++a:: QuickSwitch.ShowMenu()     ; 常にメニュー表示
+^+a:: QuickSwitch.ShowSettings() ; 設定画面
+#HotIf
