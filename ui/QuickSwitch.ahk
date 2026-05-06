@@ -278,6 +278,9 @@ class QuickSwitch {
                     isMinimized := WinGetMinMax("ahk_id " . hwnd) == -1
                     if isActive && !isMinimized {
                         ; アクティブかつ最小化されていない → 最小化して直前ウィンドウへ復元
+                        ; prevHwnd が自分自身なら復元先がないのでクリア
+                        if (this._prevHwnd == hwnd)
+                            this._prevHwnd := 0
                         WinMinimize("ahk_id " . hwnd)
                         SetTimer(() => this._MinimizeFallback(hwnd, windowPat), this._DELAY_MINIMIZE_CHECK)
                     } else {
@@ -285,9 +288,11 @@ class QuickSwitch {
                         activeId := WinActive("A")
                         if (activeId && activeId != hwnd)
                             this._prevHwnd := activeId
-                        if isMinimized
-                            WinRestore("ahk_id " . hwnd)
-                        WinActivate("ahk_id " . hwnd)
+                        try {
+                            if isMinimized
+                                WinRestore("ahk_id " . hwnd)
+                            WinActivate("ahk_id " . hwnd)
+                        }
                     }
                     return
                 }
@@ -308,7 +313,8 @@ class QuickSwitch {
     static _MinimizeFallback(hwnd, pat) {
         if !WinExist("ahk_id " . hwnd)
             return
-        if (WinGetMinMax("ahk_id " . hwnd) != -1) {
+        minMax := WinGetMinMax("ahk_id " . hwnd)
+        if (minMax != -1) {
             ; まだ最小化されていない → Win+↓ で強制最小化
             WinActivate("ahk_id " . hwnd)
             SendInput("#{Down}")
