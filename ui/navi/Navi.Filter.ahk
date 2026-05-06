@@ -336,7 +336,10 @@ class NaviFilter {
             , "UInt*", 0
             , "Ptr",  this._DirOvBuf
             , "Ptr",  0, "Int")
-        ; デバウンス（連続変更をまとめる）
+        ; 変更検知と同時にインデックスを即時無効化（フィルター入力が古いインデックスを使わないよう）
+        this._IndexedRoot := ""
+        this._FolderIndex := []
+        ; デバウンス: フィルター自動再適用のタイミング制御のみ
         if (this._WatchInvCb != "")
             SetTimer(this._WatchInvCb, 0)
         cb := () => this._InvalidateIndex()

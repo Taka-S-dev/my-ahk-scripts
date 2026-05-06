@@ -330,6 +330,7 @@ class NaviTab {
         }
         this.UpdateTabBar()
         nv._UpdateStatusBar()
+        nv.GuiObj["TreeFilter"].Focus()
     }
 
     /**

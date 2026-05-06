@@ -377,9 +377,11 @@ class Navi {
         NaviTab.SaveTabsToIni()
         ; パンくず監視タイマーを停止
         NaviBreadcrumb.StopWatcher()
-        ; フィルタータイマーとディレクトリ監視を停止（GUI破棄後に発火するのを防ぐ）
+        ; フィルタータイマー・ディレクトリ監視・インデックスをリセット
+        ; _IndexedRoot を残すと次回起動時に _EnsureIndex が「有効」と誤判定し
+        ; _StartDirWatch が呼ばれないまま古いインデックスを使い続ける
         NaviFilter.CancelDebounce()
-        NaviFilter._StopDirWatch()
+        NaviFilter.ResetForNewRoot()
         ; マーク状態をリセット
         NaviMark.Reset()
         ; プロファイルドロップダウンを閉じる
