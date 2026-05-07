@@ -603,12 +603,14 @@ class QuickSwitch {
         btnOk     := dg.Add("Button", "y+12 w80 Default", "OK")
         btnCancel := dg.Add("Button", "x+10 w80", "キャンセル")
 
+        ; pickActive: ピック操作中は dg を破棄せず Hide 状態を維持するためのフラグ
+        pickActive := {v: false}
         btnOk.OnEvent("Click",       (*) => this._SaveEntry(dg, lv, row, isNew, nameEdit, patEdit, urlEdit, keyEdit, listKeyEdit))
         btnCancel.OnEvent("Click",   (*) => dg.Destroy())
-        btnPick.OnEvent("Click",     (*) => this._PickWindow(dg, patEdit))
+        btnPick.OnEvent("Click",     (*) => (pickActive.v := true, this._PickWindow(dg, patEdit, pickActive)))
         btnCapture.OnEvent("Click",  (*) => this._CaptureKey(keyEdit, dg.Hwnd))
         btnCapture2.OnEvent("Click", (*) => this._CaptureKey(listKeyEdit, dg.Hwnd))
-        dg.OnEvent("Close",        (*) => dg.Destroy())
+        dg.OnEvent("Close",          (*) => (pickActive.v ? "" : dg.Destroy()))
         dg.Show("AutoSize")
         nameEdit.Focus()
     }
@@ -752,7 +754,7 @@ class QuickSwitch {
     }
 
     ; ウィンドウをクリックして検索パターンを自動入力
-    static _PickWindow(dg, patEdit) {
+    static _PickWindow(dg, patEdit, pickActive) {
         dg.Hide()
 
         inst := Gui("+AlwaysOnTop -SysMenu +ToolWindow", "ウィンドウを選択")
@@ -790,6 +792,7 @@ class QuickSwitch {
         }
 
         if !winHwnd {
+            pickActive.v := false
             dg.Show()
             return
         }
@@ -798,13 +801,14 @@ class QuickSwitch {
             exe   := WinGetProcessName("ahk_id " . winHwnd)
             cls   := WinGetClass("ahk_id " . winHwnd)
         } catch {
+            pickActive.v := false
             dg.Show()
             return
         }
-        this._ShowPickerDialog(dg, patEdit, title, exe, cls)
+        this._ShowPickerDialog(dg, patEdit, title, exe, cls, pickActive)
     }
 
-    static _ShowPickerDialog(dg, patEdit, title, exe, cls) {
+    static _ShowPickerDialog(dg, patEdit, title, exe, cls, pickActive) {
         pk := Gui("+AlwaysOnTop", "パターンを選択")
         pk.SetFont("s10", "Segoe UI")
         pk.MarginX := 15
@@ -822,21 +826,20 @@ class QuickSwitch {
         btnOk     := pk.Add("Button", "xm y+14 w80 Default", "OK")
         btnCancel := pk.Add("Button", "x+10 w80", "キャンセル")
 
-        btnOk.OnEvent("Click",     (*) => this._OnPickOk(pk, dg, patEdit, r1, r2, t1, exe, cls))
-        btnCancel.OnEvent("Click", (*) => (pk.Destroy(), dg.Show()))
-        pk.OnEvent("Close",        (*) => (pk.Destroy(), dg.Show()))
+        btnOk.OnEvent("Click",     (*) => this._OnPickOk(pk, dg, patEdit, r1, r2, t1, exe, cls, pickActive))
+        btnCancel.OnEvent("Click", (*) => (pk.Destroy(), pickActive.v := false, dg.Show()))
+        pk.OnEvent("Close",        (*) => (pk.Destroy(), pickActive.v := false, dg.Show()))
         pk.Show("AutoSize")
     }
 
-    static _OnPickOk(pk, dg, patEdit, r1, r2, t1, exe, cls) {
-        if r1.Value
-            patEdit.Value := t1.Value
-        else if r2.Value
-            patEdit.Value := "ahk_exe " . exe
-        else
-            patEdit.Value := "ahk_class " . cls
+    static _OnPickOk(pk, dg, patEdit, r1, r2, t1, exe, cls, pickActive) {
+        val := r1.Value ? t1.Value : r2.Value ? "ahk_exe " . exe : "ahk_class " . cls
         pk.Destroy()
-        dg.Show()
+        pickActive.v := false
+        if WinExist(dg) {
+            patEdit.Value := val
+            dg.Show()
+        }
     }
 
     static _ResetAllKeys(lv) {
