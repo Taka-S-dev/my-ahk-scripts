@@ -82,7 +82,7 @@ class NaviSearch {
     static _FdLinesRead := 0    ; fd 出力で処理済みの行数
     static _FdTickCb   := ""    ; fd ポーリングタイマーのコールバック参照（停止に使う）
     static FD_POLL_MS  := 50    ; fd ポーリング間隔（ミリ秒）
-    static _SortCol        := 1     ; 最後にソートした列（1=名前, 2=パス）
+    static _SortCol        := 1     ; 最後にソートした列（1=名前, 2=パス, 3=更新日時）
     static _SortDesc       := false ; 降順フラグ
     static _LastTypeFilter := "all" ; 前回の検索対象フィルター（セッション間で記憶）
 
@@ -581,10 +581,12 @@ class NaviSearch {
         if !IsObject(lv)
             return
         SplitPath(path, &fname, &fdir)
-        lv.Add("", fname, fdir)
+        mtime := ""
+        try mtime := FormatTime(FileGetTime(path, "M"), "yyyy/MM/dd HH:mm")
+        lv.Add("", fname, fdir, mtime)
     }
 
-    ; ListView をソート（col=2 のときは パス→名前 の複合キーで同フォルダ内を名前順に）
+    ; ListView をソート（col=2: パス+名前複合キー、col=3: 更新日時）
     static _SortJumpList(lv, col := 1, desc := false) {
         n := lv.GetCount()
         if (n = 0)
@@ -602,8 +604,11 @@ class NaviSearch {
         loop n {
             fname := lv.GetText(A_Index, 1)
             fdir  := lv.GetText(A_Index, 2)
-            key   := col = 2 ? StrLower(fdir . A_Tab . fname) : StrLower(fname)
-            raw   .= key . sep . fname . sep . fdir . "`n"
+            mtime := lv.GetText(A_Index, 3)
+            key   := col = 2 ? StrLower(fdir . A_Tab . fname)
+                   : col = 3 ? mtime
+                   : StrLower(fname)
+            raw   .= key . sep . fname . sep . fdir . sep . mtime . "`n"
         }
         raw := RTrim(raw, "`n")
         Sort(raw, desc ? "R" : "")
@@ -616,7 +621,7 @@ class NaviSearch {
             rowNum += 1
             p := StrSplit(sortLine, sep)
             if (p.Length >= 3) {
-                lv.Add("", p[2], p[3])
+                lv.Add("", p[2], p[3], p.Length >= 4 ? p[4] : "")
                 if (selPath != "" && newSelRow = 0) {
                     path := (p[3] != "" ? p[3] . "\" . p[2] : p[2])
                     if (path = selPath)
@@ -648,6 +653,7 @@ class NaviSearch {
         loop n {
             f := lv.GetText(A_Index, 1)
             d := lv.GetText(A_Index, 2)
+            m := lv.GetText(A_Index, 3)
             p := (d != "" ? d . "\" . f : f)
             isDir := DirExist(p) ? 1 : 0
             ; ベースパス以降の相対パスをパーツ分割してtreeキーを構築
@@ -660,7 +666,7 @@ class NaviSearch {
                 else
                     key .= Chr(1) . part . "\"  ; フォルダ成分: Chr(1) でファイルより先
             }
-            rows.Push({f: f, d: d, key: key})
+            rows.Push({f: f, d: d, m: m, key: key})
         }
         ; 挿入ソート（AHK v2.0.19はSort()でArrayをサポートしないため手動実装）
         loop rows.Length - 1 {
@@ -680,7 +686,7 @@ class NaviSearch {
         }
         try lv.Delete()
         for row in rows {
-            try lv.Add("", row.f, row.d)
+            try lv.Add("", row.f, row.d, row.m)
             catch
                 break  ; GUIが破棄された場合は中断
         }
@@ -1298,9 +1304,10 @@ class NaviSearch {
         g.GetPos(, , &gw, &compactH)
         ; リスト部分（展開時に表示）
         lvW := gw - 20
-        lv := g.Add("ListView", "xm w" . lvW . " r15 -Multi", ["名前", "パス"])
+        lv := g.Add("ListView", "xm w" . lvW . " r15 -Multi", ["名前", "パス", "更新日時"])
         lv.ModifyCol(1, 150)
-        lv.ModifyCol(2, lvW - 154)
+        lv.ModifyCol(2, Max(lvW - 284, 50))
+        lv.ModifyCol(3, 130)
         g.SetFont("s8", "Segoe UI")
         hintLbl := g.Add("Text", "xm c808080", "クリック: TreeViewで選択")
         g.SetFont("s9", "Segoe UI")
@@ -1362,17 +1369,15 @@ class NaviSearch {
         lv.OnEvent("ContextMenu", _OnContextMenu)
         ; 列ヘッダークリックで並び替え（パス列は パス+名前 の複合キー）
         _OnColClick(ctrl, col) {
-            ; 名前列（col=1）は常に昇順。パス列（col=2）のみ再クリックで降順トグル
+            ; col=1: 常に昇順。再クリックで降順トグル。col=3(日時): 初回は降順（新しい順）
             if (col = 1) {
                 NaviSearch._SortCol  := col
                 NaviSearch._SortDesc := false
+            } else if (NaviSearch._SortCol = col) {
+                NaviSearch._SortDesc := !NaviSearch._SortDesc
             } else {
-                if (NaviSearch._SortCol = col)
-                    NaviSearch._SortDesc := !NaviSearch._SortDesc
-                else {
-                    NaviSearch._SortCol  := col
-                    NaviSearch._SortDesc := false
-                }
+                NaviSearch._SortCol  := col
+                NaviSearch._SortDesc := (col = 3)
             }
             NaviSearch._SortJumpList(ctrl, col, NaviSearch._SortDesc)
         }
@@ -1403,7 +1408,7 @@ class NaviSearch {
             newLvH := Max(lvH0 + (h - fullH), 50)
             lv.Move(, , newLvW, newLvH)
             hintLbl.Move(, lvY0 + newLvH)
-            lv.ModifyCol(2, Max(newLvW - 154, 50))
+            lv.ModifyCol(2, Max(newLvW - 284, 50))
         }
         ; イベント登録
         prev.OnEvent("Click", (*) => NaviSearch.Jump(navi, -1))
