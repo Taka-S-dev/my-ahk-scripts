@@ -304,7 +304,7 @@ a::  QuickSwitch.Show()      ; 無変換 + a でデフォルトジャンプ（�
 
 Excel 専用のセル書式・行列操作をホットキーで実行するオプションモジュールです。フォントカラー変更・取り消し線・背景色トグル・行列挿入削除・セル結合解除に対応しています。
 
-> **注意**: デフォルトでは `Main.ahk` に含まれていません。`Main.ahk` の該当コメントブロック（`/*` と `*/`）を外すと有効化されます。
+> **使用方法**: `modules\ExcelFontStyle.ahk` を直接起動（AutoHotkey で実行）するだけでホットキーが有効になります。`Main.ahk` とは独立して動作します。
 
 ---
 
@@ -321,7 +321,7 @@ Excel 専用のセル書式・行列操作をホットキーで実行するオ�
 │   ├── VimNavigation.ahk
 │   ├── DateTimeInsert.ahk
 │   ├── PlaceholderEngine.ahk   # プレースホルダ置換エンジン（共通）
-│   └── ExcelFontStyle.ahk      # ※オプション（デフォルト無効）
+│   └── ExcelFontStyle.ahk      # ※オプション（単独起動）
 ├── lib/                # 共有ライブラリ
 │   └── TempCopy.ahk            # 一時コピーユーティリティ
 ├── temp/               # 一時コピーファイル置き場（TempCopy.ahk が使用）

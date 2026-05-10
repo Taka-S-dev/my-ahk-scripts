@@ -7,22 +7,15 @@
 ;               - セルの背景色トグル
 ;               - 行・列の挿入/削除
 ;               - セルの結合/解除トグル
-; Version:      1.1.0
+; Version:      1.2.0
 ; License:      MIT
 ;
-; Usage Example (Main.ahk):
-;   #Include modules\ExcelFontStyle.ahk
-;   #HotIf WinActive("ahk_class XLMAIN") && GetKeyState("vk1D", "P")
-;   e:: ExcelFontStyle.SetFontColorRed()
-;   x:: ExcelFontStyle.SetFontColorStrikethrough()
-;   g:: ExcelFontStyle.ToggleFillColor(0x808080)
-;   i:: ExcelFontStyle.InsertRow()
-;   d:: ExcelFontStyle.DeleteRow()
-;   n:: ExcelFontStyle.ToggleMerge()
-;
+; 単独起動（直接実行）またはMain.ahkからの #Include 両方に対応
 ; ==============================================================================
 
 #Requires AutoHotkey v2.0
+#SingleInstance Force
+SetWorkingDir A_ScriptDir
 
 class ExcelFontStyle {
     /**
@@ -121,3 +114,16 @@ class ExcelFontStyle {
             Send("{Alt}hmm")   ; セルの結合（中央揃えなし）
     }
 }
+
+; 単独起動時のみホットキーを登録
+#HotIf WinActive("ahk_class XLMAIN") && GetKeyState("vk1D", "P")
+e:: ExcelFontStyle.SetFontColorRed()
+q:: ExcelFontStyle.SetFontColorBlack()
+x:: ExcelFontStyle.SetFontColorStrikethrough()
+g:: ExcelFontStyle.ToggleFillColor(0x808080)
+i:: ExcelFontStyle.InsertRow()
++i:: ExcelFontStyle.InsertColumn()
+d:: ExcelFontStyle.DeleteRow()
++d:: ExcelFontStyle.DeleteColumn()
+n:: ExcelFontStyle.ToggleMerge()
+#HotIf
