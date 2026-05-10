@@ -1578,10 +1578,10 @@ class Navi {
             if (this.GuiObj && WinExist(this.GuiObj))
                 WinActivate("ahk_id " this.GuiObj.Hwnd)
         } else if (this.GuiObj && WinExist(this.GuiObj) && this.GuiObj["TreeFilter"].Value != "") {
-            ; ツリーフィルターにテキストがあればクリアしてツリーへフォーカス
+            ; ツリーフィルターにテキストがあればクリアしてフィルター欄にフォーカスを残す
             this.GuiObj["TreeFilter"].Value := ""
             NaviFilter.ApplyTreeFilter("")
-            this.GuiObj["FolderTree"].Focus()
+            this.GuiObj["TreeFilter"].Focus()
         } else {
             this._DestroyGui()
         }
