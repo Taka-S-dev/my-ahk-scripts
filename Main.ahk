@@ -86,38 +86,6 @@ ModifierKeyHandler.OnTap := (*) => ImeControl.Toggle(false)
 ; Right Alt: ModifierKeyHandler.Init("vkA5", "sc138")
 ; ------------------------------------------------------------
 
-; ------------------------------------------------------------
-; Excel専用ホットキー（VimNavigation より優先）
-; 使用する場合は /* と */ を外してください
-; ------------------------------------------------------------
-/*
-#Include modules\ExcelFontStyle.ahk
-#HotIf WinActive("ahk_class XLMAIN") && GetKeyState(MOD_KEY, "P")
-
-; 無変換 + e で赤字
-e:: ExcelFontStyle.SetFontColorRed()
-
-; 無変換 + q で黒字 (Ctrl+Qよりさらに押しやすい)
-q:: ExcelFontStyle.SetFontColorBlack()
-
-; 無変換 + x で取り消し線
-x:: ExcelFontStyle.SetFontColorStrikethrough()
-
-; 無変換 + g でグレー塗りつぶし
-g:: ExcelFontStyle.ToggleFillColor(0x808080)
-
-; 無変換 + i で行挿入 / Shift+i で列挿入
-i:: ExcelFontStyle.InsertRow()
-+i:: ExcelFontStyle.InsertColumn()
-
-; 無変換 + d で行削除 / Shift+d で列削除
-d:: ExcelFontStyle.DeleteRow()
-+d:: ExcelFontStyle.DeleteColumn()
-
-; 無変換 + n でセル結合/解除トグル
-n:: ExcelFontStyle.ToggleMerge()
-#HotIf
-*/
 
 ; ------------------------------------------------------------
 ;  Vim 風ナビゲーション定義

@@ -304,42 +304,7 @@ a::  QuickSwitch.Show()      ; 無変換 + a でデフォルトジャンプ（�
 
 Excel 専用のセル書式・行列操作をホットキーで実行するオプションモジュールです。フォントカラー変更・取り消し線・背景色トグル・行列挿入削除・セル結合解除に対応しています。
 
-> **注意**: デフォルトでは `Main.ahk` に含まれていません。`Main.ahk` の該当コメントブロック（`/*` と `*/`）を外すと有効化されます。
-
----
-
-### AI テキスト処理 (SnapAI.ahk)
-
-選択テキストや手入力のテキストを LLM API に送信し、翻訳・要約・説明などを行うオプションツールです。
-
-> **注意**: このツールは選択テキストを外部 API に送信します。個人情報・社外秘データなど、外部に送信したくない内容を含む場合はご注意ください。`Main.ahk` とは独立したスクリプトです。
-
-#### 使用方法
-
-1. `ui\SnapAI.ahk` を直接起動します（AutoHotkey で実行、またはタスクスケジューラ・スタートアップへ登録）。
-2. 起動後、トレイメニューまたはホットキーから **設定** を開き、API キーとエンドポイントを設定します。
-3. デフォルトのホットキーは `無変換 + T` です。変更する場合は `SnapAI.ahk` 末尾のホットキー定義を編集してください。
-
-#### 主な機能
-
-- テキストを選択してホットキーを押すと、登録済みプロンプト一覧が表示されます
-- テキスト未選択時は手入力モードが起動し、テキストとプロンプトを自由に入力できます
-- 保存プロンプトを INI ファイルで管理・追加可能
-- 処理中はプログレス GUI を表示し、キャンセルボタンで中断可能（30 秒でタイムアウト）
-- 結果をクリップボードに自動コピーするオプションあり
-
-#### 対応 API
-
-OpenAI 互換のエンドポイントであれば利用可能です。
-
-| サービス          | エンドポイント例                                  |
-| :---------------- | :------------------------------------------------ |
-| OpenAI            | `https://api.openai.com/v1/chat/completions`      |
-| Groq              | `https://api.groq.com/openai/v1/chat/completions` |
-| OpenRouter        | `https://openrouter.ai/api/v1/chat/completions`   |
-| Ollama (ローカル) | `http://localhost:11434/v1/chat/completions`      |
-
-> Ollama などのローカルエンドポイント（`localhost`）の場合、API キーの入力は不要です。
+> **使用方法**: `modules\ExcelFontStyle.ahk` を直接起動（AutoHotkey で実行）するだけでホットキーが有効になります。`Main.ahk` とは独立して動作します。
 
 ---
 
@@ -356,7 +321,7 @@ OpenAI 互換のエンドポイントであれば利用可能です。
 │   ├── VimNavigation.ahk
 │   ├── DateTimeInsert.ahk
 │   ├── PlaceholderEngine.ahk   # プレースホルダ置換エンジン（共通）
-│   └── ExcelFontStyle.ahk      # ※オプション（デフォルト無効）
+│   └── ExcelFontStyle.ahk      # ※オプション（単独起動）
 ├── lib/                # 共有ライブラリ
 │   └── TempCopy.ahk            # 一時コピーユーティリティ
 ├── temp/               # 一時コピーファイル置き場（TempCopy.ahk が使用）
@@ -376,8 +341,7 @@ OpenAI 互換のエンドポイントであれば利用可能です。
 │   ├── TempMemo.ahk
 │   ├── SnippetPicker.ahk
 │   ├── HotstringManager.ahk
-│   ├── WrapPalette.ahk
-│   └── SnapAI.ahk          # ※オプション（単独起動）
+│   └── WrapPalette.ahk
 └── tests/              # 動作確認・テスト用スクリプト
 ```
 
