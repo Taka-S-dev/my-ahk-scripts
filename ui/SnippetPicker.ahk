@@ -497,10 +497,11 @@ class SnippetPicker {
             return
 
         item := this.SnipList[this._LvIndexMap[row]]
+        this.GuiObj.GetPos(&_spX, &_spY)
         this.GuiObj.Hide()
         fillIns := PlaceholderEngine.ParseFillIns(item.content)
         if (fillIns.Length > 0) {
-            this._ShowFillInGui(item.content, fillIns, item.title)
+            this._ShowFillInGui(item.content, fillIns, item.title, _spX, _spY)
         } else {
             result := this._ProcessPlaceholders(item.content)
             this._QuickPaste(result.text, result.cursorOffset)
@@ -508,7 +509,7 @@ class SnippetPicker {
     }
 
     ; Fill In GUI — 1フィールドずつ Enter で確定、プレビューをリアルタイム更新
-    static _ShowFillInGui(content, fillIns, title := "") {
+    static _ShowFillInGui(content, fillIns, title := "", refX := -1, refY := -1) {
         this._ChildOpen   := true
         this._FillInState := {
             content:    content,
@@ -548,7 +549,8 @@ class SnippetPicker {
 
         dlg.Show("Hide")
         dlg.GetPos(, , &dw, &dh)
-        MonitorGetWorkArea(MonitorGetPrimary(), &mL, &mT, &mR, &mB)
+        _mon := (refX >= 0) ? this._GetMonitorFromPos(refX, refY) : MonitorGetPrimary()
+        MonitorGetWorkArea(_mon, &mL, &mT, &mR, &mB)
         dlg.Show("x" (mL + (mR - mL - dw) // 2) " y" (mT + (mB - mT - dh) // 2))
         s.inputCtrl.Focus()
         SendMessage(0xB1, 0, -1, s.inputCtrl)
