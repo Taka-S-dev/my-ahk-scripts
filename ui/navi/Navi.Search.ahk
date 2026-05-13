@@ -85,6 +85,7 @@ class NaviSearch {
     static _SortCol        := 1     ; 最後にソートした列（1=名前, 2=パス, 3=更新日時）
     static _SortDesc       := false ; 降順フラグ
     static _LastTypeFilter := "all" ; 前回の検索対象フィルター（セッション間で記憶）
+    static LastQuery       := ""    ; 前回の検索クエリ（JumpGui の検索欄に表示）
 
     ; 内部タスク構造:
     ; {
@@ -131,6 +132,8 @@ class NaviSearch {
             typeFilter := "file"
             q := Trim(SubStr(q, 3))
         }
+        this.LastQuery       := q
+        this._LastTypeFilter := typeFilter
         incGroups := [], notAlts := []
         this._ParseQuery(q, &incGroups, &notAlts)
         if (incGroups.Length = 0)
@@ -1288,18 +1291,21 @@ class NaviSearch {
         this.JumpLabel := ""
         g := Gui("+Owner" . navi.GuiObj.Hwnd . " +Resize +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "検索ヒット")
         g.SetFont("s9", "Segoe UI")
-        ; ボタン行（再検索のみ Tabstop ON、他は -Tabstop でスキップ）
+        g.MarginY := 6
+        ; ボタン行
         prev      := g.Add("Button", "xm w" . this.BTN_W_SMALL . " -Tabstop", "前へ")
         next      := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "次へ")
         listBtn   := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "リスト△")
-        reSearchBtn := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL, "再検索")
-        this.JumpLabel := g.Add("Text", "x+" . this.GAP_X_LARGE . " w" . this.LABEL_W_HITS, "")
-        closeBtn  := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "閉じる")
-        ; ショートカットヒント
-        g.SetFont("s7", "Segoe UI")
-        g.Add("Text", "xm c808080", "Shift+F3 / F3")
-        g.SetFont("s9", "Segoe UI")
-        ; コンパクト時の高さを計測
+        queryEdit := g.Add("Edit", "x+" . this.GAP_X_SMALL . " w140 h22 -Tabstop", NaviSearch.LastQuery)
+        typeFilterDDL := g.Add("DropDownList", "x+" . this.GAP_X_SMALL . " yp w70 -Tabstop Choose1", ["すべて", "ファイル", "フォルダ"])
+        if (NaviSearch._LastTypeFilter = "file")
+            typeFilterDDL.Choose(2)
+        else if (NaviSearch._LastTypeFilter = "dir")
+            typeFilterDDL.Choose(3)
+        this.JumpLabel := g.Add("Text", "x+" . this.GAP_X_LARGE . " yp+3 w" . this.LABEL_W_HITS, "")
+        sb := g.Add("StatusBar")
+        sb.SetText("  クリック: TreeViewで選択　　Shift+F3 / F3")
+        ; コンパクト時の高さを計測（StatusBar 込み）
         g.Show("Hide AutoSize")
         g.GetPos(, , &gw, &compactH)
         ; リスト部分（展開時に表示）
@@ -1308,13 +1314,12 @@ class NaviSearch {
         lv.ModifyCol(1, 150)
         lv.ModifyCol(2, Max(lvW - 284, 50))
         lv.ModifyCol(3, 130)
-        g.SetFont("s8", "Segoe UI")
-        hintLbl := g.Add("Text", "xm c808080", "クリック: TreeViewで選択")
-        g.SetFont("s9", "Segoe UI")
-        ; 展開時の高さ・ListView位置を計測（リストは表示状態で計測）
+        ; 展開時の高さ・ListView位置を計測
         g.Show("Hide AutoSize")
         g.GetPos(, , , &fullH)
-        lv.GetPos(, &lvY0, , &lvH0)   ; ListView の初期 Y・高さ
+        lv.GetPos(, &lvY0, , &lvH0)
+        sb.GetPos(, &_sbY, , &_sbH)
+        fullClientH := _sbY + _sbH
         ; ジャンプ処理（ListView列から直接パスを再構築）
         _JumpTo(obj, row) {
             if (row = 0)
@@ -1388,13 +1393,11 @@ class NaviSearch {
         _ToggleList(*) {
             if (listShown) {
                 lv.Visible := false
-                hintLbl.Visible := false
                 listShown := false
                 listBtn.Text := "リスト▽"
                 g.Show("h" . compactH)
             } else {
                 lv.Visible := true
-                hintLbl.Visible := true
                 listShown := true
                 listBtn.Text := "リスト△"
                 g.Show("h" . fullH)
@@ -1405,17 +1408,22 @@ class NaviSearch {
             if (minMax = -1 || !listShown)
                 return
             newLvW := w - 20
-            newLvH := Max(lvH0 + (h - fullH), 50)
+            newLvH := Max(lvH0 + (h - fullClientH), 50)
             lv.Move(, , newLvW, newLvH)
-            hintLbl.Move(, lvY0 + newLvH)
             lv.ModifyCol(2, Max(newLvW - 284, 50))
+        }
+        ; 検索欄 Enter で再検索
+        _RunQuerySearch(*) {
+            q := Trim(queryEdit.Value)
+            if (q = "")
+                return
+            tf := typeFilterDDL.Value = 2 ? "file" : typeFilterDDL.Value = 3 ? "dir" : "all"
+            NaviSearch._StartSearch(navi, NaviSearch.LastSearchBasePath, q, tf)
         }
         ; イベント登録
         prev.OnEvent("Click", (*) => NaviSearch.Jump(navi, -1))
         next.OnEvent("Click", (*) => NaviSearch.Jump(navi, +1))
         listBtn.OnEvent("Click", _ToggleList)
-        reSearchBtn.OnEvent("Click", (*) => NaviSearch.RunLocal(navi, NaviSearch.LastSearchBasePath))
-        closeBtn.OnEvent("Click", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Escape", (*) => NaviSearch.ClearHighlights(navi))
         g.OnEvent("Size", _OnSize)
         g.OnEvent("Close", (*) => NaviSearch.ClearHighlights(navi))
@@ -1434,19 +1442,17 @@ class NaviSearch {
         this._UpdateJumpLabel()
         ; ホットキー登録
         this._SetupJumpGuiHotkeys(navi, g)
-        ; Enter で選択行をジャンプ（再検索ボタンにフォーカスがある場合は再検索を優先）
+        ; Enter で選択行をジャンプ（検索欄フォーカス時は再検索）
         _OnEnter(*) {
             focused := ControlGetFocus("ahk_id " g.Hwnd)
-            if (focused == reSearchBtn.Hwnd)
-                NaviSearch.RunLocal(navi, NaviSearch.LastSearchBasePath)
+            if (focused == queryEdit.Hwnd)
+                _RunQuerySearch()
             else if (focused == prev.Hwnd)
                 NaviSearch.Jump(navi, -1)
             else if (focused == next.Hwnd)
                 NaviSearch.Jump(navi, +1)
             else if (focused == listBtn.Hwnd)
                 _ToggleList()
-            else if (focused == closeBtn.Hwnd)
-                NaviSearch.ClearHighlights(navi)
             else if (r := lv.GetNext(0))
                 _JumpTo(lv, r)
         }
