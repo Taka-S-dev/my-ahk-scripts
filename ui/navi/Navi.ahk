@@ -182,6 +182,7 @@ class Navi {
         breadcrumb.OnEvent("Click", (*) => NaviBreadcrumb._OnClick())
         NaviBreadcrumb._hwnd := breadcrumb.Hwnd
         OnMessage(this.WM_SETCURSOR, NaviBreadcrumb._OnSetCursor.Bind(NaviBreadcrumb))
+        OnMessage(this.WM_SETCURSOR, NaviTab._OnSetCursor.Bind(NaviTab))
         this.GuiObj.SetFont("s9", "Yu Gothic UI")
 
         ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
@@ -1553,7 +1554,7 @@ class Navi {
         ; 全幅コントロールを幅に追従させる
         this.GuiObj["Breadcrumb"].Move(, , ctrlW)
         if (NaviTab._TabSepCtrl)
-            NaviTab._TabSepCtrl.Move(0, , w)  ; 境界線はクライアント全幅
+            NaviTab._TabSepCtrl.Move(0, , w)  ; タブ下区切り線はクライアント全幅
         ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
         this.GuiObj["TreeFilter"].GetPos(&_tfX_)
         this.GuiObj["TreeFilter"].Move(, , w - margin - _tfX_)
@@ -1648,6 +1649,9 @@ class Navi {
     ; 右クリック: TreeView 上のアイテムを選択して Shell コンテキストメニューを表示
     static _HandleRButton() {
         if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        ; タブ上の右クリックなら閉じるメニューを表示
+        if (NaviTab.HandleRightClick())
             return
         tv := this.GuiObj["FolderTree"]
         MouseGetPos(, , , &underHwnd, 2)
