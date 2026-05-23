@@ -1,5 +1,5 @@
 ; ==============================================================================
-; Module:       ExcelFontStyle.ahk
+; Module:       ExcelHotkeys.ahk
 ; Description:  Excel操作に関連する機能
 ;               - 選択中の文字列を赤色に変更
 ;               - 選択中の文字列を黒色(自動)に変更
@@ -17,7 +17,7 @@
 #SingleInstance Force
 SetWorkingDir A_ScriptDir
 
-class ExcelFontStyle {
+class ExcelHotkeys {
     /**
      * 選択中の文字列を赤にする
      */
@@ -117,13 +117,13 @@ class ExcelFontStyle {
 
 ; 単独起動時のみホットキーを登録
 #HotIf WinActive("ahk_class XLMAIN") && GetKeyState("vk1D", "P")
-e:: ExcelFontStyle.SetFontColorRed()
-q:: ExcelFontStyle.SetFontColorBlack()
-x:: ExcelFontStyle.SetFontColorStrikethrough()
-g:: ExcelFontStyle.ToggleFillColor(0x808080)
-i:: ExcelFontStyle.InsertRow()
-+i:: ExcelFontStyle.InsertColumn()
-d:: ExcelFontStyle.DeleteRow()
-+d:: ExcelFontStyle.DeleteColumn()
-n:: ExcelFontStyle.ToggleMerge()
+e:: ExcelHotkeys.SetFontColorRed()
+q:: ExcelHotkeys.SetFontColorBlack()
+x:: ExcelHotkeys.SetFontColorStrikethrough()
+g:: ExcelHotkeys.ToggleFillColor(0x808080)
+i:: ExcelHotkeys.InsertRow()
++i:: ExcelHotkeys.InsertColumn()
+d:: ExcelHotkeys.DeleteRow()
++d:: ExcelHotkeys.DeleteColumn()
+n:: ExcelHotkeys.ToggleMerge()
 #HotIf

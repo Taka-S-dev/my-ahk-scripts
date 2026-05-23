@@ -15,6 +15,7 @@
 !modules/**/*.ahk
 !ui/**/*.ahk
 !tests/**/*.ahk
+!tools/**/*.ahk
 
 # 5. 上記の許可を上書きしてでも「.ini」は絶対に無視
 *.ini

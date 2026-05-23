@@ -298,13 +298,12 @@ a::  QuickSwitch.Show()      ; 無変換 + a でデフォルトジャンプ（�
 
 ---
 
-## オプション機能
+## オプションツール (tools/)
 
-### Excel セル操作 (ExcelFontStyle.ahk)
+`tools/` 内の各 `.ahk` を直接起動するだけで有効化（Main.ahk 非依存）。詳細は各ファイル冒頭のコメント参照。
 
-Excel 専用のセル書式・行列操作をホットキーで実行するオプションモジュールです。フォントカラー変更・取り消し線・背景色トグル・行列挿入削除・セル結合解除に対応しています。
-
-> **使用方法**: `modules\ExcelFontStyle.ahk` を直接起動（AutoHotkey で実行）するだけでホットキーが有効になります。`Main.ahk` とは独立して動作します。
+- **ExcelHotkeys.ahk** — Excel セル書式・行列操作のホットキー集
+- **VSCodeGrepClick.ahk** — VSCode で 無変換+クリック → Find in Files 即起動
 
 ---
 
@@ -315,13 +314,15 @@ Excel 専用のセル書式・行列操作をホットキーで実行するオ�
 ├── Main.ahk            # エントリーポイント
 ├── .gitignore          # ホワイトリスト方式の Git 設定
 ├── README.md
-├── modules/            # ロジック・ユーティリティクラス
+├── modules/            # ロジック・ユーティリティクラス（Main.ahk から #Include）
 │   ├── ModifierKeyHandler.ahk  # 修飾キー制御（空打ち検出・キー無効化）
 │   ├── ImeControl.ahk
 │   ├── VimNavigation.ahk
 │   ├── DateTimeInsert.ahk
-│   ├── PlaceholderEngine.ahk   # プレースホルダ置換エンジン（共通）
-│   └── ExcelFontStyle.ahk      # ※オプション（単独起動）
+│   └── PlaceholderEngine.ahk   # プレースホルダ置換エンジン（共通）
+├── tools/              # 単独起動スクリプト（直接実行で動作、Main.ahk 非依存）
+│   ├── ExcelHotkeys.ahk        # Excel セル書式・行列操作
+│   └── VSCodeGrepClick.ahk     # VSCode 無変換+クリックで Find in Files
 ├── lib/                # 共有ライブラリ
 │   └── TempCopy.ahk            # 一時コピーユーティリティ
 ├── temp/               # 一時コピーファイル置き場（TempCopy.ahk が使用）
