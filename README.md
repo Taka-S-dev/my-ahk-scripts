@@ -300,10 +300,12 @@ a::  QuickSwitch.Show()      ; 無変換 + a でデフォルトジャンプ（�
 
 ## オプションツール (tools/)
 
-`tools/` 内の各 `.ahk` を直接起動するだけで有効化（Main.ahk 非依存）。詳細は各ファイル冒頭のコメント参照。
+下記ツール `.ahk` を直接起動するだけで有効化（Main.ahk 非依存）。詳細は各ファイル冒頭のコメント参照。
+（`FloatingPanel.ahk` はツール共有の部品で、単体では起動しない）
 
 - **ExcelHotkeys.ahk** — Excel セル書式・行列操作のホットキー集
 - **VSCodeGrepClick.ahk** — VSCode で 無変換+クリック → Find in Files 即起動
+- **VisualStudioDebug.ahk** — Visual Studio のデバッグ操作（ステップ実行 / BP / Set Next Statement / Stop / Restart 等）を 無変換+キー と クリック用フローティングパネル（無変換+`0`）で高速化
 
 ---
 
@@ -322,8 +324,10 @@ a::  QuickSwitch.Show()      ; 無変換 + a でデフォルトジャンプ（�
 │   └── PlaceholderEngine.ahk   # プレースホルダ置換エンジン（共通）
 ├── tools/              # 単独起動スクリプト（直接実行で動作、Main.ahk 非依存）
 │   ├── ExcelHotkeys.ahk        # Excel セル書式・行列操作
-│   └── VSCodeGrepClick.ahk     # VSCode 無変換+クリックで Find in Files
-├── lib/                # 共有ライブラリ
+│   ├── VSCodeGrepClick.ahk     # VSCode 無変換+クリックで Find in Files
+│   ├── VisualStudioDebug.ahk   # Visual Studio デバッグのステップ実行高速化
+│   └── FloatingPanel.ahk       # 汎用フローティング・クリックパネル（tools 共有部品・直接実行はしない）
+├── lib/                # 共有ライブラリ（Main.ahk から利用）
 │   └── TempCopy.ahk            # 一時コピーユーティリティ
 ├── temp/               # 一時コピーファイル置き場（TempCopy.ahk が使用）
 ├── ui/                 # GUI 関連クラス
