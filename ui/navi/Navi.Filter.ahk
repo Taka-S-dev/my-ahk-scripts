@@ -494,7 +494,7 @@ class NaviFilter {
                 tv.Add("… 上位 " . filterResultCap . " 件を表示（キーワードを追加して絞り込んでください）", rootID)
             addedPaths := Map()
             addedPaths[StrLower(rootBase)] := rootID
-            firstMatch := true
+            firstMatchID := 0
             for idx, fullPath in results {
                 if (this._FilterCancelled)
                     return
@@ -518,11 +518,12 @@ class NaviFilter {
                         parentID := existingID
                     } else {
                         opts := isMatch ? "Bold" : ""
-                        if (isMatch && firstMatch) {
-                            opts      .= " Select"
-                            firstMatch := false
-                        }
+                        ; 先頭マッチに Select を付け、ノードIDを記録（末尾で可視化に使用）
+                        if (isMatch && firstMatchID == 0)
+                            opts .= " Select"
                         nodeID := tv.Add(part, parentID, opts . " Icon1")
+                        if (isMatch && firstMatchID == 0)
+                            firstMatchID := nodeID
                         if (isMatch) {
                             this._FilterMatchIdSet[nodeID] := true
                             tv.Add("...loading...", nodeID)  ; ノード作成直後に追加して展開ボタンを即表示
@@ -533,6 +534,19 @@ class NaviFilter {
                 }
                 ; 50件ごとに GUI イベントを処理してUIの応答性を保つ
                 if (Mod(idx, 50) = 0)
+                    Sleep(0)
+            }
+            ; マッチしたフォルダの実子フォルダを自動表示（フィルタにマッチしない兄弟も含めて表示）
+            matchLoopCount := 0
+            for matchID, _ in this._FilterMatchIdSet {
+                if (this._FilterCancelled)
+                    return
+                ; "...loading..." プレースホルダーを削除してから実子をロード
+                placeholder := tv.GetChild(matchID)
+                if (placeholder != 0 && tv.GetText(placeholder) == "...loading...")
+                    tv.Delete(placeholder)
+                nv._LoadFilterSub(tv, matchID)
+                if (Mod(++matchLoopCount, 20) == 0)
                     Sleep(0)
             }
             ; 子を持つノードを展開（"...loading..." プレースホルダーのみのノードは展開しない）
@@ -577,6 +591,10 @@ class NaviFilter {
             }
             ; フィルタ結果の上にマーク色を復元
             NaviMark._RebuildMarkedIdSet(tv)
+            ; 実子ロード・展開・ファイル表示で下方向にスクロールし先頭マッチが
+            ; 上端で見切れるのを防ぐため、最後に先頭マッチを完全可視化する
+            if (firstMatchID != 0)
+                tv.Modify(firstMatchID, "Vis")
         } catch Any {
             ; GUI 破棄など想定内の例外は無視して finally でクリーンアップ
         } finally {

@@ -502,8 +502,11 @@ class NaviTab {
             NaviFilter.EnsureFilterDraw(tv)
             DllCall("user32\InvalidateRect", "ptr", tv.Hwnd, "ptr", 0, "int", 1)
         }
-        if (state.path != "" && rootPath != "")
+        if (state.path != "" && rootPath != "") {
             nv._FocusPath(tv, state.path)
+            ; フィルタ非同期完了後にも復元できるよう目標パスを保存
+            nv._RestoreTargetPath := state.path
+        }
     }
 
     /**
