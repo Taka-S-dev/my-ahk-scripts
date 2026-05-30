@@ -63,6 +63,8 @@ class Navi {
     static QuickPathHwnd := 0
     static _TreeFilterFocused := false
     static FilesShown := Map()
+    static _EnsureSelectionVisibleRetries := 0  ; Show 後の選択スクロールリトライ回数
+    static _RestoreTargetPath := ""             ; Show 後にリトライ復元する目標パス
     ; 詳細リスト関連状態は NaviDetailList クラスで管理（Navi.DetailList.ahk）
     ; パンくず関連定数・状態は NaviBreadcrumb クラスで管理（Navi.Breadcrumb.ahk）
     static _AllFolderNames := []  ; 全ルート名リスト（フィルタ前）
@@ -310,7 +312,51 @@ class Navi {
         centerY := waT + (waB - waT - winH) // 2
 
         this.GuiObj.Show("x" . centerX . " y" . centerY . " w" . winW . " h" . winH)
+        ; GUI 表示後に選択項目を再度可視化（フィルタの非同期処理を考慮して複数回リトライ）
+        this._EnsureSelectionVisibleRetries := 0
+        this._EnsureSelectionVisible()
         this.GuiObj["TreeFilter"].Focus()
+    }
+
+    /**
+     * 選択項目を可視範囲にスクロール（フィルタ非同期完了を待つため最大 10 回リトライ）
+     * 復元目標パスがあれば、選択が一致するまで _FocusPath をリトライする
+     */
+    static _EnsureSelectionVisible() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        tv := this.GuiObj["FolderTree"]
+        targetPath := this._RestoreTargetPath
+        if (targetPath != "") {
+            ; 現在の選択が目標パスと一致しているかチェック
+            selId := tv.GetSelection()
+            matched := false
+            if (selId) {
+                try {
+                    if (StrLower(this._GetTVFullPath(tv, selId)) == StrLower(targetPath))
+                        matched := true
+                }
+            }
+            if (matched) {
+                tv.Modify(selId, "Vis")
+                this._RestoreTargetPath := ""
+                return
+            }
+            ; まだ一致してない → _FocusPath で再試行
+            if (DirExist(targetPath) || FileExist(targetPath))
+                this._FocusPath(tv, targetPath)
+        } else {
+            ; 復元目標なし → 現在の選択を可視化するだけ
+            selId := tv.GetSelection()
+            if (selId) {
+                tv.Modify(selId, "Vis")
+                return
+            }
+        }
+        if (++this._EnsureSelectionVisibleRetries < 10)
+            SetTimer(this._EnsureSelectionVisible.Bind(this), -100)
+        else
+            this._RestoreTargetPath := ""  ; リトライ上限 → 諦める
     }
 
     static _FocusPath(tv, targetPath) {
@@ -1367,8 +1413,14 @@ class Navi {
             ; ルートボタン → ツリーフィルター欄へ
             this.GuiObj["TreeFilter"].Focus()
         } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
-            ; ツリーフィルター欄 → ツリーへ（Down は通さず先頭選択状態を維持）
-            this.GuiObj["FolderTree"].Focus()
+            ; ツリーフィルター欄 → ツリーへ。選択がない場合は前回保存パスを復元
+            tv := this.GuiObj["FolderTree"]
+            if (tv.GetSelection() == 0 && NaviTab._CurrentTab <= NaviTab._Tabs.Length) {
+                tab := NaviTab._Tabs[NaviTab._CurrentTab]
+                if (tab != "" && tab.path != "" && (DirExist(tab.path) || FileExist(tab.path)))
+                    this._FocusPath(tv, tab.path)
+            }
+            tv.Focus()
         } else {
             ; それ以外（ツリー上など）→ Down をツリーへ送る
             PostMessage(0x0100, 0x28, 0, this._tvHwnd)  ; WM_KEYDOWN VK_DOWN
