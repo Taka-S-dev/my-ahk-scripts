@@ -206,4 +206,6 @@ QuickSwitch.Init()
 a:: QuickSwitch.Show()         ; デフォルトに直接ジャンプ（未設定時はメニュー）
 +a:: QuickSwitch.ShowMenu()     ; 常にメニュー表示
 ^+a:: QuickSwitch.ShowSettings() ; 設定画面
+q:: QuickSwitch.ShowTempMenu()    ; 一時マークメニュー（1〜9 でジャンプ）
++q:: QuickSwitch.ToggleTempMark() ; アクティブウィンドウを一時マーク登録/解除
 #HotIf
