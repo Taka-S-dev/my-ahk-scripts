@@ -25,6 +25,10 @@ class QuickSwitch {
     static IniVersion     := 2
     static DefaultTarget  := ""
     static ActiveProfile  := ""
+    ; ターゲットのインメモリキャッシュ [{name,pat,url,key,listkey}, ...]（表示順）。
+    ; ジャンプ/メニューのホットパスでの INI 読み込みを無くすため保持し、
+    ; Init と保存時に _LoadTargets で再構築する
+    static _targets         := []
     static _registeredKeys  := []
     static _hotifFn         := ""
     static _pendingCapture  := ""
@@ -71,6 +75,18 @@ class QuickSwitch {
     static _tempMarks := []
     static TEMP_MAX   := 9
 
+    ; メニュー選択後の遅延ジャンプ（_DELAY_MENU_JUMP 待ち中）のタイマー。
+    ; 発火前にメニューを開き直した場合はキャンセルする
+    static _pendingJumpFn := ""
+
+    ; メニューセッションのトグル基準ウィンドウ。開き直し（二度押し・マーク解除後の
+    ; 再表示）では破棄直後の WinActive が不定なため、最初に開いた時の値を維持する
+    static _menuRefActive := 0
+
+    ; ToolTip 消去タイマーの単一参照。呼び出しごとに同じ関数で再アームすることで
+    ; 古いタイマーが新しい通知を消してしまう多重発火を防ぐ
+    static _tipTimerFn := ""
+
     static Init() {
         if !FileExist(this.IniPath) {
             IniWrite(this.IniVersion,                      this.IniPath, "Settings", "Version")
@@ -90,6 +106,7 @@ class QuickSwitch {
         ; メニュー用も同一参照で使い回し、開くたびのバリアント増殖を防ぐ
         this._menuHotifFn := (_) => this._menuHwnd && WinActive("ahk_id " . this._menuHwnd)
         this._settingsHotifFn := (_) => this._settingsHwnd && WinActive("ahk_id " . this._settingsHwnd)
+        this._LoadTargets()
         this._RegisterHotkeys()
 
         A_TrayMenu.Add()
@@ -110,11 +127,14 @@ class QuickSwitch {
 
     ; アクティブプロファイルでフィルタされたターゲットポップアップ
     static ShowMenu() {
+        ; トグル基準は「メニューを開く前にアクティブだったウィンドウ」。既にメニューが
+        ; 開いている場合（開き直し）は破棄直後の WinActive が不定なため元の基準を保つ
+        if ((a := WinActive("A")) && a != this._menuHwnd)
+            this._menuRefActive := a
         this._CloseMenu()
+        this._CancelPendingJump()
 
-        ; メニュー表示前のアクティブウィンドウを記録（ジャンプのトグル判定基準。
-        ; メニュー破棄直後の WinActive はフォーカス復帰と競合して不定になるため）
-        prevActive := WinActive("A")
+        prevActive := this._menuRefActive
         targets := this._GetActiveTargets()
 
         rows := []
@@ -145,13 +165,39 @@ class QuickSwitch {
         }
         HotIf()
 
-        ; フォーカスを失ったら閉じる（100ms ポーリング）
-        winHwnd := pg.Hwnd
-        this._menuTimerFn := () => (WinExist("ahk_id " . winHwnd) && !WinActive("ahk_id " . winHwnd)) ? this._CloseMenu() : 0
-        SetTimer(this._menuTimerFn, 100)
+        this._StartMenuWatch(pg.Hwnd)
 
         pg.OnEvent("Close", (*) => this._CloseMenu())
         lv.OnEvent("Click", (ctrl, row) => this._OnMenuActivate(row, targets, prevActive))
+    }
+
+    ; フォーカス喪失でメニューを閉じる監視（100ms ポーリング）。
+    ; 表示直後は前のメニュー破棄に伴う OS のフォーカス返却と競合して一瞬非アクティブ
+    ; になることがある。そこで「一度もアクティブになれていない表示直後」だけ再アクティブ
+    ; 化で立て直し、一度フォーカスを得た後の喪失は「ユーザーが他へ移った」とみなして閉じる。
+    ; これによりメニュー使用後に他ウィンドウを意図的にクリックしたケースでフォーカスを
+    ; 奪い返さずに済む
+    static _StartMenuWatch(winHwnd) {
+        born := A_TickCount
+        st   := {everActive: false}
+        this._menuTimerFn := () => this._MenuWatchTick(winHwnd, born, st)
+        SetTimer(this._menuTimerFn, 100)
+    }
+
+    static _MenuWatchTick(winHwnd, born, st) {
+        if !WinExist("ahk_id " . winHwnd)
+            return
+        if WinActive("ahk_id " . winHwnd) {
+            st.everActive := true
+            return
+        }
+        ; まだ一度もアクティブになれていない表示直後 → フォーカス返却との競合。
+        ; 立て直しを試みる（成功すれば次ティックで everActive=true になる）
+        if (!st.everActive && A_TickCount - born < 500) {
+            try WinActivate("ahk_id " . winHwnd)
+            return
+        }
+        this._CloseMenu()
     }
 
     ; メニューの後始末。Destroy() では Close イベントが発火しないため、
@@ -181,10 +227,26 @@ class QuickSwitch {
     }
 
     static _ExecMenuJump(name, refActive) {
+        this._ScheduleJump(() => this._Jump(name, refActive))
+    }
+
+    ; メニューを閉じ、フォーカス返却との競合を避けて遅延ジャンプを予約する。
+    ; メニュー系ジャンプの共通経路（保留キャンセル機構もここに一本化）
+    static _ScheduleJump(jumpFn) {
         this._CloseMenu()
         ; メニュー破棄直後は OS が直前ウィンドウへフォーカスを返す処理と競合して
         ; ブリンクするため、返却が済んでからジャンプする
-        SetTimer(() => this._Jump(name, refActive), this._DELAY_MENU_JUMP)
+        fn := () => (this._pendingJumpFn := "", jumpFn())
+        this._pendingJumpFn := fn
+        SetTimer(fn, this._DELAY_MENU_JUMP)
+    }
+
+    ; 保留中の遅延ジャンプを取り消す（メニュー開き直し時・新規ジャンプ時）
+    static _CancelPendingJump() {
+        if this._pendingJumpFn {
+            try SetTimer(this._pendingJumpFn, 0)
+            this._pendingJumpFn := ""
+        }
     }
 
     static _OnMenuEnter(lv, targets, refActive) {
@@ -241,15 +303,19 @@ class QuickSwitch {
     ; 一時マークメニュー（無変換+Q）
     ; 1〜9: ジャンプ / Shift+数字・Delete・右クリック: 解除 / Ctrl+Delete: 全解除
     ; =========================================================================
-    static ShowTempMenu() {
+    static ShowTempMenu(keepRef := false) {
+        ; keepRef: マーク解除後の再表示など、基準ウィンドウを維持したい場合 true
+        if (!keepRef && (a := WinActive("A")) && a != this._menuHwnd)
+            this._menuRefActive := a
         this._CloseMenu()
+        this._CancelPendingJump()
         this._PruneTempMarks()
         if (this._tempMarks.Length == 0) {
             this._TempTip("一時マークはありません（無変換+Shift+Q で登録）")
             return
         }
 
-        prevActive := WinActive("A")
+        prevActive := this._menuRefActive
         marks := this._tempMarks.Clone()
 
         rows := []
@@ -272,13 +338,21 @@ class QuickSwitch {
             Hotkey("+" . i,    this._MakeTempRemoveCallback(m.hwnd), "On")
             this._menuKeys.Push(String(i), "+" . i)
         }
+        ; 無変換を押し続けたまま未使用の数字を押しても Main.ahk の Vim 層
+        ; （*0 の {Home} 等）へ漏れないよう、残りの 0〜9 を無反応で吸収する
+        noop := (*) => 0
+        loop 10 {
+            d := A_Index - 1
+            if (d >= 1 && d <= marks.Length)
+                continue
+            Hotkey(String(d), noop, "On")
+            Hotkey("+" . d,   noop, "On")
+            this._menuKeys.Push(String(d), "+" . d)
+        }
         this._menuKeys.Push("Delete", "^Delete")
         HotIf()
 
-        ; フォーカスを失ったら閉じる（100ms ポーリング）
-        winHwnd := pg.Hwnd
-        this._menuTimerFn := () => (WinExist("ahk_id " . winHwnd) && !WinActive("ahk_id " . winHwnd)) ? this._CloseMenu() : 0
-        SetTimer(this._menuTimerFn, 100)
+        this._StartMenuWatch(pg.Hwnd)
 
         pg.OnEvent("Close", (*) => this._CloseMenu())
         lv.OnEvent("Click", (ctrl, row) => this._OnTempMenuActivate(row, marks, prevActive))
@@ -301,8 +375,7 @@ class QuickSwitch {
     }
 
     static _ExecTempJump(hwnd, refActive) {
-        this._CloseMenu()
-        SetTimer(() => this._JumpTempMark(hwnd, refActive), this._DELAY_MENU_JUMP)
+        this._ScheduleJump(() => this._JumpTempMark(hwnd, refActive))
     }
 
     static _MakeTempRemoveCallback(hwnd) {
@@ -318,8 +391,9 @@ class QuickSwitch {
             }
         }
         this._CloseMenu()
+        ; 基準ウィンドウを維持したまま番号を振り直して開き直す
         if (this._tempMarks.Length > 0)
-            SetTimer(() => this.ShowTempMenu(), -1)
+            SetTimer(() => this.ShowTempMenu(true), -1)
     }
 
     static _OnTempMenuEnter(lv, marks, refActive) {
@@ -362,26 +436,50 @@ class QuickSwitch {
 
         ; ターゲットごとにキーを登録
         ; 修飾キー付き（^!+#）はグローバル登録、プレーンキーは無変換必須
-        loop parse, IniRead(this.IniPath, "Targets"), "`n", "`r" {
-            if InStr(A_LoopField, "=") {
-                kv    := StrSplit(A_LoopField, "=", , 2)
-                name  := kv[1]
-                parts := StrSplit(kv[2], "|", , 4)
-                key   := parts.Length >= 3 ? Trim(parts[3]) : ""
-                if (key != "") {
-                    isGlobal := RegExMatch(key, "^[!^+#]") || RegExMatch(key, "i)^(Wheel|LButton|RButton|MButton|XButton)")
-                    if isGlobal
-                        HotIf()
-                    else
-                        HotIf(this._hotifFn)
-                    try {
-                        Hotkey(key, this._MakeJumpCallback(name), "On")
-                        this._registeredKeys.Push({key: key, global: isGlobal})
-                    }
+        for t in this._targets {
+            key := t.key
+            if (key != "") {
+                isGlobal := RegExMatch(key, "^[!^+#]") || RegExMatch(key, "i)^(Wheel|LButton|RButton|MButton|XButton)")
+                if isGlobal
+                    HotIf()
+                else
+                    HotIf(this._hotifFn)
+                try {
+                    Hotkey(key, this._MakeJumpCallback(t.name), "On")
+                    this._registeredKeys.Push({key: key, global: isGlobal})
                 }
             }
         }
         HotIf()
+    }
+
+    ; INI の [Targets] をインメモリキャッシュへ読み込む（Init / 保存後に呼ぶ）
+    static _LoadTargets() {
+        this._targets := []
+        try section := IniRead(this.IniPath, "Targets")
+        catch
+            return
+        loop parse, section, "`n", "`r" {
+            if InStr(A_LoopField, "=") {
+                kv    := StrSplit(A_LoopField, "=", , 2)
+                parts := StrSplit(kv[2], "|", , 4)
+                this._targets.Push({
+                    name:    kv[1],
+                    pat:     parts.Length >= 1 ? Trim(parts[1]) : "",
+                    url:     parts.Length >= 2 ? Trim(parts[2]) : "",
+                    key:     parts.Length >= 3 ? Trim(parts[3]) : "",
+                    listkey: parts.Length >= 4 ? Trim(parts[4]) : ""
+                })
+            }
+        }
+    }
+
+    ; 名前でターゲットを検索（INI キー同様に大小無視）。見つからなければ 0
+    static _FindTarget(name) {
+        for t in this._targets
+            if (t.name = name)
+                return t
+        return 0
     }
 
     ; クロージャ変数キャプチャ問題を回避するファクトリ
@@ -394,12 +492,8 @@ class QuickSwitch {
     ; =========================================================================
     static _GetActiveTargets() {
         allNames := []
-        try {
-            loop parse, IniRead(this.IniPath, "Targets"), "`n", "`r" {
-                if InStr(A_LoopField, "=")
-                    allNames.Push(StrSplit(A_LoopField, "=")[1])
-            }
-        }
+        for t in this._targets
+            allNames.Push(t.name)
 
         if (this.ActiveProfile == "")
             return allNames
@@ -422,10 +516,10 @@ class QuickSwitch {
         return filtered
     }
 
+    ; メニュー表示中に効く「リストキー」を返す（グローバルショートカットの key ではない）
     static _GetTargetKey(name) {
-        value := IniRead(this.IniPath, "Targets", name, "")
-        parts := StrSplit(value, "|", , 4)
-        return parts.Length >= 4 ? Trim(parts[4]) : ""
+        t := this._FindTarget(name)
+        return t ? t.listkey : ""
     }
 
     ; =========================================================================
@@ -446,15 +540,17 @@ class QuickSwitch {
         if isRepeat
             return
 
+        ; メニュー選択の遅延ジャンプが保留中でも、この直接ジャンプが最新の意図なので
+        ; 取り消す（保留ジャンプが後から発火してフォーカスを奪うのを防ぐ）
+        this._CancelPendingJump()
         ; 新しいジャンプ開始 → 古いジャンプ由来のタイマーを世代番号で無効化
         seq := ++this._jumpSeq
 
         this._busy := true
         try {
-            value     := IniRead(this.IniPath, "Targets", name, "")
-            parts     := StrSplit(value, "|", , 4)
-            windowPat := parts.Length >= 1 ? Trim(parts[1]) : ""
-            url       := parts.Length >= 2 ? Trim(parts[2]) : ""
+            t         := this._FindTarget(name)
+            windowPat := t ? t.pat : ""
+            url       := t ? t.url : ""
 
             if (refActive == 0)
                 refActive := WinActive("A")
@@ -498,9 +594,11 @@ class QuickSwitch {
                 if isMinimized
                     WinRestore("ahk_id " . hwnd)
                 WinActivate("ahk_id " . hwnd)
-                ; フォアグラウンドロックで無視されることがあるため1回だけ再試行
-                if !WinWaitActive("ahk_id " . hwnd, , 0.3)
-                    WinActivate("ahk_id " . hwnd)
+                ; フォアグラウンドロックで無視されることがあるため一度だけ再試行するが、
+                ; ホットキースレッドをブロックしない（_busy 保持中の待機は他キーを取りこぼす）。
+                ; 新しいジャンプやメニュー表示中は奪わない
+                SetTimer(() => (seq == this._jumpSeq && !this._menuHwnd && !WinActive("ahk_id " . hwnd))
+                    ? WinActivate("ahk_id " . hwnd) : 0, -120)
             }
         }
     }
@@ -512,6 +610,12 @@ class QuickSwitch {
         hwnd := WinActive("A")
         if !hwnd
             return
+        ; QuickSwitch 自身のウィンドウ（メニュー/設定/ヘルプ）は登録しない。
+        ; 閉じると即ダングリングHWNDになり枠を無駄に消費するため
+        if (hwnd == this._menuHwnd || hwnd == this._settingsHwnd || hwnd == this._helpHwnd) {
+            this._TempTip("QuickSwitch 自身のウィンドウは登録できません")
+            return
+        }
         ; 既に登録済みなら解除（トグル）
         for i, m in this._tempMarks {
             if (m.hwnd == hwnd) {
@@ -560,6 +664,7 @@ class QuickSwitch {
         if isRepeat
             return
 
+        this._CancelPendingJump()
         seq := ++this._jumpSeq
         this._busy := true
         try {
@@ -584,13 +689,20 @@ class QuickSwitch {
         return m.app . " — " . m.title
     }
 
-    static _TempTip(msg) {
+    ; 自動消去付きツールチップ。単一のタイマー参照で再アームするため、
+    ; 連続表示しても古いタイマーが新しい通知を消してしまうことがない
+    static _Tip(msg, dur := 2000) {
         ToolTip(msg)
-        SetTimer(() => ToolTip(), -1500)
+        if !this._tipTimerFn
+            this._tipTimerFn := (*) => ToolTip()
+        SetTimer(this._tipTimerFn, -Abs(dur))
     }
 
-    ; WinMinimizeが効かないアプリへのフォールバック（Electron等）
-    ; seq が現在の世代と違えば、新しいジャンプが始まっているので何もしない
+    static _TempTip(msg) => this._Tip(msg, 1500)
+
+    ; WinMinimizeが効かないアプリへのフォールバック（Electron等）。
+    ; seq が古ければ新しいジャンプに置き換わっているので中止。最小化処理自体は
+    ; 進めるが、フォーカスを触る操作（Win+↓ / 直前ウィンドウ復元）はメニュー表示中は避ける
     static _MinimizeFallback(hwnd, seq) {
         if (seq != this._jumpSeq || !WinExist("ahk_id " . hwnd))
             return
@@ -601,23 +713,31 @@ class QuickSwitch {
             SetTimer(() => this._ForceMinimize(hwnd, seq), this._DELAY_MINIMIZE_RECHECK)
             return
         }
-        ; 最小化完了後に直前ウィンドウへフォーカス復元
-        SetTimer(() => this._RestorePrevFocus(seq), this._DELAY_FOCUS_RESTORE)
+        ; 最小化完了後に直前ウィンドウへフォーカス復元（メニュー表示中は触らない）
+        if !this._menuHwnd
+            SetTimer(() => this._RestorePrevFocus(seq), this._DELAY_FOCUS_RESTORE)
     }
 
     static _ForceMinimize(hwnd, seq) {
         if (seq != this._jumpSeq || !WinExist("ahk_id " . hwnd))
             return
         if (WinGetMinMax("ahk_id " . hwnd) != -1) {
-            ; 再確認しても最小化されていない → Win+↓ で強制最小化
-            WinActivate("ahk_id " . hwnd)
-            SendInput("#{Down}")
+            if this._menuHwnd {
+                ; メニュー表示中はフォーカスを奪わない最小化のみ試みる
+                ; （効かないアプリでは残るが、メニューを閉じてしまうよりまし）
+                try WinMinimize("ahk_id " . hwnd)
+            } else {
+                ; 再確認しても最小化されていない → Win+↓ で強制最小化
+                WinActivate("ahk_id " . hwnd)
+                SendInput("#{Down}")
+            }
         }
-        SetTimer(() => this._RestorePrevFocus(seq), this._DELAY_FOCUS_RESTORE)
+        if !this._menuHwnd
+            SetTimer(() => this._RestorePrevFocus(seq), this._DELAY_FOCUS_RESTORE)
     }
 
     static _RestorePrevFocus(seq) {
-        if (seq != this._jumpSeq)
+        if (seq != this._jumpSeq || this._menuHwnd)
             return
         if (this._prevHwnd && WinExist("ahk_id " . this._prevHwnd))
             WinActivate("ahk_id " . this._prevHwnd)
@@ -654,6 +774,10 @@ class QuickSwitch {
         sg.MarginX := 15
         sg.MarginY := 12
 
+        ; リサイズ時に伸縮させる列の基準幅（構築とリサイズで同じ値を使う）
+        urlColW := 230   ; ターゲット: URL / パス列
+        incColW := 540   ; プロファイル: 含むターゲット列
+
         tab := sg.Add("Tab3", "xm ym w720 h330", ["ターゲット", "プロファイル"])
 
         ; --- タブ1: ターゲット一覧 ---
@@ -662,24 +786,13 @@ class QuickSwitch {
         lv.ModifyCol(1, 24)
         lv.ModifyCol(2, 110)
         lv.ModifyCol(3, 170)
-        lv.ModifyCol(4, 230)
+        lv.ModifyCol(4, urlColW)
         lv.ModifyCol(5, 85)
         lv.ModifyCol(6, 70)
 
-        curDefault := IniRead(this.IniPath, "Settings", "Default", "")
-        try {
-            loop parse, IniRead(this.IniPath, "Targets"), "`n", "`r" {
-                if InStr(A_LoopField, "=") {
-                    kv    := StrSplit(A_LoopField, "=", , 2)
-                    parts := StrSplit(kv[2], "|", , 4)
-                    lv.Add("", (kv[1] = curDefault ? "★" : ""), kv[1],
-                        parts.Length >= 1 ? parts[1] : "",
-                        parts.Length >= 2 ? parts[2] : "",
-                        parts.Length >= 3 ? parts[3] : "",
-                        parts.Length >= 4 ? parts[4] : "")
-                }
-            }
-        }
+        curDefault := this.DefaultTarget
+        for t in this._targets
+            lv.Add("", (t.name = curDefault ? "★" : ""), t.name, t.pat, t.url, t.key, t.listkey)
 
         btnAdd      := sg.Add("Button", "xm+10 y+8 w70", "追加")
         btnEdit     := sg.Add("Button", "x+5 w70", "編集")
@@ -692,7 +805,7 @@ class QuickSwitch {
         tab.UseTab(2)
         lvP := sg.Add("ListView", "xm+10 ym+34 w700 h240 -Multi", ["プロファイル名", "含むターゲット"])
         lvP.ModifyCol(1, 150)
-        lvP.ModifyCol(2, 540)
+        lvP.ModifyCol(2, incColW)
 
         try {
             loop parse, IniRead(this.IniPath, "Profiles"), "`n", "`r" {
@@ -713,7 +826,7 @@ class QuickSwitch {
         profileDDL := sg.Add("DropDownList", "xs y+4 w220")
         t2 := sg.Add("Text", "ys x+40", "デフォルト（直接ジャンプ）:")
         defaultDDL := sg.Add("DropDownList", "xp y+4 w220")
-        this._RefreshProfileDDL(lvP, profileDDL, IniRead(this.IniPath, "Settings", "ActiveProfile", ""))
+        this._RefreshProfileDDL(lvP, profileDDL, this.ActiveProfile)
         this._RefreshDefaultDDL(lv, defaultDDL, curDefault)
 
         btnOk     := sg.Add("Button", "xm y+16 w80 Default", "OK")
@@ -747,9 +860,10 @@ class QuickSwitch {
                                 baseline: this._SettingsSnapshot(lv, lvP, profileDDL, defaultDDL)}
 
         ; 設定画面がアクティブな間だけ Ctrl+↑/↓ で行を移動できる
+        ; （ターゲットタブ表示中のみ。非表示のタブを暗黙に並べ替えないようガード）
         HotIf(this._settingsHotifFn)
-        Hotkey("^Up",   (*) => this._MoveItem(lv, -1), "On")
-        Hotkey("^Down", (*) => this._MoveItem(lv, 1), "On")
+        Hotkey("^Up",   (*) => (tab.Value = 1 ? this._MoveItem(lv, -1) : 0), "On")
+        Hotkey("^Down", (*) => (tab.Value = 1 ? this._MoveItem(lv, 1) : 0), "On")
         HotIf()
 
         sg.Show("AutoSize")
@@ -757,7 +871,7 @@ class QuickSwitch {
 
         ; --- リサイズ対応（初期クライアントサイズ基準の手動アンカー） ---
         WinGetClientPos(,, &cw, &ch, "ahk_id " . sg.Hwnd)
-        si := {baseW: cw, baseH: ch, lv: lv, lvP: lvP, urlColW: 230, incColW: 540, stretch: [], shift: []}
+        si := {baseW: cw, baseH: ch, lv: lv, lvP: lvP, urlColW: urlColW, incColW: incColW, stretch: [], shift: []}
         for c in [tab, lv, lvP] {
             c.GetPos(&x, &y, &w, &h)
             si.stretch.Push({c: c, x: x, y: y, w: w, h: h})
@@ -840,10 +954,11 @@ class QuickSwitch {
     ; =========================================================================
     ; 設定 GUI ヘルパー
     ; =========================================================================
-    static _RefreshDefaultDDL(lv, ddl, selectName) {
-        names := ["（なし — 毎回メニューを表示）"]
-        loop lv.GetCount()
-            names.Push(lv.GetText(A_Index, 2))
+    ; ListView の指定列を先頭プレースホルダー付きで DDL に反映し、selectName を再選択
+    static _RefreshDDL(listCtrl, ddl, placeholder, col, selectName) {
+        names := [placeholder]
+        loop listCtrl.GetCount()
+            names.Push(listCtrl.GetText(A_Index, col))
         ddl.Delete()
         ddl.Add(names)
         ddl.Choose(1)
@@ -855,20 +970,9 @@ class QuickSwitch {
         }
     }
 
-    static _RefreshProfileDDL(lvP, ddl, selectName) {
-        names := ["（全て表示）"]
-        loop lvP.GetCount()
-            names.Push(lvP.GetText(A_Index, 1))
-        ddl.Delete()
-        ddl.Add(names)
-        ddl.Choose(1)
-        for i, n in names {
-            if (i > 1 && n = selectName) {
-                ddl.Choose(i)
-                break
-            }
-        }
-    }
+    static _RefreshDefaultDDL(lv, ddl, selectName) => this._RefreshDDL(lv, ddl, "（なし — 毎回メニューを表示）", 2, selectName)
+
+    static _RefreshProfileDDL(lvP, ddl, selectName) => this._RefreshDDL(lvP, ddl, "（全て表示）", 1, selectName)
 
     static _UpdateDefaultMarks(lv, defaultDDL) {
         chosen := defaultDDL.Text
@@ -1067,11 +1171,11 @@ class QuickSwitch {
         this.ActiveProfile := newProfile
         this.DefaultTarget := newDefault
 
+        this._LoadTargets()
         this._RegisterHotkeys()
 
         this._CloseSettings()
-        ToolTip("保存しました")
-        SetTimer(() => ToolTip(), -2000)
+        this._Tip("保存しました")
     }
 
     static _OnEditClick(lv, ownerHwnd, defaultDDL) {
@@ -1088,10 +1192,7 @@ class QuickSwitch {
             this._ValidationError("編集するプロファイルを選択してください。")
     }
 
-    static _ValidationError(msg) {
-        ToolTip(msg)
-        SetTimer(() => ToolTip(), -3000)
-    }
+    static _ValidationError(msg) => this._Tip(msg, 3000)
 
     ; 入力値の正規化: 改行を除去して前後の空白を落とす
     ; （改行は Trim では取れず、INI が行ベースのため保存すると設定が壊れる）
@@ -1482,8 +1583,7 @@ class QuickSwitch {
     static _ResetAllKeys(lv) {
         loop lv.GetCount()
             lv.Modify(A_Index, "Col5", "", "")
-        ToolTip("キーをすべてリセットしました")
-        SetTimer(() => ToolTip(), -2000)
+        this._Tip("キーをすべてリセットしました")
     }
 
     ; プロファイル編集ダイアログ：現在のターゲット一覧からチェックボックスで選択
