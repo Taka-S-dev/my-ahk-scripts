@@ -24,6 +24,13 @@
 ;     })
 ;     panel.Toggle()   ; / .Show() / .Hide() / .IsVisible() / .SetOpacity(220) / .ShowSettings()
 ;
+;   常駐ではなくカーソル位置に一時表示したい場合は popup:true を渡し、
+;   panel.ToggleAtCursor()（または .ShowAtCursor()）で呼ぶ。
+;   ボタン実行後・マウスが離れた時・activeWhen()==false で自動的に閉じる。
+;     panel := FloatingPanel({ ..., popup:true,
+;              activeWhen:() => WinActive("ahk_class XLMAIN") })
+;     panel.ToggleAtCursor()
+;
 ; パネルを右クリックするとコンテキストメニュー（設定… / 非表示 / 追加項目）が開く。
 ; 設定ダイアログ（透過度/文字サイズ/幅）の変更は即 INI に保存され次回も復元される。
 ; cfg.menuItems: [{text:"...", action:() => ...}] でメニュー項目を追加できる。
@@ -46,8 +53,9 @@ class FloatingPanel {
                             , border:   true }
 
     /**
-     * cfg: { name, title, buttons[, iniPath, width, theme] }
-     *   buttons: [{label, action[, color, bg, h]}]
+     * cfg: { name, title, buttons[, iniPath, width, fontSize, btnHeight, opacity,
+     *        columns, gap, popup, activeWhen, dismissMargin, onVisible, menuItems, theme] }
+     *   buttons 要素: {label, action[, tip, color, bg, font, h]} または {group:"見出し"}
      */
     __New(cfg) {
         this.title     := cfg.HasOwnProp("title")     ? cfg.title     : "Panel"
@@ -60,14 +68,23 @@ class FloatingPanel {
         this.buttons   := cfg.buttons
         this.menuItems := cfg.HasOwnProp("menuItems") ? cfg.menuItems : []  ; 右クリックメニューの追加項目 [{text, action}]
         this.onVisible := cfg.HasOwnProp("onVisible") ? cfg.onVisible : ""  ; 表示状態変化のコールバック (visible:bool)
+        ; ポップアップ運用: ShowAtCursor でカーソル位置に一時表示し、ボタン実行後・
+        ; マウスが離れた時・activeWhen が false になった時に自動で閉じる
+        this.popup         := cfg.HasOwnProp("popup")         ? cfg.popup         : false
+        this.activeWhen    := cfg.HasOwnProp("activeWhen")    ? cfg.activeWhen    : ""   ; () => bool。false で自動クローズ
+        this.dismissMargin := cfg.HasOwnProp("dismissMargin") ? cfg.dismissMargin : 70   ; パネル矩形からこの px 以上マウスが離れたら閉じる
+        this.columns       := cfg.HasOwnProp("columns")       ? cfg.columns       : 1    ; ボタンを横に並べる列数（>1 でグリッド）
+        this.gap           := cfg.HasOwnProp("gap")           ? cfg.gap           : 4    ; 列間の隙間(px)
         this.theme     := this._MergeTheme(cfg.HasOwnProp("theme") ? cfg.theme : {})
         this.gui         := ""
         this.hdrHwnd     := 0
         this.btns        := Map()
         this.hoverHwnd   := 0
         this.settingsGui := ""
-        this._loaded     := false                              ; INI 設定の初回読込済みフラグ
-        this._rebuildTimer := ObjBindMethod(this, "_Rebuild")  ; サイズ変更のデバウンス用
+        this._loaded     := false                                ; INI 設定の初回読込済みフラグ
+        this._rebuildTimer  := ObjBindMethod(this, "_Rebuild")   ; サイズ変更のデバウンス用
+        this._dismissTimer  := ObjBindMethod(this, "_DismissTick") ; ポップアップの自動クローズ監視
+        this._shownTick     := 0                                 ; ShowAtCursor した時刻（表示直後の猶予判定用）
     }
 
     _MergeTheme(o) {
@@ -94,17 +111,107 @@ class FloatingPanel {
         }
         x := this._LoadPos("X", A_ScreenWidth - 200)
         y := this._LoadPos("Y", A_ScreenHeight // 3)
+        ; 復元位置が全モニターの作業領域外なら既定位置にリセット（モニター構成変更で見えなくなるのを防ぐ）
+        if !this._IsPosOnScreen(x, y) {
+            x := A_ScreenWidth - 200
+            y := A_ScreenHeight // 3
+        }
         this.gui.Show("NoActivate x" . x . " y" . y)
         this._ApplyOpacity()
         this._FireVisible(true)
     }
 
+    /**
+     * 指定座標が現在接続中のいずれかのモニター作業領域内にあるか判定
+     */
+    _IsPosOnScreen(x, y) {
+        Loop MonitorGetCount() {
+            try {
+                MonitorGetWorkArea(A_Index, &mL, &mT, &mR, &mB)
+                if (x >= mL && x < mR && y >= mT && y < mB)
+                    return true
+            }
+        }
+        return false
+    }
+
     Hide() {
         if (this.gui != "") {
-            this._SavePos()
+            SetTimer(this._dismissTimer, 0)   ; ポップアップ監視を止める（未起動でも安全）
+            ToolTip()                         ; ホバー説明が残らないよう消す
+            this.hoverHwnd := 0
+            if (!this.popup)
+                this._SavePos()               ; ポップアップは常にカーソル位置なので保存しない
             this.gui.Hide()
             this._FireVisible(false)
         }
+    }
+
+    ; --- ポップアップ表示（カーソル位置に一時表示して選ばせる） ---
+
+    ToggleAtCursor() => this.IsVisible() ? this.Hide() : this.ShowAtCursor()
+
+    /**
+     * マウスカーソルの位置にパネルを一時表示する（NOACTIVATE）。
+     * ボタン実行後・マウスが離れた時・activeWhen が false になった時に自動で閉じる。
+     */
+    ShowAtCursor() {
+        if (this.gui == "") {
+            this._LoadSettings()
+            this._Build()
+        }
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+        ; まず暫定位置（カーソルがヘッダー付近に来るよう少し左上）で表示してサイズを確定
+        this.gui.Show("NoActivate x" . (mx - 24) . " y" . (my - 12))
+        this.gui.GetPos(&gx, &gy, &pw, &ph)
+        ; 作業領域からはみ出す分だけクランプ（カーソルのあるモニター内）
+        this._MonitorWorkAreaAt(mx, my, &L, &T, &R, &B)
+        nx := Min(Max(gx, L), R - pw)
+        ny := Min(Max(gy, T), B - ph)
+        if (nx != gx || ny != gy)
+            this.gui.Move(nx, ny)
+        this._ApplyOpacity()
+        this._shownTick := A_TickCount
+        SetTimer(this._dismissTimer, 120)
+        this._FireVisible(true)
+    }
+
+    ; ポップアップの自動クローズ監視
+    _DismissTick() {
+        if (this.gui == "" || !this.IsVisible()) {
+            SetTimer(this._dismissTimer, 0)
+            return
+        }
+        ; 対象アプリ（例: Excel）から離れたら閉じる
+        if (this.activeWhen && !this.activeWhen.Call()) {
+            this.Hide()
+            return
+        }
+        ; 表示直後は閉じない（呼び出し位置とボタンの間を移動する猶予）
+        if (A_TickCount - this._shownTick < 500)
+            return
+        ; マウスがパネル矩形＋マージンの外に出たら閉じる
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+        this.gui.GetPos(&gx, &gy, &gw, &gh)
+        m := this.dismissMargin
+        if (mx < gx - m || mx > gx + gw + m || my < gy - m || my > gy + gh + m)
+            this.Hide()
+    }
+
+    ; 指定座標を含むモニターの作業領域を返す（無ければプライマリ）
+    _MonitorWorkAreaAt(x, y, &L, &T, &R, &B) {
+        Loop MonitorGetCount() {
+            try {
+                MonitorGetWorkArea(A_Index, &mL, &mT, &mR, &mB)
+                if (x >= mL && x < mR && y >= mT && y < mB) {
+                    L := mL, T := mT, R := mR, B := mB
+                    return
+                }
+            }
+        }
+        MonitorGetWorkArea(MonitorGetPrimary(), &L, &T, &R, &B)
     }
 
     _FireVisible(visible) {
@@ -239,16 +346,42 @@ class FloatingPanel {
         g.SetFont("s" . (this.fontSize - 2), "Segoe UI")
         hdr := g.AddText(Format("w{1} h{2} +0x100 +0x200 Center c{3} Background{4}", this.width, headerH, t.header, t.bg), "≡  " . this.title)
         ; ボタン（Win32 標準を避け Text コントロールで自作 → 暗色フラット & 色自由）
+        ; buttons の要素が {group:"見出し"} なら区切り（列カウントをリセット）。
+        ; columns>1 で各グループ内を左→右に埋めてグリッド配置する。
         g.SetFont("s" . this.fontSize, "Segoe UI")
         this.btns := Map()
+        cols := this.columns < 1 ? 1 : this.columns
+        gap  := this.gap
+        colW := (cols > 1) ? ((this.width - (cols - 1) * gap) // cols) : this.width
+        hdrFs := (this.fontSize - 4 < 8) ? 8 : this.fontSize - 4
+        col := 0
         for b in this.buttons {
+            if b.HasOwnProp("group") {
+                col := 0
+                if (b.group != "") {
+                    g.SetFont("s" . hdrFs, "Segoe UI")
+                    g.AddText(Format("xm w{1} +0x200 c{2} Background{3}", this.width, t.header, t.bg), b.group)
+                    g.SetFont("s" . this.fontSize, "Segoe UI")
+                } else {
+                    g.AddText(Format("xm w{1} h2 Background{2}", this.width, t.header))  ; 見出しなし=区切り線
+                }
+                continue
+            }
             h   := b.HasOwnProp("h")     ? b.h     : this.btnHeight
             bg  := b.HasOwnProp("bg")    ? b.bg    : t.btn
             txt := b.HasOwnProp("color") ? b.color : t.txt
-            ctrl := g.AddText(Format("xm w{1} h{2} +0x100 +0x200 Center Background{3} c{4}", this.width, h, bg, txt), b.label)
+            pos := (col = 0) ? Format("xm w{1} h{2}", colW, h)
+                             : Format("x+{1} yp w{2} h{3}", gap, colW, h)
+            if b.HasOwnProp("font")   ; アイコンフォント等をボタン単位で指定（例: Segoe MDL2 Assets）
+                g.SetFont("s" . this.fontSize, b.font)
+            ctrl := g.AddText(pos . " +0x100 +0x200 Center Background" . bg . " c" . txt, b.label)
+            if b.HasOwnProp("font")
+                g.SetFont("s" . this.fontSize, "Segoe UI")
             ctrl.OnEvent("Click", this._MakeClick(b.action))
-            this.btns[ctrl.Hwnd] := { ctrl: ctrl, bg: bg, txt: txt, hbg: t.btnHover, htxt: t.txtHover }
+            tip := b.HasOwnProp("tip") ? b.tip : ""   ; アイコンのみのボタン向けホバー説明
+            this.btns[ctrl.Hwnd] := { ctrl: ctrl, bg: bg, txt: txt, hbg: t.btnHover, htxt: t.txtHover, tip: tip }
             FloatingPanel._owner[ctrl.Hwnd] := this
+            col := Mod(col + 1, cols)
         }
         this.gui     := g
         this.hdrHwnd := hdr.Hwnd
@@ -258,7 +391,14 @@ class FloatingPanel {
     }
 
     ; ボタン押下コールバックを別スコープで生成（ループ内クロージャの取り違え防止）
-    _MakeClick(action) => (*) => action()
+    _MakeClick(action) => (*) => this._Invoke(action)
+
+    ; ボタン/メニュー実行。ポップアップ運用では実行後にパネルを閉じる
+    _Invoke(action) {
+        action()
+        if (this.popup)
+            this.Hide()
+    }
 
     ; --- 位置の保存／復元 ---
 
@@ -296,6 +436,7 @@ class FloatingPanel {
     _HandleMouseMove(hwnd) {
         if (!this.btns.Has(hwnd)) {
             this._ResetHover()
+            ToolTip()
             return
         }
         if (this.hoverHwnd = hwnd)
@@ -305,6 +446,7 @@ class FloatingPanel {
         this._SetBtnColors(info, info.hbg, info.htxt)
         this.hoverHwnd := hwnd
         this._TrackLeave(hwnd)
+        (info.tip != "") ? ToolTip(info.tip) : ToolTip()   ; アイコンの説明を表示
     }
 
     _HandleMouseLeave(hwnd) {
@@ -314,6 +456,7 @@ class FloatingPanel {
             if (this.hoverHwnd = hwnd)
                 this.hoverHwnd := 0
         }
+        ToolTip()   ; パネルから離れたら説明を消す
     }
 
     ; WM_MOUSELEAVE を発生させるため TrackMouseEvent を登録
