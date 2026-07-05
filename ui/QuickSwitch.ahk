@@ -30,13 +30,31 @@ class QuickSwitch {
     static _busy            := false
     static _lvTipState      := Map()
 
+    ; メニュー状態（同時に開けるメニューは1つのみ）
+    static _menuGui         := 0
+    static _menuHwnd        := 0
+    static _menuTimerFn     := ""
+    static _menuKeys        := []
+    static _menuHotifFn     := ""
+
     ; Win32 ListView メッセージ
     static _LVM_GETITEMRECT    := 0x100E
     static _LVM_SUBITEMHITTEST := 0x1039
 
     ; 最小化後のフォーカス復元タイミング（ms）
-    static _DELAY_MINIMIZE_CHECK  := -80   ; WinMinimize完了待ち
-    static _DELAY_FOCUS_RESTORE   := -150  ; 最小化アニメーション完了待ち
+    static _DELAY_MINIMIZE_CHECK   := -80   ; WinMinimize完了待ち
+    static _DELAY_MINIMIZE_RECHECK := -120  ; 最小化が遅いアプリの再確認待ち
+    static _DELAY_FOCUS_RESTORE    := -150  ; 最小化アニメーション完了待ち
+    static _DELAY_MENU_JUMP        := -80   ; メニュー破棄後の OS フォーカス返却待ち
+
+    ; キーリピート/連打によるトグル往復（ブリンク）防止（ms）
+    static _DEBOUNCE_JUMP := 300
+    static _lastJumpName  := ""
+    static _lastJumpTick  := 0
+
+    ; ジャンプの世代番号。古いジャンプが仕掛けたタイマーが後から発火して
+    ; 新しいジャンプ先からフォーカスを奪う（ブリンクする）のを防ぐ
+    static _jumpSeq := 0
 
     static Init() {
         if !FileExist(this.IniPath) {
@@ -54,6 +72,8 @@ class QuickSwitch {
         this.ActiveProfile := IniRead(this.IniPath, "Settings", "ActiveProfile", "")
         ; HotIf関数は同一参照で登録/解除する必要があるため一度だけ生成
         this._hotifFn := (_) => GetKeyState("vk1D", "P")
+        ; メニュー用も同一参照で使い回し、開くたびのバリアント増殖を防ぐ
+        this._menuHotifFn := (_) => this._menuHwnd && WinActive("ahk_id " . this._menuHwnd)
         this._RegisterHotkeys()
 
         A_TrayMenu.Add()
@@ -74,6 +94,11 @@ class QuickSwitch {
 
     ; アクティブプロファイルでフィルタされたターゲットポップアップ
     static ShowMenu() {
+        this._CloseMenu()
+
+        ; メニュー表示前のアクティブウィンドウを記録（ジャンプのトグル判定基準。
+        ; メニュー破棄直後の WinActive はフォーカス復帰と競合して不定になるため）
+        prevActive := WinActive("A")
         targets := this._GetActiveTargets()
 
         pg := Gui("+AlwaysOnTop -Caption +Border +ToolWindow", "QuickSwitch")
@@ -118,59 +143,74 @@ class QuickSwitch {
         WinMove(mx, my, 220 + (wW - cW), lvH + (wH - cH), "ahk_id " . pg.Hwnd)
 
         ; このウィンドウがアクティブな間だけ有効なホットキーを登録
-        winHwnd     := pg.Hwnd
-        menuHotifFn := (_) => WinActive("ahk_id " . winHwnd)
-        tempKeys    := []
+        this._menuGui  := pg
+        this._menuHwnd := pg.Hwnd
 
-        HotIf(menuHotifFn)
-        Hotkey("Escape", (*) => pg.Destroy())
-        Hotkey("Enter",  (*) => this._OnMenuEnter(pg, lv, targets))
+        HotIf(this._menuHotifFn)
+        Hotkey("Escape", (*) => this._CloseMenu(), "On")
+        Hotkey("Enter",  (*) => this._OnMenuEnter(lv, targets, prevActive), "On")
         for name in targets {
             key := this._GetTargetKey(name)
             if (key != "") {
                 try {
-                    Hotkey(key, this._MakeMenuJumpCallback(pg, name))
-                    tempKeys.Push(key)
+                    Hotkey(key, this._MakeMenuJumpCallback(name, prevActive), "On")
+                    this._menuKeys.Push(key)
                 }
             }
         }
         HotIf()
 
         ; フォーカスを失ったら閉じる（100ms ポーリング）
-        checkFn := () => (WinExist("ahk_id " . winHwnd) && !WinActive("ahk_id " . winHwnd)) ? pg.Destroy() : 0
-        SetTimer(checkFn, 100)
+        winHwnd := pg.Hwnd
+        this._menuTimerFn := () => (WinExist("ahk_id " . winHwnd) && !WinActive("ahk_id " . winHwnd)) ? this._CloseMenu() : 0
+        SetTimer(this._menuTimerFn, 100)
 
-        pg.OnEvent("Close", (*) => (this._CleanupMenuHotkeys(menuHotifFn, tempKeys), SetTimer(checkFn, 0)))
-        lv.OnEvent("Click", (ctrl, row) => this._OnMenuActivate(pg, row, targets))
+        pg.OnEvent("Close", (*) => this._CloseMenu())
+        lv.OnEvent("Click", (ctrl, row) => this._OnMenuActivate(row, targets, prevActive))
     }
 
-    static _MakeMenuJumpCallback(pg, name) {
-        return (*) => this._ExecMenuJump(pg, name)
-    }
-
-    static _ExecMenuJump(pg, name) {
-        pg.Destroy()
-        SetTimer(() => this._Jump(name), -1)
-    }
-
-    static _CleanupMenuHotkeys(menuHotifFn, tempKeys) {
-        HotIf(menuHotifFn)
+    ; メニューの後始末。Destroy() では Close イベントが発火しないため、
+    ; 全ての閉じ経路（Escape / Enter / ジャンプ / フォーカス喪失）からこれを呼ぶ
+    static _CloseMenu() {
+        if !this._menuGui
+            return
+        if this._menuTimerFn {
+            SetTimer(this._menuTimerFn, 0)
+            this._menuTimerFn := ""
+        }
+        HotIf(this._menuHotifFn)
         try Hotkey("Escape", "Off")
         try Hotkey("Enter",  "Off")
-        for key in tempKeys
+        for key in this._menuKeys
             try Hotkey(key, "Off")
         HotIf()
+        pg := this._menuGui
+        this._menuGui  := 0
+        this._menuHwnd := 0
+        this._menuKeys := []
+        try pg.Destroy()
     }
 
-    static _OnMenuEnter(pg, lv, targets) {
+    static _MakeMenuJumpCallback(name, refActive) {
+        return (*) => this._ExecMenuJump(name, refActive)
+    }
+
+    static _ExecMenuJump(name, refActive) {
+        this._CloseMenu()
+        ; メニュー破棄直後は OS が直前ウィンドウへフォーカスを返す処理と競合して
+        ; ブリンクするため、返却が済んでからジャンプする
+        SetTimer(() => this._Jump(name, refActive), this._DELAY_MENU_JUMP)
+    }
+
+    static _OnMenuEnter(lv, targets, refActive) {
         row := lv.GetNext()
         if (row >= 1 && row <= targets.Length)
-            this._OnMenuActivate(pg, row, targets)
+            this._ExecMenuJump(targets[row], refActive)
     }
 
-    static _OnMenuActivate(pg, row, targets) {
+    static _OnMenuActivate(row, targets, refActive) {
         if (row >= 1 && row <= targets.Length)
-            this._ExecMenuJump(pg, targets[row])
+            this._ExecMenuJump(targets[row], refActive)
     }
 
     ; =========================================================================
@@ -259,9 +299,24 @@ class QuickSwitch {
     ; =========================================================================
     ; ジャンプ
     ; =========================================================================
-    static _Jump(name) {
+    ; refActive: 判定基準となる「操作前にアクティブだったウィンドウ」。
+    ; メニュー経由ではメニュー表示前の HWND を渡す（省略時はその場で取得）
+    static _Jump(name, refActive := 0) {
         if this._busy
             return
+
+        ; 同一ターゲットへの連続発火（キーのオートリピート・ホイール連続入力）を無視。
+        ; 毎回タイムスタンプを更新するため、押しっぱなしの間は再発火しない
+        now      := A_TickCount
+        isRepeat := (name == this._lastJumpName && now - this._lastJumpTick < this._DEBOUNCE_JUMP)
+        this._lastJumpName := name
+        this._lastJumpTick := now
+        if isRepeat
+            return
+
+        ; 新しいジャンプ開始 → 古いジャンプ由来のタイマーを世代番号で無効化
+        seq := ++this._jumpSeq
+
         this._busy := true
         try {
             value     := IniRead(this.IniPath, "Targets", name, "")
@@ -269,29 +324,33 @@ class QuickSwitch {
             windowPat := parts.Length >= 1 ? Trim(parts[1]) : ""
             url       := parts.Length >= 2 ? Trim(parts[2]) : ""
 
+            if (refActive == 0)
+                refActive := WinActive("A")
+
             if (windowPat != "") {
-                isActive := WinActive(windowPat)
                 hwnd := this._FindNonBrowserWindow(windowPat)
                 if !hwnd
                     hwnd := WinExist(windowPat)
                 if hwnd {
                     isMinimized := WinGetMinMax("ahk_id " . hwnd) == -1
-                    if isActive && !isMinimized {
-                        ; アクティブかつ最小化されていない → 最小化して直前ウィンドウへ復元
+                    if (hwnd == refActive && !isMinimized) {
+                        ; 操作対象自身がアクティブ → 最小化して直前ウィンドウへ復元
                         ; prevHwnd が自分自身なら復元先がないのでクリア
                         if (this._prevHwnd == hwnd)
                             this._prevHwnd := 0
                         WinMinimize("ahk_id " . hwnd)
-                        SetTimer(() => this._MinimizeFallback(hwnd, windowPat), this._DELAY_MINIMIZE_CHECK)
+                        SetTimer(() => this._MinimizeFallback(hwnd, seq), this._DELAY_MINIMIZE_CHECK)
                     } else {
                         ; 非アクティブ or 最小化済み → 直前ウィンドウを記録してアクティブ化
-                        activeId := WinActive("A")
-                        if (activeId && activeId != hwnd)
-                            this._prevHwnd := activeId
+                        if (refActive && refActive != hwnd)
+                            this._prevHwnd := refActive
                         try {
                             if isMinimized
                                 WinRestore("ahk_id " . hwnd)
                             WinActivate("ahk_id " . hwnd)
+                            ; フォアグラウンドロックで無視されることがあるため1回だけ再試行
+                            if !WinWaitActive("ahk_id " . hwnd, , 0.3)
+                                WinActivate("ahk_id " . hwnd)
                         }
                     }
                     return
@@ -310,20 +369,35 @@ class QuickSwitch {
     }
 
     ; WinMinimizeが効かないアプリへのフォールバック（Electron等）
-    static _MinimizeFallback(hwnd, pat) {
-        if !WinExist("ahk_id " . hwnd)
+    ; seq が現在の世代と違えば、新しいジャンプが始まっているので何もしない
+    static _MinimizeFallback(hwnd, seq) {
+        if (seq != this._jumpSeq || !WinExist("ahk_id " . hwnd))
             return
-        minMax := WinGetMinMax("ahk_id " . hwnd)
-        if (minMax != -1) {
-            ; まだ最小化されていない → Win+↓ で強制最小化
+        if (WinGetMinMax("ahk_id " . hwnd) != -1) {
+            ; 単に最小化処理が遅いだけの可能性があるため、即座に強制せず
+            ; もう一度だけ待って再確認（最小化完了直後の WinActivate は
+            ; ウィンドウを復元してしまい、点滅の原因になる）
+            SetTimer(() => this._ForceMinimize(hwnd, seq), this._DELAY_MINIMIZE_RECHECK)
+            return
+        }
+        ; 最小化完了後に直前ウィンドウへフォーカス復元
+        SetTimer(() => this._RestorePrevFocus(seq), this._DELAY_FOCUS_RESTORE)
+    }
+
+    static _ForceMinimize(hwnd, seq) {
+        if (seq != this._jumpSeq || !WinExist("ahk_id " . hwnd))
+            return
+        if (WinGetMinMax("ahk_id " . hwnd) != -1) {
+            ; 再確認しても最小化されていない → Win+↓ で強制最小化
             WinActivate("ahk_id " . hwnd)
             SendInput("#{Down}")
         }
-        ; 最小化完了後に直前ウィンドウへフォーカス復元
-        SetTimer(() => this._RestorePrevFocus(), this._DELAY_FOCUS_RESTORE)
+        SetTimer(() => this._RestorePrevFocus(seq), this._DELAY_FOCUS_RESTORE)
     }
 
-    static _RestorePrevFocus() {
+    static _RestorePrevFocus(seq) {
+        if (seq != this._jumpSeq)
+            return
         if (this._prevHwnd && WinExist("ahk_id " . this._prevHwnd))
             WinActivate("ahk_id " . this._prevHwnd)
         else
