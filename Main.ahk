@@ -221,3 +221,10 @@ a:: QuickSwitch.Show()         ; デフォルトに直接ジャンプ（未設�
 q:: QuickSwitch.ShowTempMenu()    ; 一時マークメニュー（1〜9 でジャンプ）
 +q:: QuickSwitch.ToggleTempMark() ; アクティブウィンドウを一時マーク登録/解除
 #HotIf
+
+; ------------------------------------------------------------
+;  AltLaunch - 無変換キーが使えない時の一時的な代替ホットキー
+;  トレイメニュー「代替ホットキー（右Alt）」でON/OFF
+; ------------------------------------------------------------
+#Include "ui\AltLaunch.ahk"
+AltLaunch.Init()

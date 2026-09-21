@@ -248,6 +248,9 @@ GitHub=|https://github.com|^!g|g
   ; ModifierKeyHandler.Init("vk1D", "sc07B")
   ```
 
+- **無変換キーがないキーボードでの代わりのキー** (AltLaunch.ahk)
+  トレイメニューの「代替ホットキー（右Alt）」を ON にすると、右 Alt + `e` / `a` / `f` / `s` で Explorer Switcher・QuickSwitch・Navi・スニペット選択を開ける。既定は OFF で、ON はスクリプトを再起動すると戻る（一時的な代わりのため保存しない）
+
 ### Vim 風カーソルナビゲーション(VimNavigation.ahk)
 
 - 無変換キーを押しながら `h/j/k/l` でカーソル移動
