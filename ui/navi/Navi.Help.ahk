@@ -71,8 +71,11 @@ class NaviHelp {
 
     static IsOpen() => (this._gui != "")
 
-    /** 一覧を開く（開いていれば閉じる） */
-    static Show(owner) {
+    /**
+     * 一覧を開く（開いていれば閉じる）
+     * table: SECTIONS と同じ形の表（省略すると Navi の一覧）。ほかの画面（Explorer Switcher など）も同じ見た目で使える
+     */
+    static Show(owner, table := "", title := "ショートカット一覧") {
         if (this._gui) {
             this.Close()
             return
@@ -87,11 +90,11 @@ class NaviHelp {
         this._gui := g
 
         NaviTheme.SetFont(g, "heading")
-        g.Add("Text", "x" . g.MarginX . " y" . g.MarginY, "ショートカット一覧").GetPos(, &ty, , &th)
+        g.Add("Text", "x" . g.MarginX . " y" . g.MarginY, title).GetPos(, &ty, , &th)
         top := ty + th + NaviTheme.SP_M
         bottom := top
         descW := this.COL_W - this.KEY_W - NaviTheme.SP_L
-        for ci, sections in this.SECTIONS {
+        for ci, sections in (table != "" ? table : this.SECTIONS) {
             x := g.MarginX + (ci - 1) * this.COL_W
             for si, sec in sections {
                 NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
