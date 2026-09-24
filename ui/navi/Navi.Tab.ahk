@@ -38,7 +38,7 @@ class NaviTab {
     static _TabPlusHoverBg := ""  ; +ボタンのホバー時背景（ホバー時のみ表示）
     static _TabSepCtrl     := ""  ; タブ下の余白（レイアウトの基準。表示はしない）
     static _TabStripCtrl   := ""  ; タブの帯の背景
-    static _tabBarVisible := true  ; タブバー表示状態（1タブ時は非表示）
+    static _tabBarVisible := true  ; タブバー表示状態（1 枚のときも常に表示する）
     static _tabBarShift   := 0     ; タブバー非表示時にコントロールを上げるpx（Show()で実測値に確定）
     static _HoverTimerActive := false  ; ホバーツールチップ用タイマー状態
     static _CheckTabHoverBound := ""   ; ホバーチェックタイマー用 Bound 関数（SetTimer 解除用）
@@ -352,7 +352,7 @@ class NaviTab {
 
     /**
      * タブバーのラベル・インジケーター・縦線・+ ボタンの位置と表示を更新
-     * タブ数が1のときは非表示、2以上のときは表示する
+     * タブが 1 枚のときも表示する（枚数で画面の上端が動かず、＋ で増やせることが常に見える）
      */
     static UpdateTabBar() {
         nv := this._navi
@@ -368,7 +368,7 @@ class NaviTab {
                 ctrl.Visible := false
                 continue
             }
-            ctrl.Visible := (this._TabCount > 1)
+            ctrl.Visible := true
             DllCall("user32\SendMessageW", "ptr", ctrl.Hwnd,
                 "uint", nv.WM_SETTEXT, "ptr", 0, "wstr", this._GetTabLabel(n))
             ; 名前の長さに合わせた幅で左から詰めて並べる（アクセントラインも同じ幅）
@@ -378,12 +378,12 @@ class NaviTab {
             this._PaintTab(n, n == this._HoveredTab)
         }
         ; アクティブタブのアクセントラインのみ表示
-        showInd := (this._TabCount > 1)
+        showInd := (this._TabCount >= 1)
         for n, ind in this._TabIndicators
             ind.Visible := showInd && (n == this._CurrentTab) && (n <= this._TabCount)
         ; + ボタンを最後のタブの右側に配置（タブ数が TAB_MAX のときは非表示）
         if (this._TabPlusBtn) {
-            canAdd := (this._TabCount < this.TAB_MAX) && (this._TabCount > 1)
+            canAdd := (this._TabCount < this.TAB_MAX)
             this._TabPlusBtn.Visible := canAdd
             if (canAdd) {
                 plusX := x + 3
@@ -395,7 +395,7 @@ class NaviTab {
             if (!canAdd && this._TabPlusHoverBg)
                 this._TabPlusHoverBg.Visible := false
         }
-        this.SetTabBarVisible(this._TabCount > 1)
+        this.SetTabBarVisible(true)
         this._LayoutDividers()  ; タブバーの表示状態が決まってから置く
     }
 
@@ -404,7 +404,7 @@ class NaviTab {
      * アクティブタブは白い面が区切りになるので、その両隣の線は出さない
      */
     static _LayoutDividers() {
-        show := (this._TabCount > 1) && this._tabBarVisible
+        show := this._tabBarVisible
         for n, div in this._TabDividers {
             visible := show && (n < this._TabCount) && (n != this._CurrentTab) && (n + 1 != this._CurrentTab)
             if (visible) {

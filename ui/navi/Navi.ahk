@@ -254,11 +254,7 @@ class Navi {
         ; タブバー非表示時のシフト量を確定（ヘッダーY - タブバー開始Y）
         btnProfile.GetPos(, &_headerY_)
         NaviTab._tabBarShift := _headerY_ - _tabBarTopY_
-        NaviTab._tabBarVisible := true
-
-        ; タブ1枚のときはタブバーを初期非表示にする
-        if (NaviTab._TabCount == 1)
-            NaviTab.SetTabBarVisible(false)
+        NaviTab._tabBarVisible := true  ; タブバーは 1 枚のときも常に表示する（ブラウザ・VSCode と同じ）
 
         ; ウィンドウリサイズイベント登録
         this.GuiObj.OnEvent("Size", (g, mm, w, h) => this._OnResize(mm, w, h))
@@ -1847,7 +1843,7 @@ class Navi {
         if (NaviTab._TabStripCtrl)
             NaviTab._TabStripCtrl.Move(0, , w)  ; タブの帯もクライアント全幅
         ; 窓の幅が変わるとタブが入りきるかが変わるので、タブ幅を計算し直す
-        if (NaviTab._TabCount > 1 && NaviTab._TabBtnCtrls.Length)
+        if (NaviTab._TabBtnCtrls.Length)
             NaviTab.UpdateTabBar()
         ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
         this.GuiObj["TreeFilter"].GetPos(&_tfX_)
