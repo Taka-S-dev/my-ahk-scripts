@@ -26,6 +26,7 @@
 #Include *i Navi.Breadcrumb.ahk
 #Include *i Navi.Mark.ahk
 #Include *i Navi.DirList.ahk
+#Include *i Navi.Leader.ahk
 #Include ..\..\lib\TempCopy.ahk
 
 class Navi {
@@ -114,6 +115,7 @@ class Navi {
         NaviBreadcrumb.Init(this)
         NaviMark.Init(this)
         NaviDirList.Init(this)
+        NaviLeader.Init(this)
     }
 
     static Show() {
@@ -236,7 +238,7 @@ class Navi {
         ; ステータスバーによる操作案内
         this.GuiObj.SetFont("s8", "Yu Gothic UI")
         sb := this.GuiObj.Add("StatusBar")
-        sb.SetText(" [Space]メニュー  [Enter]開く  [Ctrl+D]詳細  [F1]ヘルプ")
+        sb.SetText(" [Ctrl+;]コマンド  [Space]メニュー  [Enter]開く  [F1]ヘルプ")
         this.GuiObj._sbRef := sb
 
         ; リサイズ計算用に TreeView・RootBtn の位置を記録
@@ -273,6 +275,8 @@ class Navi {
         Hotkey("^d", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("^e", (*) => NaviDirList.Toggle(), "On")
+        ; コマンド一覧（Navi の中ではグローバルの日付入力より優先される）
+        Hotkey("^;", (*) => NaviLeader.Show(), "On")
         ; Ctrl+H/J/K/L は Vim と同じく ←↓↑→（Ctrl+H はグローバルの HotstringManager より優先される）
         Hotkey("^h", (*) => this._HandleCtrlArrow("h"), "On")
         Hotkey("^j", (*) => this._HandleCtrlArrow("j"), "On")
@@ -446,6 +450,7 @@ class Navi {
         NaviFilter.CancelDebounce()
         NaviFilter.ResetForNewRoot()
         NaviDirList.CancelFileIndex()
+        NaviLeader.Close(false)
         ; マーク状態をリセット
         NaviMark.Reset()
         ; プロファイルドロップダウンを閉じる
@@ -475,6 +480,7 @@ class Navi {
               Ctrl+Enter    ファイル表示トグル
               Ctrl+D        詳細リスト表示
               Ctrl+F        フォルダフィルターにフォーカス
+              Ctrl+;        コマンド一覧（1 文字で実行）
               Ctrl+E        ツリー ↔ 一覧
               Ctrl+H/J/K/L  ←↓↑→（Vim と同じ）
 
@@ -1088,7 +1094,7 @@ class Navi {
                 sb.SetText(NaviDirList.StatusText())
                 return
             }
-            base := " [Space]メニュー  [Enter]開く  [Ctrl+D]詳細  [F1]ヘルプ"
+            base := " [Ctrl+;]コマンド  [Space]メニュー  [Enter]開く  [F1]ヘルプ"
             sb.SetText(NaviMark._MarkFilterActive ? base . "  [mark]" : base)
         }
     }

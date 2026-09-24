@@ -85,6 +85,29 @@ class NaviDirList {
         HotIf()
     }
 
+    /**
+     * 指定した種類の一覧を開く（ツリー表示中なら一覧に切り替える）
+     * kind: "dirs" / "files"
+     */
+    static ShowList(kind) {
+        nv := this._navi
+        if !(nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        if (nv._SearchMode)
+            nv._ToggleSearchMode()
+        if (this.Kind != kind) {
+            this.Kind := kind
+            IniWrite(kind, nv.IniPath, "Settings", "DirListKind")
+            this._ResetCache()
+        }
+        if (this.Active) {
+            this.ApplyCurrent()
+            nv.GuiObj["TreeFilter"].Focus()
+        } else {
+            this._SetActive(true)
+        }
+    }
+
     /** フォルダ一覧 ↔ ファイル一覧を切り替える（Shift+Tab） */
     static ToggleKind() {
         nv := this._navi
@@ -494,7 +517,7 @@ class NaviDirList {
     /** ステータスバーに出す文字列 */
     static StatusText() {
         kind := (this.Kind == "files") ? " 📄ファイル" : " 📁フォルダ"
-        base := kind . "  [Shift+Tab]切替  [Enter]開く  [Space]メニュー  [Ctrl+J/K]選択  [→]ツリーで表示  [Ctrl+E]ツリー"
+        base := kind . "  [Ctrl+;]コマンド  [Shift+Tab]切替  [Enter]開く  [→]ツリーで表示"
         count := (this._matchCount > this.DISPLAY_CAP)
             ? this._matchCount . " 件中 上位 " . this.DISPLAY_CAP . " 件"
             : this._matchCount . " 件"
