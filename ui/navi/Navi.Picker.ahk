@@ -45,8 +45,10 @@ class NaviPicker {
             if (it.HasOwnProp("sub") && it.sub != "")
                 hasSub := true
 
-        g := Gui("+Owner" . nv.GuiObj.Hwnd . " -Caption +Border +AlwaysOnTop +ToolWindow")
+        ; 枠線は付けず、Windows 11 の角丸と縁に任せる（NaviTheme.ApplyFlyout）
+        g := Gui("+Owner" . nv.GuiObj.Hwnd . " -Caption +AlwaysOnTop +ToolWindow")
         NaviTheme.ApplyPopup(g)
+        NaviTheme.ApplyFlyout(g)
         g.MarginX := NaviTheme.SP_S
         g.MarginY := NaviTheme.SP_S
         this._gui := g

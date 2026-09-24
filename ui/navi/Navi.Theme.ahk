@@ -87,6 +87,17 @@ class NaviTheme {
         ctrl.Text := glyph
     }
 
+    /**
+     * 重なって出る小窓（メニュー・選択小窓）を Windows 11 の flyout と同じ見た目にする
+     * DWM に角丸を頼むと、Windows 11 が角丸の縁と影を描く（Windows 10 では何も起きない）
+     * 表示する前（Gui 作成直後）に呼ぶ
+     */
+    static ApplyFlyout(g) {
+        pref := Buffer(4, 0)
+        NumPut("int", 3, pref)  ; DWMWCP_ROUNDSMALL（メニューと同じ小さめの角丸）
+        try DllCall("dwmapi\DwmSetWindowAttribute", "ptr", g.Hwnd, "int", 33, "ptr", pref, "int", 4)  ; DWMWA_WINDOW_CORNER_PREFERENCE
+    }
+
     ; ポップアップ・ダイアログの共通の下地（背景色と余白）
     static ApplyPopup(g) {
         g.BackColor := this.BG

@@ -44,8 +44,10 @@ class NaviKeyMenu {
         this._items := opts.items
         this._afterRun := opts.HasOwnProp("afterRun") ? opts.afterRun : ""
 
-        g := Gui("+Owner" . owner.Hwnd . " -Caption +AlwaysOnTop +Border +ToolWindow")
+        ; 枠線は付けず、Windows 11 の角丸と縁に任せる（NaviTheme.ApplyFlyout）
+        g := Gui("+Owner" . owner.Hwnd . " -Caption +AlwaysOnTop +ToolWindow")
         NaviTheme.ApplyPopup(g)
+        NaviTheme.ApplyFlyout(g)
         g.MarginX := NaviTheme.SP_L
         this._gui := g
 
