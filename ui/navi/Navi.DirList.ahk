@@ -133,7 +133,7 @@ class NaviDirList {
     }
 
     /**
-     * リストで選んでいるフォルダをツリーで表示する（リスト上の →）
+     * リストで選んでいるフォルダをツリーで表示する（リスト上の → / Ctrl+L）
      * フィルターを消してツリーを作り直し、そのフォルダまで展開して選択する
      */
     static RevealInTree() {
@@ -494,7 +494,7 @@ class NaviDirList {
     /** ステータスバーに出す文字列 */
     static StatusText() {
         kind := (this.Kind == "files") ? " 📄ファイル" : " 📁フォルダ"
-        base := kind . "  [Shift+Tab]切替  [Enter]開く  [Space]メニュー  [→]ツリーで表示  [Ctrl+E]ツリー"
+        base := kind . "  [Shift+Tab]切替  [Enter]開く  [Space]メニュー  [Ctrl+J/K]選択  [→]ツリーで表示  [Ctrl+E]ツリー"
         count := (this._matchCount > this.DISPLAY_CAP)
             ? this._matchCount . " 件中 上位 " . this.DISPLAY_CAP . " 件"
             : this._matchCount . " 件"

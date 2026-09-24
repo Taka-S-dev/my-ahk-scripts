@@ -210,7 +210,7 @@ class NaviProfile {
             ddList.Choose(1)
 
         ddGui.SetFont("s8")
-        ddGui.Add("Text", "xm c808080", "↑↓: 移動  Enter: ロード  Esc: 閉じる")
+        ddGui.Add("Text", "xm c808080", "↑↓ Ctrl+J/K: 移動  Enter Ctrl+L: ロード  Esc: 閉じる")
         this.ProfileDropdownGui := ddGui
 
         filterEdit.OnEvent("Change",      (*) => this._ProfileOverlayFilterChange())
@@ -234,6 +234,7 @@ class NaviProfile {
         Hotkey("~Down",  (*) => this._ProfileNavDown(),         "On")
         Hotkey("~Up",    (*) => this._ProfileNavUp(),           "On")
         HotIf()
+        nv._BindPickerKeys(ddGui, filterEdit, ddList, () => this.ConfirmProfileDropdown())
 
         nv.GuiObj.GetPos(&gx, &gy)
         nv.GuiObj["ProfileBtn"].GetPos(&bx, &by, &bw, &bh)

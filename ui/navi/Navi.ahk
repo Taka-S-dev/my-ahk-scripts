@@ -273,6 +273,11 @@ class Navi {
         Hotkey("^d", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("^e", (*) => NaviDirList.Toggle(), "On")
+        ; Ctrl+H/J/K/L は Vim と同じく ←↓↑→（Ctrl+H はグローバルの HotstringManager より優先される）
+        Hotkey("^h", (*) => this._HandleCtrlArrow("h"), "On")
+        Hotkey("^j", (*) => this._HandleCtrlArrow("j"), "On")
+        Hotkey("^k", (*) => this._HandleCtrlArrow("k"), "On")
+        Hotkey("^l", (*) => this._HandleCtrlArrow("l"), "On")
         Hotkey("F3",  (*) => NaviFilter.JumpToMatch(this.GuiObj["FolderTree"], +1), "On")
         Hotkey("+F3", (*) => NaviFilter.JumpToMatch(this.GuiObj["FolderTree"], -1), "On")
         Hotkey("F1", (*) => this._ShowHelp(), "On")
@@ -471,13 +476,14 @@ class Navi {
               Ctrl+D        詳細リスト表示
               Ctrl+F        フォルダフィルターにフォーカス
               Ctrl+E        ツリー ↔ 一覧
+              Ctrl+H/J/K/L  ←↓↑→（Vim と同じ）
 
             【一覧】
               Shift+Tab     フォルダ一覧 ↔ ファイル一覧
               文字入力      あいまい一致で絞り込み（'word は続けて一致）
-              ↑↓ PgUp/Dn   入力欄のまま選択行を移動
+              ↑↓ PgUp/Dn   入力欄のまま選択行を移動（Ctrl+J/K も同じ）
               Enter         フォルダはエクスプローラーで、ファイルは関連付けアプリで開く
-              →             選択行をツリーで表示
+              → / Ctrl+L    選択行をツリーで表示
 
             【マーク】
               Alt+M         選択アイテムのマークをトグル（緑でハイライト）
@@ -1462,6 +1468,138 @@ class Navi {
         }
     }
 
+    /**
+     * 入力欄 + ListBox の選択小窓（ルート選択・プロファイル選択）に Ctrl+H/J/K/L を割り当てる
+     * J/K=選択を下/上（端で折り返す）、L=決定、H=入力欄を 1 文字消す（左に移る先がないため）
+     */
+    static _BindPickerKeys(ddGui, filterCtrl, listCtrl, onConfirm) {
+        move(delta) {
+            total := SendMessage(0x018B, 0, 0, listCtrl)  ; LB_GETCOUNT
+            if (total <= 0)
+                return
+            cur := listCtrl.Value
+            next := (cur <= 0) ? 1 : Mod(cur - 1 + delta + total, total) + 1
+            listCtrl.Choose(next)
+        }
+        backspace() {
+            ; Focus() は入力欄の全文を選択するので、フォーカスが別の場所にあるときだけ移して末尾に置く
+            if (DllCall("user32\GetFocus", "ptr") != filterCtrl.Hwnd) {
+                filterCtrl.Focus()
+                len := StrLen(filterCtrl.Value)
+                SendMessage(0x00B1, len, len, filterCtrl)  ; EM_SETSEL
+            }
+            Navi._EditBackspace(filterCtrl)
+        }
+        HotIfWinActive("ahk_id " ddGui.Hwnd)
+        Hotkey("^j", (*) => move(1), "On")
+        Hotkey("^k", (*) => move(-1), "On")
+        Hotkey("^l", (*) => onConfirm(), "On")
+        Hotkey("^h", (*) => backspace(), "On")
+        HotIf()
+    }
+
+    ; Ctrl を押したままキーを送ると Ctrl+Backspace / Ctrl+←→（単語単位）になるため、
+    ; 入力欄の 1 文字削除・カーソル移動はメッセージで直接行う
+    static _EditBackspace(edit) {
+        sel := SendMessage(0x00B0, 0, 0, edit)  ; EM_GETSEL
+        s := sel & 0xFFFF, e := (sel >> 16) & 0xFFFF
+        if (s = e) {
+            if (s = 0)
+                return
+            SendMessage(0x00B1, s - 1, e, edit)  ; EM_SETSEL: 直前の 1 文字を選ぶ
+        }
+        SendMessage(0x00C2, 1, StrPtr(""), edit)  ; EM_REPLACESEL（Change イベントも発生する）
+    }
+
+    static _EditMoveCaret(edit, delta) {
+        sel := SendMessage(0x00B0, 0, 0, edit)  ; EM_GETSEL
+        pos := Min(Max((sel & 0xFFFF) + delta, 0), StrLen(edit.Value))
+        SendMessage(0x00B1, pos, pos, edit)  ; EM_SETSEL
+    }
+
+    /**
+     * Ctrl+H/J/K/L を ←↓↑→ として扱う
+     * Ctrl を押したまま矢印キーを送るとコントロールが Ctrl+矢印（選択せずにスクロール等）と
+     * 解釈するため、ツリーとリストは選択を直接動かす
+     */
+    static _HandleCtrlArrow(key) {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        currFocus := 0
+        try currFocus := DllCall("user32\GetFocus", "ptr")
+        filterHwnd := this.GuiObj.HasOwnProp("_treeFilterHwnd") ? this.GuiObj._treeFilterHwnd : 0
+        lvHwnd := this.GuiObj["DirList"].Hwnd
+
+        ; 入力欄の h: カーソルを 1 文字左へ（先頭なら ← と同じく左のボタンへ）
+        ; 入力欄の l: 一覧表示中は選択行をツリーで表示、ツリー表示中はカーソルを 1 文字右へ
+        if (currFocus != 0 && currFocus = filterHwnd && (key = "h" || key = "l")) {
+            filter := this.GuiObj["TreeFilter"]
+            if (key = "h") {
+                if ((SendMessage(0x00B0, 0, 0, filter) & 0xFFFF) = 0)  ; EM_GETSEL
+                    this._HandleLeftKey()
+                else
+                    this._EditMoveCaret(filter, -1)
+            } else if (NaviDirList.Active) {
+                NaviDirList.RevealInTree()
+            } else {
+                this._EditMoveCaret(filter, 1)
+            }
+            return
+        }
+        ; 一覧表示中の入力欄・リスト: j/k で選択行を移動、リスト上の l でツリーに表示、h で入力欄へ
+        if (NaviDirList.Active && (currFocus = filterHwnd || currFocus = lvHwnd)) {
+            switch key {
+                case "j": NaviDirList.Move(1)
+                case "k": NaviDirList.Move(-1)
+                case "l": NaviDirList.RevealInTree()
+                case "h": this.GuiObj["TreeFilter"].Focus()
+            }
+            return
+        }
+        if (this._tvHwnd != 0 && currFocus = this._tvHwnd) {
+            this._TreeStep(this.GuiObj["FolderTree"], key)
+            return
+        }
+        ; それ以外（入力欄・ボタン類）は矢印キーの処理に任せる。↑ はツリー表示の入力欄では何もしない
+        switch key {
+            case "h": this._HandleLeftKey()
+            case "j": this._HandleRootBtnDown()
+            case "l": this._HandleRightKey()
+        }
+    }
+
+    ; ツリーの選択を矢印キーと同じように動かす（j/k=前後の表示項目、h=閉じる/親へ、l=開く/最初の子へ）
+    static _TreeStep(tv, key) {
+        id := tv.GetSelection()
+        if (!id) {
+            if (first := tv.GetNext())
+                tv.Modify(first, "Select Vis")
+            return
+        }
+        switch key {
+            case "j", "k":
+                ; TVM_GETNEXTITEM: TVGN_NEXTVISIBLE=6 / TVGN_PREVIOUSVISIBLE=7
+                next := SendMessage(0x110A, key == "j" ? 6 : 7, id, tv)
+                if (next)
+                    tv.Modify(next, "Select Vis")
+            case "h":
+                if (tv.GetChild(id) && tv.Get(id, "Expand"))
+                    tv.Modify(id, "-Expand")
+                else if (parent := tv.GetParent(id))
+                    tv.Modify(parent, "Select Vis")
+            case "l":
+                if (!tv.GetChild(id))
+                    return
+                if (!tv.Get(id, "Expand")) {
+                    ; Modify の展開では ItemExpand イベントが来ないので、遅延ロードを先に済ませる
+                    this._OnItemExpand(tv, id)
+                    tv.Modify(id, "Expand")
+                } else if (child := tv.GetChild(id)) {
+                    tv.Modify(child, "Select Vis")
+                }
+        }
+    }
+
     static _HandleRootBtnDown() {
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
@@ -1581,7 +1719,7 @@ class Navi {
         }
 
         ddGui.SetFont("s8")
-        ddGui.Add("Text", "xm w260 c808080", "↑↓: 移動  /  Enter: 選択  /  Esc: キャンセル")
+        ddGui.Add("Text", "xm w260 c808080", "↑↓ Ctrl+J/K: 移動  /  Enter Ctrl+L: 選択  /  Esc: キャンセル")
 
         this.DropdownGui := ddGui
 
@@ -1607,6 +1745,7 @@ class Navi {
         Hotkey("~Down", (*) => this._OverlayNavDown(), "On")
         Hotkey("~Up", (*) => this._OverlayNavUp(), "On")
         HotIf()
+        this._BindPickerKeys(ddGui, filterEdit, ddList, () => this._ConfirmDropdown())
 
         ; rootBtnの位置にオーバーレイを配置
         this.GuiObj.GetPos(&gx, &gy)
