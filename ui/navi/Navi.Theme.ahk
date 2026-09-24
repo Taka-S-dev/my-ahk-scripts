@@ -28,7 +28,10 @@ class NaviTheme {
     static FOUND       := "BC4B09"  ; 検索で見つかった項目の文字
 
     ; --- 文字 ---
-    static FONT        := "Yu Gothic UI"
+    ; 英数字と日本語の大きさ・字間がそろい、小さくてもくっきりする Meiryo UI
+    ; （Segoe UI は日本語を別フォントで補うため日本語だけ大きく間延びし、
+    ;   Yu Gothic UI は 9pt だと線が細く薄く見えた）
+    static FONT        := "Meiryo UI"
     static FONT_MONO   := "Consolas"
     static SIZE_BODY    := 9   ; 本文・ボタン・入力欄
     static SIZE_CAPTION := 8   ; 見出し・案内文・ステータスバー
