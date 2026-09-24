@@ -440,6 +440,7 @@ class Navi {
         ; _StartDirWatch が呼ばれないまま古いインデックスを使い続ける
         NaviFilter.CancelDebounce()
         NaviFilter.ResetForNewRoot()
+        NaviDirList.CancelFileIndex()
         ; マーク状態をリセット
         NaviMark.Reset()
         ; プロファイルドロップダウンを閉じる
@@ -469,12 +470,13 @@ class Navi {
               Ctrl+Enter    ファイル表示トグル
               Ctrl+D        詳細リスト表示
               Ctrl+F        フォルダフィルターにフォーカス
-              Ctrl+E        ツリー ↔ フォルダ一覧
+              Ctrl+E        ツリー ↔ 一覧
 
-            【フォルダ一覧】
+            【一覧】
+              Shift+Tab     フォルダ一覧 ↔ ファイル一覧
               文字入力      あいまい一致で絞り込み（'word は続けて一致）
               ↑↓ PgUp/Dn   入力欄のまま選択行を移動
-              Enter         選択行をエクスプローラーで開く
+              Enter         フォルダはエクスプローラーで、ファイルは関連付けアプリで開く
               →             選択行をツリーで表示
 
             【マーク】

@@ -1,12 +1,13 @@
 #Requires AutoHotkey v2.0
 ; ==============================================================================
 ; Module:       Navi.DirList.ahk
-; Description:  ルート配下の全フォルダを平らなリストで表示するリストビュー
+; Description:  ルート配下の全フォルダ・全ファイルを平らなリストで表示するリストビュー
 ;               - フォルダインデックスは NaviFilter のものを使い回す
+;               - ファイルインデックスは files モードに入ったとき fd（なければ loop files）で作る
 ;               - あいまい一致（入力した文字が間を空けて順に含まれていれば一致）
 ;               - 'word は続けて並んだものだけに一致
-;               - フォルダ名での一致を優先し、スコア順に並べる
-;               - Ctrl+E でツリーと切り替え（状態は Navi.ini に保存）
+;               - 名前での一致を優先し、スコア順に並べる
+;               - Ctrl+E でツリーと切り替え、Shift+Tab でフォルダ ↔ ファイル（状態は Navi.ini に保存）
 ; Usage:        NaviDirList.Init(naviRef) を Navi.Init() から、
 ;               NaviDirList.Build(gui, tv) を Navi.Show() の TreeView 作成直後に呼ぶ
 ; ==============================================================================
@@ -14,12 +15,26 @@
 class NaviDirList {
     static _navi := ""
     static Active := false          ; true=リストビュー表示中 / false=ツリー表示中
+    static Kind := "dirs"           ; "dirs"=フォルダ一覧 / "files"=ファイル一覧
     static _rows := []              ; 表示中の行番号 → 絶対パス
     static _matchCount := 0         ; 直近の一致件数（表示上限を超えた分も含む）
     static _pending := ""           ; 再入中に届いた最新クエリ
     static _pendingSet := false
     static _running := false
     static _navCond := ""           ; Up / PgUp / PgDn ホットキーの HotIf 条件
+    static _listCond := ""          ; Shift+Tab ホットキーの HotIf 条件
+
+    ; --- ファイルインデックス（Show のたびに作り直す）---
+    static _FileIndex := []
+    static _FileIndexedRoot := ""
+    static _FileIndexTruncated := false  ; 上限・タイムアウトで打ち切ったか
+    static _FilePid := 0
+    static _FileTmp := ""
+    static _FileRoot := ""
+    static _FileStartMs := 0
+    static _FilePollCb := ""
+    static FILE_INDEX_MAX := 200000        ; 集めるファイルの上限
+    static FILE_INDEX_TIMEOUT_MS := 20000  ; fd を打ち切るまでの時間
 
     ; 直前の結果の使い回し用（クエリを後ろに伸ばしただけなら前回の一致から絞り込む）
     static _cacheIndex := ""
@@ -35,7 +50,9 @@ class NaviDirList {
     static Init(naviRef) {
         this._navi := naviRef
         this.Active := (IniRead(naviRef.IniPath, "Settings", "DirListMode", "0") == "1")
+        this.Kind := (IniRead(naviRef.IniPath, "Settings", "DirListKind", "dirs") == "files") ? "files" : "dirs"
         this._navCond := (*) => this._IsFilterNav()
+        this._listCond := (*) => (this.Active && naviRef.GuiObj && WinActive("ahk_id " naviRef.GuiObj.Hwnd))
     }
 
     /**
@@ -54,12 +71,27 @@ class NaviDirList {
         lv.OnEvent("DoubleClick", (*) => nv._HandleActivate())
         this._rows := []
         this._ResetCache()
+        ; ファイルは前回開いたときから増減しているかもしれないので作り直させる
+        this.CancelFileIndex()
+        this._FileIndex := []
+        this._FileIndexedRoot := ""
 
         HotIf(this._navCond)
         Hotkey("Up",   (*) => this.Move(-1), "On")
         Hotkey("PgUp", (*) => this.Move(-this.PAGE_ROWS), "On")
         Hotkey("PgDn", (*) => this.Move(this.PAGE_ROWS), "On")
+        HotIf(this._listCond)
+        Hotkey("+Tab", (*) => this.ToggleKind(), "On")
         HotIf()
+    }
+
+    /** フォルダ一覧 ↔ ファイル一覧を切り替える（Shift+Tab） */
+    static ToggleKind() {
+        nv := this._navi
+        this.Kind := (this.Kind == "files") ? "dirs" : "files"
+        IniWrite(this.Kind, nv.IniPath, "Settings", "DirListKind")
+        this._ResetCache()
+        this.ApplyCurrent()
     }
 
     ; フィルター欄にフォーカスがあるリストビュー表示中だけ Up / PgUp / PgDn を横取りする
@@ -279,14 +311,23 @@ class NaviDirList {
             this._ShowMessage("ルートが選択されていません")
             return
         }
-        if (NaviFilter._IndexedRoot != rootPath) {
-            onReady := () => SetTimer(() => this.ApplyCurrent(), -1)
-            if !NaviFilter._EnsureIndex(rootPath, onReady) {
-                this._ShowMessage("フォルダを集めています…")
+        isFiles := (this.Kind == "files")
+        if (isFiles) {
+            if !this._EnsureFileIndex(rootPath) {
+                this._ShowMessage("ファイルを集めています…")
                 return
             }
+            index := this._FileIndex
+        } else {
+            if (NaviFilter._IndexedRoot != rootPath) {
+                onReady := () => SetTimer(() => this.ApplyCurrent(), -1)
+                if !NaviFilter._EnsureIndex(rootPath, onReady) {
+                    this._ShowMessage("フォルダを集めています…")
+                    return
+                }
+            }
+            index := NaviFilter._FolderIndex
         }
-        index := NaviFilter._FolderIndex
         rootBase := RTrim(rootPath, "\")
         terms := this._ParseQuery(query)
         rels := this._Candidates(rootBase, query, index)
@@ -309,7 +350,7 @@ class NaviDirList {
         this._rows := []
         for rel in top {
             SplitPath(rel, &name, &dir)
-            lv.Add("Icon1", name, dir)
+            lv.Add(isFiles ? nv._GetFileIconStr(name) : "Icon1", name, dir)
             this._rows.Push(rootBase . "\" . rel)
         }
         lv.Modify(1, "Select Focus Vis")
@@ -424,10 +465,11 @@ class NaviDirList {
     /**
      * 相対パスのスコア（どれかの語に一致しなければ -1、語がなければ 0）
      * 語ごとに次の段で評価し、上の段ほど高い（段どうしの値の範囲は重ならない）
-     *   フォルダ名に続けて含む   500〜700（先頭一致と、名前の余りが少ないほど高い）
-     *   フォルダ名にあいまい一致 300〜400（文字の間が詰まっているほど高い）
-     *   パスに続けて含む         200
-     *   パスにあいまい一致       100〜199
+     * name はフォルダ名またはファイル名
+     *   名前に続けて含む     500〜700（先頭一致と、名前の余りが少ないほど高い）
+     *   名前にあいまい一致   300〜400（文字の間が詰まっているほど高い）
+     *   パスに続けて含む     200
+     *   パスにあいまい一致   100〜199
      */
     static _Score(rel, name, terms) {
         total := 0
@@ -451,9 +493,128 @@ class NaviDirList {
 
     /** ステータスバーに出す文字列 */
     static StatusText() {
-        base := " [Enter]開く  [Space]メニュー  [→]ツリーで表示  [Ctrl+E]ツリー"
-        if (this._matchCount > this.DISPLAY_CAP)
-            return base . "   " . this._matchCount . " 件中 上位 " . this.DISPLAY_CAP . " 件"
-        return base . "   " . this._matchCount . " 件"
+        kind := (this.Kind == "files") ? " 📄ファイル" : " 📁フォルダ"
+        base := kind . "  [Shift+Tab]切替  [Enter]開く  [Space]メニュー  [→]ツリーで表示  [Ctrl+E]ツリー"
+        count := (this._matchCount > this.DISPLAY_CAP)
+            ? this._matchCount . " 件中 上位 " . this.DISPLAY_CAP . " 件"
+            : this._matchCount . " 件"
+        if (this.Kind == "files" && this._FileIndexTruncated)
+            count .= "（ファイルは " . this._FileIndex.Length . " 件で打ち切り）"
+        return base . "   " . count
+    }
+
+    ; ==============================================================================
+    ; ファイルインデックス
+    ; ==============================================================================
+
+    /**
+     * rootPath のファイルインデックスを確保する
+     * - 準備済み → true
+     * - fd で非同期に集め始めた／集めている最中 → false（終わったら ApplyCurrent で作り直す）
+     * - fd が使えない → loop files で上限まで同期に集めて true
+     */
+    static _EnsureFileIndex(rootPath) {
+        if (this._FileIndexedRoot == rootPath)
+            return true
+        if (this._FilePid != 0 && this._FileRoot == rootPath)
+            return false
+        this.CancelFileIndex()
+        ; ネットワークパスは fd を使わない（フォルダインデックスと同じくサーバー負荷対策）
+        useFd := !NaviFilter._IsNetworkPath(rootPath)
+            && (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
+        fdPath := useFd ? NaviSearch._FindFd() : ""
+        if (fdPath != "" && this._StartFileIndexFd(rootPath, fdPath))
+            return false
+        this._BuildFileIndex(rootPath)
+        return true
+    }
+
+    static _StartFileIndexFd(rootPath, fdPath) {
+        nv := this._navi
+        tmpFile := A_Temp . "\navi_files_" . A_TickCount . ".txt"
+        ; 末尾 \ をエスケープ（C ランタイムの \" 解析対策）
+        safeRoot := (SubStr(rootPath, -1) = "\") ? rootPath . "\" : rootPath
+        maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
+        depthOpt := (maxDepth > 0) ? " --max-depth " . maxDepth : ""
+        cmd := '"' . fdPath . '" --type f' . depthOpt . ' --max-results ' . this.FILE_INDEX_MAX
+            . ' --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
+        pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
+        if (pid = 0)
+            return false
+        this._FilePid := pid
+        this._FileTmp := tmpFile
+        this._FileRoot := rootPath
+        this._FileStartMs := A_TickCount
+        cb := () => this._PollFileIndex()
+        this._FilePollCb := cb
+        SetTimer(cb, 200)
+        return true
+    }
+
+    ; fd の終了（またはタイムアウト）を待って結果を読み込む
+    static _PollFileIndex() {
+        if (this._FilePid != 0 && ProcessExist(this._FilePid)) {
+            if ((A_TickCount - this._FileStartMs) <= this.FILE_INDEX_TIMEOUT_MS)
+                return
+            try ProcessClose(this._FilePid)
+            this._FileIndexTruncated := true
+        }
+        SetTimer(this._FilePollCb, 0)
+        this._FilePollCb := ""
+        this._FilePid := 0
+        index := []
+        try {
+            raw := FileRead(this._FileTmp, "UTF-8")
+            for line in StrSplit(raw, "`n", "`r") {
+                if (line != "")
+                    index.Push(line)
+            }
+        }
+        try FileDelete(this._FileTmp)
+        this._FileTmp := ""
+        if (index.Length >= this.FILE_INDEX_MAX)
+            this._FileIndexTruncated := true
+        this._FileIndex := index
+        this._FileIndexedRoot := this._FileRoot
+        this._FileRoot := ""
+        SetTimer(() => this.ApplyCurrent(), -1)
+    }
+
+    ; フォールバック: loop files で上限まで同期に集める
+    static _BuildFileIndex(rootPath) {
+        index := []
+        this._FileIndexTruncated := false
+        prefixLen := StrLen(RTrim(rootPath, "\")) + 1
+        try {
+            loop files, rootPath . "\*", "FR" {
+                ; fd と同じく隠し属性と、. で始まるフォルダ・ファイル（.git, .venv など）の中は外す
+                if (InStr(A_LoopFileAttrib, "H") || InStr(SubStr(A_LoopFilePath, prefixLen), "\."))
+                    continue
+                index.Push(A_LoopFilePath)
+                if (index.Length >= this.FILE_INDEX_MAX) {
+                    this._FileIndexTruncated := true
+                    break
+                }
+            }
+        }
+        this._FileIndex := index
+        this._FileIndexedRoot := rootPath
+    }
+
+    /** 実行中の fd を止める（Show のやり直し・GUI 破棄時） */
+    static CancelFileIndex() {
+        if (this._FilePollCb != "")
+            SetTimer(this._FilePollCb, 0)
+        this._FilePollCb := ""
+        if (this._FilePid != 0) {
+            try ProcessClose(this._FilePid)
+            this._FilePid := 0
+        }
+        if (this._FileTmp != "") {
+            try FileDelete(this._FileTmp)
+            this._FileTmp := ""
+        }
+        this._FileRoot := ""
+        this._FileIndexTruncated := false
     }
 }
