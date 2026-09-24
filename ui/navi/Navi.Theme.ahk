@@ -38,6 +38,17 @@ class NaviTheme {
     static SIZE_CAPTION := 8   ; 見出し・案内文・ステータスバー
     static SIZE_KEY     := 10  ; コマンド一覧のキー
 
+    ; --- アイコン ---
+    ; 絵文字は小さいボタンでは潰れるので、Windows のアイコンフォント（エクスプローラーや設定アプリと同じ絵柄）を使う
+    ; 文字コードは Segoe Fluent Icons（Windows 11）と Segoe MDL2 Assets（Windows 10）で共通
+    static ICON_SIZE     := 10
+    static ICON_SETTINGS := Chr(0xE713)  ; 歯車
+    static ICON_FOLDER   := Chr(0xE8B7)  ; フォルダー
+    static ICON_SEARCH   := Chr(0xE721)  ; 虫めがね
+    static ICON_FILE     := Chr(0xE8A5)  ; 文書
+    static ICON_ALL      := Chr(0xE71D)  ; すべて
+    static _iconFont     := ""
+
     ; --- 余白・大きさ（4 の倍数でそろえる） ---
     static SP_XS := 4
     static SP_S  := 8
@@ -58,6 +69,22 @@ class NaviTheme {
             case "key":     target.SetFont("s" . this.SIZE_KEY . " bold" . c, this.FONT_MONO)
             default:        target.SetFont("s" . this.SIZE_BODY . " norm" . c, this.FONT)
         }
+    }
+
+    ; 使えるアイコンフォント（Windows 11 の Segoe Fluent Icons、なければ Windows 10 の Segoe MDL2 Assets）
+    static IconFont() {
+        if (this._iconFont == "") {
+            installed := ""
+            try installed := RegRead("HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts", "Segoe Fluent Icons (TrueType)")
+            this._iconFont := (installed != "") ? "Segoe Fluent Icons" : "Segoe MDL2 Assets"
+        }
+        return this._iconFont
+    }
+
+    ; ボタンなどにアイコンを付ける（以後 .Text に別の ICON_* を入れれば絵柄だけ替わる）
+    static SetIcon(ctrl, glyph) {
+        ctrl.SetFont("s" . this.ICON_SIZE . " norm c" . this.TEXT, this.IconFont())
+        ctrl.Text := glyph
     }
 
     ; ポップアップ・ダイアログの共通の下地（背景色と余白）

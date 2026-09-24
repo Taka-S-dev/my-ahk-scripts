@@ -172,7 +172,8 @@ class Navi {
             . " h" . NaviTheme.CONTROL_H . " +0x100 vRootBtn", rootBtnText)
         this.GuiObj._rootBtnHwnd := rootBtn.Hwnd
         btnSettings := this.GuiObj.Add("Button", "x+" . sp . " yp w" . NaviTheme.CONTROL_H . " h" . NaviTheme.CONTROL_H
-            . " -Tabstop vSettingsBtn", "⚙")
+            . " -Tabstop vSettingsBtn")
+        NaviTheme.SetIcon(btnSettings, NaviTheme.ICON_SETTINGS)
         this.GuiObj._btnSettingsCtrl := btnSettings
         ; 以下は表示しない。ピン留め・ファイル表示の状態の置き場として残し（各所が .Value を読む）、
         ; 切り替えは ⚙ メニュー・コマンド一覧・Ctrl+P から行う
@@ -196,10 +197,12 @@ class Navi {
         NaviTheme.SetFont(this.GuiObj, "body")
 
         ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
-        filterToggle := this.GuiObj.Add("Button", "xm y+" . sp . " w28 h22 -Tabstop vFilterToggle", "📁")
+        filterToggle := this.GuiObj.Add("Button", "xm y+" . sp . " w28 h22 -Tabstop vFilterToggle")
+        NaviTheme.SetIcon(filterToggle, NaviTheme.ICON_FOLDER)
         filterToggle.OnEvent("Click", (*) => this._ToggleSearchMode())
         this.GuiObj._filterToggleHwnd := filterToggle.Hwnd
-        searchTypeBtn := this.GuiObj.Add("Button", "x+3 yp w28 h22 -Tabstop vSearchTypeBtn", "*")
+        searchTypeBtn := this.GuiObj.Add("Button", "x+3 yp w28 h22 -Tabstop vSearchTypeBtn")
+        NaviTheme.SetIcon(searchTypeBtn, NaviTheme.ICON_ALL)
         searchTypeBtn.OnEvent("Click", (*) => this._CycleSearchType())
         searchTypeBtn.Visible := false
         this.GuiObj._searchTypeBtnHwnd := searchTypeBtn.Hwnd
@@ -207,9 +210,10 @@ class Navi {
         treeFilter := this.GuiObj.Add("Edit", "x39 yp w424 vTreeFilter -Tabstop", "")
         ; セッション中に検索モードだった場合は復元
         if (this._SearchMode) {
-            filterToggle.Text := "🔍"
+            filterToggle.Text := NaviTheme.ICON_SEARCH
             searchTypeBtn.Visible := true
-            searchTypeBtn.Text := (this._SearchTypeFilter = "dir") ? "📁" : (this._SearchTypeFilter = "file") ? "📄" : "*"
+            searchTypeBtn.Text := (this._SearchTypeFilter = "dir") ? NaviTheme.ICON_FOLDER
+                : (this._SearchTypeFilter = "file") ? NaviTheme.ICON_FILE : NaviTheme.ICON_ALL
             treeFilter.Move(70, , 393)  ; 幅は後の _OnResize で正確に調整される
         }
         cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
@@ -1415,12 +1419,12 @@ class Navi {
         ; ファイル検索の結果はツリー上に出すので、リスト表示中ならツリーに戻す
         if (this._SearchMode && NaviDirList.Active)
             NaviDirList._SetActive(false)
-        this.GuiObj["FilterToggle"].Text := this._SearchMode ? "🔍" : "📁"
+        this.GuiObj["FilterToggle"].Text := this._SearchMode ? NaviTheme.ICON_SEARCH : NaviTheme.ICON_FOLDER
         ; 検索タイプボタンの表示切替・リセット
         this.GuiObj["SearchTypeBtn"].Visible := this._SearchMode
         if (!this._SearchMode) {
             this._SearchTypeFilter := "all"
-            this.GuiObj["SearchTypeBtn"].Text := "*"
+            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_ALL
         }
         ; TreeFilter の右端を TreeView の右端に揃える（幅 = margin + tvW - tfX）
         _margin_ := this.GuiObj.MarginX
@@ -1462,13 +1466,13 @@ class Navi {
     static _CycleSearchType() {
         if (this._SearchTypeFilter = "all") {
             this._SearchTypeFilter := "dir"
-            this.GuiObj["SearchTypeBtn"].Text := "📁"
+            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_FOLDER
         } else if (this._SearchTypeFilter = "dir") {
             this._SearchTypeFilter := "file"
-            this.GuiObj["SearchTypeBtn"].Text := "📄"
+            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_FILE
         } else {
             this._SearchTypeFilter := "all"
-            this.GuiObj["SearchTypeBtn"].Text := "*"
+            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_ALL
         }
     }
 
