@@ -44,7 +44,8 @@ class NaviMark {
     /** 選択ノードのマーク状態をトグルする（Alt+M） */
     static _ToggleMark() {
         nv := this._navi
-        if !(nv.GuiObj && WinExist(nv.GuiObj))
+        ; マークはツリーのノードに付けるので、リスト表示中は扱わない
+        if !(nv.GuiObj && WinExist(nv.GuiObj)) || NaviDirList.Active
             return
         tv := nv.GuiObj["FolderTree"]
         selId := tv.GetSelection()
@@ -89,7 +90,7 @@ class NaviMark {
     /** マークフィルタービューのオン/オフをトグルする（Ctrl+M） */
     static _ToggleMarkFilter() {
         nv := this._navi
-        if (this._MarkedPaths.Count == 0 || !(nv.GuiObj && WinExist(nv.GuiObj)))
+        if (this._MarkedPaths.Count == 0 || !(nv.GuiObj && WinExist(nv.GuiObj)) || NaviDirList.Active)
             return
         tv := nv.GuiObj["FolderTree"]
         rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""

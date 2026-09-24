@@ -399,7 +399,8 @@ class NaviFilter {
         query := nv.GuiObj["TreeFilter"].Value
         cb := () => this.ApplyTreeFilter(query)
         this._treeFilterCallback := cb
-        SetTimer(cb, -300)  ; 300ms デバウンス
+        ; ツリー再構築は重いので 300ms 待つ。リストは軽いので打鍵に追従させる
+        SetTimer(cb, NaviDirList.Active ? -NaviDirList.DEBOUNCE_MS : -300)
     }
 
     /**
@@ -409,6 +410,11 @@ class NaviFilter {
     static ApplyTreeFilter(query) {
         nv := this._navi
         this._treeFilterCallback := ""
+        ; リスト表示中はツリーではなくリストを絞り込む
+        if (NaviDirList.Active) {
+            NaviDirList.Apply(query)
+            return
+        }
         this._FilterCancelled    := false
         ; 再入防止: 実行中なら最新クエリを保留して即リターン
         if (this._FilterRunning) {

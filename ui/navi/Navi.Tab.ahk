@@ -407,7 +407,7 @@ class NaviTab {
             nv.GuiObj["PinCheck"], nv.GuiObj["AutoFilesCheck"],
             nv.GuiObj["Breadcrumb"], nv.GuiObj["FilterToggle"],
             nv.GuiObj["SearchTypeBtn"], nv.GuiObj["TreeFilter"],
-            nv.GuiObj["FolderTree"],
+            nv.GuiObj["FolderTree"], nv.GuiObj["DirList"],
             nv.GuiObj["QuickPath"]
         ]
         for ctrl in ctrls {
@@ -429,11 +429,8 @@ class NaviTab {
         marks := Map()
         for k, v in NaviMark._MarkedPaths
             marks[k] := v
-        tv    := nv.GuiObj["FolderTree"]
         selPath := ""
-        selId := tv.GetSelection()
-        if (selId)
-            try selPath := nv._GetTVFullPath(tv, selId)
+        try selPath := nv._GetSelectedPath()
         return {
             root:       nv.lastRoot,
             filter:     nv.GuiObj["TreeFilter"].Value,

@@ -1,0 +1,459 @@
+#Requires AutoHotkey v2.0
+; ==============================================================================
+; Module:       Navi.DirList.ahk
+; Description:  ルート配下の全フォルダを平らなリストで表示するリストビュー
+;               - フォルダインデックスは NaviFilter のものを使い回す
+;               - あいまい一致（入力した文字が間を空けて順に含まれていれば一致）
+;               - 'word は続けて並んだものだけに一致
+;               - フォルダ名での一致を優先し、スコア順に並べる
+;               - Ctrl+E でツリーと切り替え（状態は Navi.ini に保存）
+; Usage:        NaviDirList.Init(naviRef) を Navi.Init() から、
+;               NaviDirList.Build(gui, tv) を Navi.Show() の TreeView 作成直後に呼ぶ
+; ==============================================================================
+
+class NaviDirList {
+    static _navi := ""
+    static Active := false          ; true=リストビュー表示中 / false=ツリー表示中
+    static _rows := []              ; 表示中の行番号 → 絶対パス
+    static _matchCount := 0         ; 直近の一致件数（表示上限を超えた分も含む）
+    static _pending := ""           ; 再入中に届いた最新クエリ
+    static _pendingSet := false
+    static _running := false
+    static _navCond := ""           ; Up / PgUp / PgDn ホットキーの HotIf 条件
+
+    ; 直前の結果の使い回し用（クエリを後ろに伸ばしただけなら前回の一致から絞り込む）
+    static _cacheIndex := ""
+    static _cacheRoot := ""
+    static _cacheQuery := ""
+    static _cacheRels := []
+
+    static DISPLAY_CAP := 500       ; 表示する最大行数
+    static DEBOUNCE_MS := 80        ; 入力から絞り込みまでの待ち時間
+    static NAME_COL_RATIO := 0.4    ; 名前列の幅（全体に対する比率）
+    static PAGE_ROWS := 10          ; PgUp / PgDn で移動する行数
+
+    static Init(naviRef) {
+        this._navi := naviRef
+        this.Active := (IniRead(naviRef.IniPath, "Settings", "DirListMode", "0") == "1")
+        this._navCond := (*) => this._IsFilterNav()
+    }
+
+    /**
+     * TreeView と同じ位置・大きさで ListView を作り、リストビュー用ホットキーを登録する
+     */
+    static Build(gui, tv) {
+        nv := this._navi
+        tv.GetPos(&x, &y, &w, &h)
+        ; 0x8=LVS_SHOWSELALWAYS（フィルター欄にフォーカスがあっても選択行を表示）
+        ; 0x40=LVS_SHARESIMAGELISTS（TreeView と共有する ImageList を破棄させない）
+        lv := gui.Add("ListView", Format("x{} y{} w{} h{} vDirList -Multi NoSortHdr +0x8 +0x40 +LV0x10000", x, y, w, h),
+            ["名前", "場所"])
+        lv.Visible := false
+        lv.SetImageList(nv._ILHandle, 1)
+        this._SizeColumns(w)
+        lv.OnEvent("DoubleClick", (*) => nv._HandleActivate())
+        this._rows := []
+        this._ResetCache()
+
+        HotIf(this._navCond)
+        Hotkey("Up",   (*) => this.Move(-1), "On")
+        Hotkey("PgUp", (*) => this.Move(-this.PAGE_ROWS), "On")
+        Hotkey("PgDn", (*) => this.Move(this.PAGE_ROWS), "On")
+        HotIf()
+    }
+
+    ; フィルター欄にフォーカスがあるリストビュー表示中だけ Up / PgUp / PgDn を横取りする
+    static _IsFilterNav() {
+        nv := this._navi
+        if !(this.Active && nv.GuiObj && WinActive("ahk_id " nv.GuiObj.Hwnd))
+            return false
+        focus := 0
+        try focus := DllCall("user32\GetFocus", "ptr")
+        return focus != 0 && focus = nv.GuiObj._treeFilterHwnd
+    }
+
+    static _ResetCache() {
+        this._cacheIndex := ""
+        this._cacheRoot := ""
+        this._cacheQuery := ""
+        this._cacheRels := []
+    }
+
+    ; ==============================================================================
+    ; 表示切り替え
+    ; ==============================================================================
+
+    /**
+     * ツリー ↔ リストを切り替える（Ctrl+E）
+     * リストからツリーへ戻るときは、リストで選んでいたフォルダをツリーで選択する
+     */
+    static Toggle() {
+        nv := this._navi
+        if !(nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        ; ファイル検索モード中はフォルダフィルターに戻してから切り替える
+        if (nv._SearchMode)
+            nv._ToggleSearchMode()
+        if (this.Active)
+            this.RevealInTree()
+        else
+            this._SetActive(true)
+    }
+
+    /**
+     * リストで選んでいるフォルダをツリーで表示する（リスト上の →）
+     * フィルターを消してツリーを作り直し、そのフォルダまで展開して選択する
+     */
+    static RevealInTree() {
+        nv := this._navi
+        if !(this.Active && nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        path := this.SelectedPath()
+        this._SetActive(false)
+        tv := nv.GuiObj["FolderTree"]
+        filter := nv.GuiObj["TreeFilter"]
+        if (path != "") {
+            rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
+            filter.Value := ""
+            if (rootPath != "")
+                nv._RefreshTree(tv, rootPath, false)
+            nv._FocusPath(tv, path)
+        } else {
+            ; 選択がなければ入力中のキーワードをツリーのフィルターとして引き継ぐ
+            NaviFilter.ApplyTreeFilter(filter.Value)
+            tv.Focus()
+        }
+    }
+
+    static _SetActive(on) {
+        nv := this._navi
+        this.Active := on
+        IniWrite(on ? "1" : "0", nv.IniPath, "Settings", "DirListMode")
+        this.ApplyVisibility()
+        if (on) {
+            this.Apply(nv.GuiObj["TreeFilter"].Value)
+            nv.GuiObj["TreeFilter"].Focus()
+        }
+        NaviBreadcrumb.Refresh()
+        nv._UpdateStatusBar()
+    }
+
+    /** Active に合わせて TreeView / ListView の表示を切り替える */
+    static ApplyVisibility() {
+        nv := this._navi
+        nv.GuiObj["FolderTree"].Visible := !this.Active
+        nv.GuiObj["DirList"].Visible := this.Active
+    }
+
+    ; ウィンドウリサイズ時に TreeView と同じ位置・大きさへ合わせる
+    static OnResize(w, h) {
+        nv := this._navi
+        try {
+            nv.GuiObj["DirList"].Move(, , w, h)
+            this._SizeColumns(w)
+        }
+    }
+
+    static _SizeColumns(w) {
+        lv := this._navi.GuiObj["DirList"]
+        ; 縦スクロールバー分を引いて横スクロールバーが出ないようにする
+        inner := Max(100, w - SysGet(2) - 4)  ; SM_CXVSCROLL
+        nameW := Round(inner * this.NAME_COL_RATIO)
+        lv.ModifyCol(1, nameW)
+        lv.ModifyCol(2, inner - nameW)
+    }
+
+    ; ==============================================================================
+    ; 選択・移動
+    ; ==============================================================================
+
+    /** 選択中の行の絶対パス（選択がない・一致なしの行なら ""） */
+    static SelectedPath() {
+        nv := this._navi
+        try {
+            row := nv.GuiObj["DirList"].GetNext(0)
+            if (row > 0 && row <= this._rows.Length)
+                return this._rows[row]
+        }
+        return ""
+    }
+
+    /** 選択行を delta 行ずらす（フィルター欄にフォーカスを残したまま） */
+    static Move(delta) {
+        nv := this._navi
+        lv := nv.GuiObj["DirList"]
+        n := this._rows.Length
+        if (n == 0)
+            return
+        cur := lv.GetNext(0)
+        nxt := (cur == 0) ? 1 : Min(Max(cur + delta, 1), n)
+        lv.Modify(0, "-Select")
+        lv.Modify(nxt, "Select Focus Vis")
+    }
+
+    /**
+     * マウス位置の行を選択してそのパスを返す（右クリックメニュー用）
+     * RButton ホットキーがクリックを握りつぶすため、選択は自前でヒットテストする
+     */
+    static SelectRowAtMouse() {
+        lv := this._navi.GuiObj["DirList"]
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "ptr", pt)
+        DllCall("user32\ScreenToClient", "ptr", lv.Hwnd, "ptr", pt)
+        ; LVHITTESTINFO: POINT pt, UINT flags, int iItem, int iSubItem, int iGroup
+        hit := Buffer(24, 0)
+        NumPut("int", NumGet(pt, 0, "int"), "int", NumGet(pt, 4, "int"), hit, 0)
+        idx := SendMessage(0x1012, 0, hit.Ptr, lv)  ; LVM_HITTEST
+        if (idx < 0 || idx >= 0xFFFFFFFF || idx + 1 > this._rows.Length)
+            return ""
+        lv.Modify(0, "-Select")
+        lv.Modify(idx + 1, "Select Focus")
+        return this._rows[idx + 1]
+    }
+
+    /**
+     * 選択行の名前欄の右上をスクリーン座標で返す（コンテキストメニューの表示位置）
+     * 選択がなければ false
+     */
+    static GetMenuPoint(&x, &y) {
+        lv := this._navi.GuiObj["DirList"]
+        row := lv.GetNext(0)
+        if (row == 0)
+            return false
+        rect := Buffer(16, 0)
+        NumPut("int", 2, rect, 0)  ; LVIR_LABEL
+        if !SendMessage(0x100E, row - 1, rect.Ptr, lv)  ; LVM_GETITEMRECT
+            return false
+        pt := Buffer(8, 0)
+        NumPut("int", NumGet(rect, 8, "int"), "int", NumGet(rect, 4, "int"), pt, 0)
+        DllCall("user32\ClientToScreen", "ptr", lv.Hwnd, "ptr", pt)
+        x := NumGet(pt, 0, "int")
+        y := NumGet(pt, 4, "int")
+        return true
+    }
+
+    ; ==============================================================================
+    ; 絞り込み
+    ; ==============================================================================
+
+    /**
+     * query で一覧を作り直す
+     * 再入防止: 実行中に届いたクエリは保留し、終わってから最新のものだけ処理する
+     */
+    static Apply(query) {
+        if (this._running) {
+            this._pending := query
+            this._pendingSet := true
+            return
+        }
+        this._running := true
+        this._pendingSet := false
+        try {
+            this._ApplyCore(query)
+        } catch Any {
+            ; GUI 破棄など想定内の例外は無視する
+        } finally {
+            this._running := false
+            if (this._pendingSet) {
+                q := this._pending
+                this._pending := ""
+                this._pendingSet := false
+                SetTimer(() => this.Apply(q), -1)
+            }
+        }
+    }
+
+    ; 現在のフィルター欄の内容で作り直す（インデックス完成時・ルート変更時のコールバック用）
+    static ApplyCurrent() {
+        nv := this._navi
+        if (this.Active && nv.GuiObj && WinExist(nv.GuiObj))
+            this.Apply(nv.GuiObj["TreeFilter"].Value)
+    }
+
+    static _ApplyCore(query) {
+        nv := this._navi
+        if !(this.Active && nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
+        if (rootPath == "") {
+            this._ShowMessage("ルートが選択されていません")
+            return
+        }
+        if (NaviFilter._IndexedRoot != rootPath) {
+            onReady := () => SetTimer(() => this.ApplyCurrent(), -1)
+            if !NaviFilter._EnsureIndex(rootPath, onReady) {
+                this._ShowMessage("フォルダを集めています…")
+                return
+            }
+        }
+        index := NaviFilter._FolderIndex
+        rootBase := RTrim(rootPath, "\")
+        terms := this._ParseQuery(query)
+        rels := this._Candidates(rootBase, query, index)
+
+        matched := []
+        top := this._Rank(rels, terms, matched)
+        this._cacheIndex := index
+        this._cacheRoot := rootBase
+        this._cacheQuery := query
+        this._cacheRels := matched
+        this._matchCount := matched.Length
+
+        if (matched.Length == 0) {
+            this._ShowMessage("(一致なし)")
+            return
+        }
+        lv := nv.GuiObj["DirList"]
+        lv.Opt("-Redraw")
+        lv.Delete()
+        this._rows := []
+        for rel in top {
+            SplitPath(rel, &name, &dir)
+            lv.Add("Icon1", name, dir)
+            this._rows.Push(rootBase . "\" . rel)
+        }
+        lv.Modify(1, "Select Focus Vis")
+        lv.Opt("+Redraw")
+        nv._UpdateStatusBar()
+    }
+
+    /**
+     * rels を terms で絞り込み、表示する上位の相対パスを返す
+     * 一致したものはすべて matched に積む（次の絞り込みの候補に使う）
+     */
+    static _Rank(rels, terms, matched) {
+        ; スコア → パス長の 2 段のバケツに振り分ける
+        ; （数万件をまとめて Sort() にかけると並べ替え用の文字列作りだけで数百 ms かかるため、
+        ;   表示する上位の分だけを後で並べる）
+        buckets := Map()  ; score → Map(パス長 → [rel, ...])
+        for rel in rels {
+            SplitPath(rel, &name)
+            score := this._Score(rel, name, terms)
+            if (score < 0)
+                continue
+            matched.Push(rel)
+            byLen := buckets.Has(score) ? buckets[score] : (buckets[score] := Map())
+            len := StrLen(rel)
+            (byLen.Has(len) ? byLen[len] : (byLen[len] := [])).Push(rel)
+        }
+        return this._TopRels(buckets)
+    }
+
+    /**
+     * バケツから「スコア降順・パス長昇順・パス昇順」で最大 DISPLAY_CAP 件を取り出す
+     * Map は整数キーを昇順で列挙するので、スコアは逆順にたどる
+     */
+    static _TopRels(buckets) {
+        scores := []
+        for score in buckets
+            scores.Push(score)
+        top := []
+        i := scores.Length
+        while (i >= 1 && top.Length < this.DISPLAY_CAP) {
+            for len, arr in buckets[scores[i]] {
+                if (arr.Length > 1) {
+                    joined := ""
+                    for rel in arr
+                        joined .= rel . "`n"
+                    arr := StrSplit(Sort(RTrim(joined, "`n")), "`n")
+                }
+                for rel in arr {
+                    top.Push(rel)
+                    if (top.Length >= this.DISPLAY_CAP)
+                        return top
+                }
+            }
+            i--
+        }
+        return top
+    }
+
+    ; 一覧を空にして 1 行だけメッセージを出す（選択しても何も起きない行）
+    static _ShowMessage(msg) {
+        nv := this._navi
+        lv := nv.GuiObj["DirList"]
+        lv.Delete()
+        lv.Add(, msg)
+        this._rows := []
+        this._matchCount := 0
+        nv._UpdateStatusBar()
+    }
+
+    /**
+     * 絞り込みの対象にするルートからの相対パス一覧
+     * 前回と同じインデックス・ルートで、前回のクエリを後ろに伸ばしただけなら
+     * 一致は前回の一致の中にしかないので、そこから絞り込む
+     */
+    static _Candidates(rootBase, query, index) {
+        if (this._cacheIndex != "" && this._cacheIndex == index
+            && this._cacheRoot = rootBase && this._cacheQuery != ""
+            && SubStr(query, 1, StrLen(this._cacheQuery)) = this._cacheQuery)
+            return this._cacheRels
+        rels := []
+        prefixLen := StrLen(rootBase) + 2
+        for fullPath in index {
+            rel := SubStr(fullPath, prefixLen)
+            if (rel != "")
+                rels.Push(rel)
+        }
+        return rels
+    }
+
+    /**
+     * クエリを語に分ける（半角・全角スペース区切り、すべての語に一致したものを残す）
+     * 各語: { lit: 語そのもの, exact: 'で始まるか, re: あいまい一致用の正規表現 }
+     */
+    static _ParseQuery(query) {
+        terms := []
+        for raw in StrSplit(StrReplace(Trim(query), "　", " "), " ") {
+            exact := (SubStr(raw, 1, 1) == "'")
+            lit := exact ? SubStr(raw, 2) : raw
+            if (lit == "")
+                continue
+            re := "i)"
+            for i, ch in StrSplit(lit) {
+                if (i > 1)
+                    re .= ".*?"
+                re .= InStr("\.*?+[](){}|^$", ch) ? "\" . ch : ch
+            }
+            terms.Push({ lit: lit, exact: exact, re: re })
+        }
+        return terms
+    }
+
+    /**
+     * 相対パスのスコア（どれかの語に一致しなければ -1、語がなければ 0）
+     * 語ごとに次の段で評価し、上の段ほど高い（段どうしの値の範囲は重ならない）
+     *   フォルダ名に続けて含む   500〜700（先頭一致と、名前の余りが少ないほど高い）
+     *   フォルダ名にあいまい一致 300〜400（文字の間が詰まっているほど高い）
+     *   パスに続けて含む         200
+     *   パスにあいまい一致       100〜199
+     */
+    static _Score(rel, name, terms) {
+        total := 0
+        for t in terms {
+            litLen := StrLen(t.lit)
+            if (p := InStr(name, t.lit)) {
+                s := 500 + Max(0, 100 - (StrLen(name) - litLen)) + (p == 1 ? 100 : 0)
+            } else if (!t.exact && RegExMatch(name, t.re, &m)) {
+                s := 300 + Max(0, 100 - 3 * (m.Len - litLen))
+            } else if (InStr(rel, t.lit)) {
+                s := 200
+            } else if (!t.exact && RegExMatch(rel, t.re, &m)) {
+                s := 100 + Max(0, 99 - (m.Len - litLen))
+            } else {
+                return -1
+            }
+            total += s
+        }
+        return total
+    }
+
+    /** ステータスバーに出す文字列 */
+    static StatusText() {
+        base := " [Enter]開く  [Space]メニュー  [→]ツリーで表示  [Ctrl+E]ツリー"
+        if (this._matchCount > this.DISPLAY_CAP)
+            return base . "   " . this._matchCount . " 件中 上位 " . this.DISPLAY_CAP . " 件"
+        return base . "   " . this._matchCount . " 件"
+    }
+}

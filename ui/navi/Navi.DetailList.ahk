@@ -33,15 +33,12 @@ class NaviDetailList {
             return
         }
 
-        tv := nv.GuiObj["FolderTree"]
-        id := tv.GetSelection()
-        if (id = 0) {
+        selectedPath := nv._GetSelectedPath()
+        if (selectedPath == "") {
             ToolTip("フォルダを選択してください")
             SetTimer(() => ToolTip(), -nv.TOOLTIP_ERROR_DURATION)
             return
         }
-
-        selectedPath := nv._GetTVFullPath(tv, id)
 
         ; フォルダでない場合は親フォルダを取得
         targetDir := ""
@@ -144,7 +141,7 @@ class NaviDetailList {
         }
         if (nv.GuiObj && WinExist(nv.GuiObj)) {
             nv.GuiObj.Opt("-Disabled")
-            try nv.GuiObj["FolderTree"].Focus()
+            try nv._FocusMainView()
         }
     }
 

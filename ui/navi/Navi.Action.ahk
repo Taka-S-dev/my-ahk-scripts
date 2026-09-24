@@ -31,14 +31,13 @@ class NaviActions {
 
     static ShowActionMenu() {
         nv := this._navi
-        tvObj := nv.GuiObj["FolderTree"]
-        if !(id := tvObj.GetSelection()) {
+        fullPath := nv._GetSelectedPath()
+        if (fullPath == "") {
             ToolTip("フォルダを選択してください")
             SetTimer(() => ToolTip(), -1000)
             return
         }
 
-        fullPath := nv._GetTVFullPath(tvObj, id)
         nv.GuiObj.GetPos(&gx, &gy, &gw, &gh)
 
         nv.GuiObj.Opt("+Disabled")
@@ -87,12 +86,10 @@ class NaviActions {
         nv := this._navi
         fullPath := ""
         if (nv.GuiObj && WinExist(nv.GuiObj)) {
-            tvObj := nv.GuiObj["FolderTree"]
-            if (id := tvObj.GetSelection()) {
-                fullPath := nv._GetTVFullPath(tvObj, id)
-                ; 操作したパスをメモリに保存
+            fullPath := nv._GetSelectedPath()
+            ; 操作したパスをメモリに保存
+            if (fullPath != "")
                 nv.lastPath := fullPath
-            }
         }
         if (fullPath == "") {
             fullPath := nv._GetActiveWindowPath()
