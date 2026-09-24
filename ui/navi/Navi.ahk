@@ -32,6 +32,9 @@
 class Navi {
     ; --- クラス定数 ---
     static GUI_WIDTH := 600
+    static BG_COLOR := "FFFFFF"      ; 本体の背景色（選択中のタブと同じ色にしてつなげる）
+    static TREE_ITEM_H := 22         ; ツリーの 1 行の高さ
+    static STATUS_LEFT_W := 210      ; ステータスバー左側（表示と件数）の幅
     static GUI_HEIGHT_APPROX := 565
     static _savedW := 0
     static _savedH := 0
@@ -136,6 +139,7 @@ class Navi {
         this.GuiObj := ""
 
         this.GuiObj := Gui("+AlwaysOnTop +Resize", "Navi")
+        this.GuiObj.BackColor := this.BG_COLOR
         this.GuiObj.SetFont("s9", "Yu Gothic UI")
 
         folderMap := Map(), folderNames := []
@@ -155,7 +159,7 @@ class Navi {
         this.GuiObj.SetFont("s9", "Yu Gothic UI")
 
         ; --- ヘッダー行（プロファイル・ルート選択・編集・設定・チェックボックス）---
-        rootBtnText := (this.lastRoot != "") ? this._TruncRootLabel(this.lastRoot) : "ルートを選択..."
+        rootBtnText := this._TruncRootLabel(this.lastRoot)
         ; Profile は小さいフォントで控えめに（文脈ラベル的な扱い）
         this.GuiObj.SetFont("s8", "Yu Gothic UI")
         btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", NaviProfile.GetProfileBtnText())
@@ -217,9 +221,13 @@ class Navi {
         this.GuiObj._treeFilterHwnd := treeFilter.Hwnd
 
         ; --- TreeView ---
-        tv := this.GuiObj.Add("TreeView", "xm w455 r15 vFolderTree")
+        ; 点線なし・行全体の選択（0x1000=TVS_FULLROWSELECT）にしてエクスプローラーと同じ見た目にする
+        tv := this.GuiObj.Add("TreeView", "xm w455 r15 vFolderTree -Lines +0x1000")
         this._SetupTreeIcons(tv)
         this._tvHwnd := tv.Hwnd
+        this._ApplyExplorerTheme(tv)
+        SendMessage(0x112C, 0x4, 0x4, tv)                 ; TVM_SETEXTENDEDSTYLE: TVS_EX_DOUBLEBUFFER
+        SendMessage(0x111B, this.TREE_ITEM_H, 0, tv)      ; TVM_SETITEMHEIGHT
 
         ; --- フォルダ一覧（ツリーと同じ場所に重ね、Ctrl+E で切り替え）---
         NaviDirList.Build(this.GuiObj, tv)
@@ -227,7 +235,7 @@ class Navi {
         ; --- クイック登録欄（下部）---
         quickEdit := this.GuiObj.Add("Edit", "xm w455 vQuickPath -Tabstop", "")
         try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr",
-            "Add root: full path + Enter", "ptr")
+            "ルートを追加: フルパスを入力して Enter", "ptr")
         quickEdit.SetFont("s9 c808080", "Yu Gothic UI")
         quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
         quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
@@ -237,9 +245,11 @@ class Navi {
 
         ; ステータスバーによる操作案内
         this.GuiObj.SetFont("s8", "Yu Gothic UI")
+        ; 左: 今の表示と件数 / 右: 操作の案内
         sb := this.GuiObj.Add("StatusBar")
-        sb.SetText(" [Ctrl+;]コマンド  [Space]メニュー  [Enter]開く  [F1]ヘルプ")
+        sb.SetParts(this.STATUS_LEFT_W)
         this.GuiObj._sbRef := sb
+        this._UpdateStatusBar()
 
         ; リサイズ計算用に TreeView・RootBtn の位置を記録
         tv.GetPos(, &_tvY_)
@@ -1091,12 +1101,18 @@ class Navi {
         try {
             sb := this.GuiObj._sbRef
             if (NaviDirList.Active) {
-                sb.SetText(NaviDirList.StatusText())
+                sb.SetText(NaviDirList.StatusText(), 1)
+                sb.SetText(NaviDirList.StatusHints(), 2)
                 return
             }
-            base := " [Ctrl+;]コマンド  [Space]メニュー  [Enter]開く  [F1]ヘルプ"
-            sb.SetText(NaviMark._MarkFilterActive ? base . "  [mark]" : base)
+            sb.SetText(NaviMark._MarkFilterActive ? " ツリー（マークのみ）" : " ツリー", 1)
+            sb.SetText(" Ctrl+; コマンド     Space メニュー     Enter 開く     F1 ヘルプ", 2)
         }
+    }
+
+    ; ツリー・リストを Windows 11 のエクスプローラーと同じ見た目（ホバー表示・選択の色）にする
+    static _ApplyExplorerTheme(ctrl) {
+        try DllCall("uxtheme\SetWindowTheme", "ptr", ctrl.Hwnd, "wstr", "Explorer", "ptr", 0)
     }
 
     static _GetActiveWindowPath() {
@@ -1120,8 +1136,11 @@ class Navi {
     }
 
     ; RootBtn (w190) に収まるよう長い名前を切り詰める
+    ; ▾ を付けて、押すと選べるボタンだと分かるようにする
     static _TruncRootLabel(name) {
-        return (StrLen(name) > 18) ? SubStr(name, 1, 16) . "..." : name
+        if (name == "")
+            return "ルートを選択 ▾"
+        return ((StrLen(name) > 18) ? SubStr(name, 1, 16) . "…" : name) . " ▾"
     }
 
     static _QuickRegisterFromEdit() {
@@ -1165,7 +1184,7 @@ class Navi {
         ; UIを更新
         rootBtn := this.GuiObj["RootBtn"]
         tv := this.GuiObj["FolderTree"]
-        rootBtn.Text := name
+        rootBtn.Text := this._TruncRootLabel(name)
 
         NaviTab.PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
         this.lastRoot := name
@@ -1818,7 +1837,12 @@ class Navi {
         ; 全幅コントロールを幅に追従させる
         this.GuiObj["Breadcrumb"].Move(, , ctrlW)
         if (NaviTab._TabSepCtrl)
-            NaviTab._TabSepCtrl.Move(0, , w)  ; タブ下区切り線はクライアント全幅
+            NaviTab._TabSepCtrl.Move(0, , w)  ; タブ下の余白はクライアント全幅
+        if (NaviTab._TabStripCtrl)
+            NaviTab._TabStripCtrl.Move(0, , w)  ; タブの帯もクライアント全幅
+        ; 窓の幅が変わるとタブが入りきるかが変わるので、タブ幅を計算し直す
+        if (NaviTab._TabCount > 1 && NaviTab._TabBtnCtrls.Length)
+            NaviTab.UpdateTabBar()
         ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
         this.GuiObj["TreeFilter"].GetPos(&_tfX_)
         this.GuiObj["TreeFilter"].Move(, , w - margin - _tfX_)

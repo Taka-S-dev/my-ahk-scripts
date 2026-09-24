@@ -141,7 +141,7 @@ class NaviProfile {
         }
 
         ; UI 更新
-        nv.GuiObj["RootBtn"].Text := (nv.lastRoot != "") ? nv._TruncRootLabel(nv.lastRoot) : "ルートを選択..."
+        nv.GuiObj["RootBtn"].Text := nv._TruncRootLabel(nv.lastRoot)
         this.UpdateProfileBtn()
         NaviTab.UpdateTabBar()
         nv._UpdateStatusBar()
@@ -169,11 +169,12 @@ class NaviProfile {
         nv := this._navi
         last := IniRead(nv.IniPath, "Settings", "LastProfile", "")
         if (last == "")
-            return "Profile"
+            return "Profile ▾"
         name := RegExReplace(last, ".*\\")
         name := RegExReplace(name, "\.txt$")
         maxLen := this._PROFILE_BTN_MAX_LEN
-        return (StrLen(name) > maxLen) ? SubStr(name, 1, maxLen - 1) . ".." : name
+        ; ▾ を付けて、押すと選べるボタンだと分かるようにする
+        return ((StrLen(name) > maxLen) ? SubStr(name, 1, maxLen - 1) . "…" : name) . " ▾"
     }
 
     static UpdateProfileBtn() {

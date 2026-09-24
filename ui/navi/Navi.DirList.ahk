@@ -22,6 +22,9 @@ class NaviDirList {
     static _pendingSet := false
     static _running := false
     static _navCond := ""           ; Up / PgUp / PgDn ホットキーの HotIf 条件
+    static _lvHwnd := 0
+    static _drawHandler := ""       ; 選択行を塗る WM_NOTIFY ハンドラー
+    static SEL_BG_COLOR := 0xF7E4CC  ; 入力欄にいる間の選択行の背景（BGR: RGB(204,228,247) 薄い青）
     static _listCond := ""          ; Shift+Tab ホットキーの HotIf 条件
 
     ; --- ファイルインデックス（Show のたびに作り直す）---
@@ -67,6 +70,12 @@ class NaviDirList {
             ["名前", "場所"])
         lv.Visible := false
         lv.SetImageList(nv._ILHandle, 1)
+        nv._ApplyExplorerTheme(lv)
+        this._lvHwnd := lv.Hwnd
+        if (this._drawHandler == "") {
+            this._drawHandler := (w, l, m, h) => this._OnCustomDraw(l)
+            OnMessage(nv.WM_NOTIFY, this._drawHandler)
+        }
         this._SizeColumns(w)
         lv.OnEvent("DoubleClick", (*) => nv._HandleActivate())
         this._rows := []
@@ -198,6 +207,31 @@ class NaviDirList {
         nv := this._navi
         nv.GuiObj["FolderTree"].Visible := !this.Active
         nv.GuiObj["DirList"].Visible := this.Active
+    }
+
+    /**
+     * WM_NOTIFY → NM_CUSTOMDRAW: 入力欄にフォーカスがある間も選択行を薄い青で見せる
+     * （テーマのままだとフォーカスのないリストの選択行はほぼ見えない灰色になる）
+     * 他の WM_NOTIFY ハンドラーと共存するため、このリスト以外の通知には "" を返す
+     */
+    static _OnCustomDraw(l) {
+        if (NumGet(l, 0, "ptr") != this._lvHwnd || NumGet(l, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
+            return
+        stage := NumGet(l, A_PtrSize = 8 ? 24 : 12, "uint")
+        if (stage = 0x1)          ; CDDS_PREPAINT
+            return 0x20           ; CDRF_NOTIFYITEMDRAW
+        if (stage != 0x10001)     ; CDDS_ITEMPREPAINT 以外は既定の描画
+            return 0
+        if (DllCall("user32\GetFocus", "ptr") = this._lvHwnd)
+            return 0              ; リスト自体にフォーカスがあればテーマの選択色のまま
+        item := NumGet(l, A_PtrSize = 8 ? 56 : 36, "uptr")
+        if !(SendMessage(0x102C, item, 0x2, this._lvHwnd) & 0x2)  ; LVM_GETITEMSTATE: LVIS_SELECTED
+            return 0
+        stateOff := A_PtrSize = 8 ? 64 : 40
+        ; CDIS_SELECTED を外してテーマの灰色を描かせず、背景色だけ自分で指定する
+        NumPut("uint", NumGet(l, stateOff, "uint") & ~0x1, l, stateOff)
+        NumPut("uint", this.SEL_BG_COLOR, l, A_PtrSize = 8 ? 84 : 52)  ; clrTextBk
+        return 0x2                ; CDRF_NEWFONT
     }
 
     ; ウィンドウリサイズ時に TreeView と同じ位置・大きさへ合わせる
@@ -514,16 +548,20 @@ class NaviDirList {
         return total
     }
 
-    /** ステータスバーに出す文字列 */
+    /** ステータスバー左側: 今の一覧と件数 */
     static StatusText() {
-        kind := (this.Kind == "files") ? " 📄ファイル" : " 📁フォルダ"
-        base := kind . "  [Ctrl+;]コマンド  [Shift+Tab]切替  [Enter]開く  [→]ツリーで表示"
+        kind := (this.Kind == "files") ? " ファイル一覧" : " フォルダ一覧"
         count := (this._matchCount > this.DISPLAY_CAP)
-            ? this._matchCount . " 件中 上位 " . this.DISPLAY_CAP . " 件"
+            ? this._matchCount . " 件（上位 " . this.DISPLAY_CAP . "）"
             : this._matchCount . " 件"
         if (this.Kind == "files" && this._FileIndexTruncated)
-            count .= "（ファイルは " . this._FileIndex.Length . " 件で打ち切り）"
-        return base . "   " . count
+            count .= " ※打ち切り"
+        return kind . "   " . count
+    }
+
+    /** ステータスバー右側: 操作の案内 */
+    static StatusHints() {
+        return " Ctrl+; コマンド     Shift+Tab 切替     Enter 開く     → ツリーで表示"
     }
 
     ; ==============================================================================

@@ -14,15 +14,21 @@ class NaviTab {
 
     ; --- タブ定数 ---
     static TAB_MAX    := 5   ; タブ最大数
-    static TAB_WIDTH  := 85  ; タブ1枠の幅px
-    static TAB_HEIGHT := 22  ; タブ1枠の高さpx
-    static PLUS_WIDTH := 22  ; + ボタンの幅px
+    static TAB_WIDTH  := 85  ; タブ1枠の幅px（作成時の仮の幅。表示時は名前の長さに合わせる）
+    static TAB_MIN_W  := 64  ; タブ幅の下限px
+    static TAB_MAX_W  := 170 ; タブ幅の上限px（超える名前は末尾を … で省略）
+    static TAB_PAD_X  := 14  ; タブ名の左右の余白px
+    static TAB_HEIGHT := 26  ; タブ1枠の高さpx
+    static PLUS_WIDTH := 26  ; + ボタンの幅px
     static TAB_HISTORY_MAX := 20  ; タブ内ルート履歴の最大保持件数
     static TAB_INDICATOR_COLOR := 0x0078D4  ; アクティブタブ上端のアクセントライン色（Windows accent blue）
     static TAB_INDICATOR_H     := 2         ; アクセントラインの高さpx
-    static TAB_TEXT_ACTIVE     := "000000"  ; アクティブタブの文字色（黒）
-    static TAB_TEXT_INACTIVE   := "808080"  ; 非アクティブタブの文字色（グレー）
-    static TAB_TEXT_HOVER      := "404040"  ; ホバー時の文字色（中間色）
+    static TAB_TEXT_ACTIVE     := "1F1F1F"  ; アクティブタブの文字色
+    static TAB_TEXT_INACTIVE   := "6B6B6B"  ; 非アクティブタブの文字色
+    static TAB_TEXT_HOVER      := "303030"  ; ホバー時の文字色
+    ; VSCode・ブラウザと同じく、タブの帯を灰色にし、アクティブタブだけ本体と同じ白でつなげる
+    static TAB_STRIP_COLOR     := "EFEFEF"  ; タブの帯・非アクティブタブの背景
+    static TAB_HOVER_COLOR     := "E2E2E2"  ; ホバー中の非アクティブタブ・+ボタンの背景
 
     ; --- タブ状態 ---
     static _Tabs       := []  ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
@@ -35,7 +41,8 @@ class NaviTab {
     static _TabDividers    := []  ; タブ間の縦線（TAB_MAX-1 個）
     static _TabPlusBtn     := ""  ; 新規タブ追加 + ボタン
     static _TabPlusHoverBg := ""  ; +ボタンのホバー時背景（ホバー時のみ表示）
-    static _TabSepCtrl     := ""  ; タブ下の区切り線
+    static _TabSepCtrl     := ""  ; タブ下の余白（レイアウトの基準。表示はしない）
+    static _TabStripCtrl   := ""  ; タブの帯の背景
     static _tabBarVisible := true  ; タブバー表示状態（1タブ時は非表示）
     static _tabBarShift   := 0     ; タブバー非表示時にコントロールを上げるpx（Show()で実測値に確定）
     static _HoverTimerActive := false  ; ホバーツールチップ用タイマー状態
@@ -62,22 +69,29 @@ class NaviTab {
         this._TabDividers   := []
         guiObj.SetFont("s9", "Yu Gothic UI")
         indColor := "Background" . Format("{:06X}", this.TAB_INDICATOR_COLOR)
-        ; VSCode風: アクティブタブの上端にアクセントラインを表示（背景色は使わない）
+        ; タブの帯（最初に作って z-order を一番下にする）。上端からタブの下端まで全幅で敷く
+        stripH := guiObj.MarginY + this.TAB_INDICATOR_H + this.TAB_HEIGHT
+        strip := guiObj.Add("Text", "x0 y0 w" . (nv.GUI_WIDTH + 2 * guiObj.MarginX) . " h" . stripH
+            . " Background" . this.TAB_STRIP_COLOR, "")
+        this._TabStripCtrl := strip
+        ; VSCode風: アクティブタブの上端にアクセントラインを表示
         Loop this.TAB_MAX {
             n    := A_Index
             w    := this.TAB_WIDTH
-            xOpt := (n = 1) ? "xm w" . w . " h" . this.TAB_INDICATOR_H . " " . indColor
+            xOpt := (n = 1) ? "xm ym w" . w . " h" . this.TAB_INDICATOR_H . " " . indColor
                             : "x+1 yp w" . w . " h" . this.TAB_INDICATOR_H . " " . indColor
             ind := guiObj.Add("Text", xOpt, "")
             this._TabIndicators.Push(ind)
             ind.Visible := false
         }
         ; タブラベル（アクセントラインの下に配置）
+        ; 0x4301 = SS_ENDELLIPSIS | SS_CENTERIMAGE（縦中央）| SS_NOTIFY | SS_CENTER
         Loop this.TAB_MAX {
             n    := A_Index
             w    := this.TAB_WIDTH
-            xOpt := (n = 1) ? "xm y+0 w" . w . " h" . this.TAB_HEIGHT . " +0x101"
-                            : "x+1 yp w" . w . " h" . this.TAB_HEIGHT . " +0x101"
+            bg   := " Background" . this.TAB_STRIP_COLOR
+            xOpt := (n = 1) ? "xm y+0 w" . w . " h" . this.TAB_HEIGHT . " +0x4301" . bg
+                            : "x+1 yp w" . w . " h" . this.TAB_HEIGHT . " +0x4301" . bg
             lbl  := guiObj.Add("Text", xOpt, this._GetTabLabel(n))
             this._TabBtnCtrls.Push(lbl)
             lbl.OnEvent("Click", this.MakeTabHandler(n))
@@ -85,11 +99,13 @@ class NaviTab {
                 lbl.Visible := false
         }
         ; + ボタンのホバー背景（先に作成して z-order を下に。ホバー時のみ表示）
-        plusBg := guiObj.Add("Text", "x+4 yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " BackgroundE0E0E0", "")
+        plusBg := guiObj.Add("Text", "x+4 yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " Background" . this.TAB_HOVER_COLOR, "")
         plusBg.Visible := false
         this._TabPlusHoverBg := plusBg
         ; + ボタン（新規タブ追加）
-        plus := guiObj.Add("Text", "xp yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " +0x101 BackgroundTrans c606060", "+")
+        guiObj.SetFont("s11")
+        plus := guiObj.Add("Text", "xp yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " +0x301 BackgroundTrans c606060", "+")
+        guiObj.SetFont("s9")
         plus.OnEvent("Click", (*) => this.NewTab())
         this._TabPlusBtn := plus
         ; タブ間の縦線（TAB_MAX-1 個、SS_GRAYRECT スタイル）。タブバーの上端からラベル下端まで貫通させる
@@ -100,12 +116,14 @@ class NaviTab {
             n  := A_Index
             dx := margin + n * this.TAB_WIDTH + (n - 1)
             ; +0x5 = SS_GRAYRECT (Win32の標準的な灰色矩形スタイル)
+            ; 帯とアクティブタブの色の差で区切りが見えるので、縦線は表示しない（参照だけ残す）
             div := guiObj.Add("Text", "x" . dx . " y" . divY . " w1 h" . divH . " +0x5", "")
+            div.Visible := false
             this._TabDividers.Push(div)
         }
-        ; タブ下の区切り線（全幅、1本）
+        ; タブ下の余白（アクティブタブが本体の白とつながるので線は引かない）
         totalW := nv.GUI_WIDTH + 2 * guiObj.MarginX
-        sep := guiObj.Add("Text", "x0 y+0 w" . totalW . " h2 +0x10", "")  ; SS_ETCHEDHORZ
+        sep := guiObj.Add("Text", "x0 y+0 w" . totalW . " h2", "")
         this._TabSepCtrl := sep
         ; タブバー先頭の Y 座標を返す（_tabBarShift 計算用、インジケーターが一番上）
         tabBarTopY := 0
@@ -263,25 +281,42 @@ class NaviTab {
     static _SetTabHover(n) {
         if (this._HoveredTab == n)
             return
-        ; 前回ホバー中だったタブの色を本来の色に戻す
-        if (this._HoveredTab > 0 && this._HoveredTab <= this._TabBtnCtrls.Length) {
-            prev := this._TabBtnCtrls[this._HoveredTab]
-            color := (this._HoveredTab == this._CurrentTab) ? this.TAB_TEXT_ACTIVE : this.TAB_TEXT_INACTIVE
-            prev.Opt("+c" . color)
-            DllCall("InvalidateRect", "ptr", prev.Hwnd, "ptr", 0, "int", true)
-        }
+        ; 前回ホバー中だったタブを本来の見た目に戻す
+        if (this._HoveredTab > 0 && this._HoveredTab <= this._TabBtnCtrls.Length)
+            this._PaintTab(this._HoveredTab)
         this._HoveredTab := n
-        ; アクティブタブはホバー対象外（既に最濃い色）
-        if (n > 0 && n != this._CurrentTab && n <= this._TabBtnCtrls.Length) {
-            cur := this._TabBtnCtrls[n]
-            cur.Opt("+c" . this.TAB_TEXT_HOVER)
-            DllCall("InvalidateRect", "ptr", cur.Hwnd, "ptr", 0, "int", true)
-        }
-        ; ラベル再描画で縦線が巻き込まれて消えるのを防ぐ
-        for divN, div in this._TabDividers {
-            if (div.Visible)
-                DllCall("InvalidateRect", "ptr", div.Hwnd, "ptr", 0, "int", true)
-        }
+        ; アクティブタブはホバー対象外（既に白で目立っている）
+        if (n > 0 && n != this._CurrentTab && n <= this._TabBtnCtrls.Length)
+            this._PaintTab(n, true)
+    }
+
+    /**
+     * タブ n の文字色・背景色を状態に合わせて塗り直す
+     * アクティブ=本体と同じ白 / ホバー=少し濃い灰色 / それ以外=帯と同じ灰色
+     */
+    static _PaintTab(n, hover := false) {
+        ctrl := this._TabBtnCtrls[n]
+        if (n == this._CurrentTab)
+            ctrl.Opt("+c" . this.TAB_TEXT_ACTIVE . " +Background" . this._navi.BG_COLOR)
+        else if (hover)
+            ctrl.Opt("+c" . this.TAB_TEXT_HOVER . " +Background" . this.TAB_HOVER_COLOR)
+        else
+            ctrl.Opt("+c" . this.TAB_TEXT_INACTIVE . " +Background" . this.TAB_STRIP_COLOR)
+        DllCall("InvalidateRect", "ptr", ctrl.Hwnd, "ptr", 0, "int", true)
+    }
+
+    /**
+     * タブ名の表示幅（px）を GUI のフォントで測る。DPI スケーリング前の値に直して返す
+     */
+    static _MeasureText(ctrl, text) {
+        hdc := DllCall("GetDC", "ptr", ctrl.Hwnd, "ptr")
+        hFont := SendMessage(0x0031, 0, 0, ctrl)  ; WM_GETFONT
+        old := DllCall("SelectObject", "ptr", hdc, "ptr", hFont, "ptr")
+        size := Buffer(8, 0)
+        DllCall("GetTextExtentPoint32W", "ptr", hdc, "wstr", text, "int", StrLen(text), "ptr", size)
+        DllCall("SelectObject", "ptr", hdc, "ptr", old)
+        DllCall("ReleaseDC", "ptr", ctrl.Hwnd, "ptr", hdc)
+        return Round(NumGet(size, 0, "int") * 96 / A_ScreenDPI)
     }
 
     /**
@@ -312,6 +347,8 @@ class NaviTab {
         this._TabPlusBtn     := ""
         this._TabPlusHoverBg := ""
         this._TabSepCtrl     := ""
+        this._TabStripCtrl   := ""
+        this._HoveredTab     := 0
         if (this._HoverTimerActive) {
             SetTimer(this._CheckTabHoverBound, 0)
             this._HoverTimerActive := false
@@ -329,6 +366,9 @@ class NaviTab {
      */
     static UpdateTabBar() {
         nv := this._navi
+        widths := this._TabWidths()
+        margin := nv.GuiObj.MarginX
+        x := margin
         Loop this.TAB_MAX {
             n := A_Index
             if (n > this._TabBtnCtrls.Length)
@@ -339,31 +379,24 @@ class NaviTab {
                 continue
             }
             ctrl.Visible := (this._TabCount > 1)
-            ; アクティブタブは通常色、非アクティブはグレーで控えめに（VSCode風）
-            color := (n == this._CurrentTab) ? this.TAB_TEXT_ACTIVE : this.TAB_TEXT_INACTIVE
-            ctrl.Opt("+c" . color)
             DllCall("user32\SendMessageW", "ptr", ctrl.Hwnd,
                 "uint", nv.WM_SETTEXT, "ptr", 0, "wstr", this._GetTabLabel(n))
-            DllCall("InvalidateRect", "ptr", ctrl.Hwnd, "ptr", 0, "int", true)
+            ; 名前の長さに合わせた幅で左から詰めて並べる（アクセントラインも同じ幅）
+            ctrl.Move(x, , widths[n])
+            this._TabIndicators[n].Move(x, , widths[n])
+            x += widths[n] + 1
+            this._PaintTab(n, n == this._HoveredTab)
         }
-        margin := nv.GuiObj.MarginX
         ; アクティブタブのアクセントラインのみ表示
         showInd := (this._TabCount > 1)
         for n, ind in this._TabIndicators
             ind.Visible := showInd && (n == this._CurrentTab) && (n <= this._TabCount)
-        ; タブ間の縦線（最後の表示タブの右側まで表示）。タブ切替で再描画されて消えるので毎回 InvalidateRect で強制再描画
-        for n, div in this._TabDividers {
-            isVisible := showInd && (n < this._TabCount)
-            div.Visible := isVisible
-            if (isVisible)
-                DllCall("InvalidateRect", "ptr", div.Hwnd, "ptr", 0, "int", true)
-        }
         ; + ボタンを最後のタブの右側に配置（タブ数が TAB_MAX のときは非表示）
         if (this._TabPlusBtn) {
             canAdd := (this._TabCount < this.TAB_MAX) && (this._TabCount > 1)
             this._TabPlusBtn.Visible := canAdd
             if (canAdd) {
-                plusX := margin + this._TabCount * (this.TAB_WIDTH + 1) + 4
+                plusX := x + 3
                 this._TabPlusBtn.Move(plusX)
                 if (this._TabPlusHoverBg)
                     this._TabPlusHoverBg.Move(plusX)
@@ -373,6 +406,34 @@ class NaviTab {
                 this._TabPlusHoverBg.Visible := false
         }
         this.SetTabBarVisible(this._TabCount > 1)
+    }
+
+    /**
+     * 開いているタブそれぞれの幅（名前の長さ + 余白。TAB_MIN_W〜TAB_MAX_W）
+     * 全部が窓に入らないときは、入るように同じ割合で縮める
+     */
+    static _TabWidths() {
+        nv := this._navi
+        widths := []
+        total := 0
+        Loop this._TabCount {
+            ctrl := this._TabBtnCtrls[A_Index]
+            w := this._MeasureText(ctrl, this._GetTabLabel(A_Index)) + 2 * this.TAB_PAD_X
+            w := Min(Max(w, this.TAB_MIN_W), this.TAB_MAX_W)
+            widths.Push(w)
+            total += w + 1
+        }
+        nv.GuiObj.GetClientPos(, , &cw)
+        cw := Round(cw * 96 / A_ScreenDPI)
+        if (cw <= 0)  ; 表示前は幅が 0 なので、表示するときの幅で計算する
+            cw := (nv._savedW > 0) ? Round(nv._savedW * 96 / A_ScreenDPI) : nv.GUI_WIDTH + 2 * nv.GuiObj.MarginX
+        avail := cw - 2 * nv.GuiObj.MarginX - this.PLUS_WIDTH - 4
+        if (total > avail && total > 0) {
+            ratio := avail / total
+            for i, w in widths
+                widths[i] := Max(Floor(w * ratio), 40)
+        }
+        return widths
     }
 
     /**
@@ -392,12 +453,10 @@ class NaviTab {
             ctrl.Visible := show && (n <= this._TabCount)
         for n, ind in this._TabIndicators
             ind.Visible := show && (n == this._CurrentTab) && (n <= this._TabCount)
-        for n, div in this._TabDividers
-            div.Visible := show && (n < this._TabCount)
         if (this._TabPlusBtn)
             this._TabPlusBtn.Visible := show && (this._TabCount < this.TAB_MAX)
-        if (this._TabSepCtrl)
-            this._TabSepCtrl.Visible := show
+        if (this._TabStripCtrl)
+            this._TabStripCtrl.Visible := show
 
         ; タブバー下のコントロールを全て上下にシフト
         ctrls := [
@@ -539,10 +598,8 @@ class NaviTab {
             return ""
         root := (n == this._CurrentTab) ? this._navi.lastRoot
             : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
-        if (root == "")
-            root := "New"
-        ; 85px幅: 日本語全角7文字≈70px、ASCII14文字≈84px → 7文字超で切り詰め
-        return (StrLen(root) > 7) ? SubStr(root, 1, 6) . ".." : root
+        ; 省略はしない。幅に入りきらない分はラベルの SS_ENDELLIPSIS が … にする
+        return (root == "") ? "New" : root
     }
 
     /**
