@@ -17,7 +17,8 @@ class NaviTab {
     static TAB_WIDTH  := 85  ; タブ1枠の幅px（作成時の仮の幅。表示時は名前の長さに合わせる）
     static TAB_MIN_W  := 64  ; タブ幅の下限px
     static TAB_MAX_W  := 170 ; タブ幅の上限px（超える名前は末尾を … で省略）
-    static TAB_PAD_X  := 14  ; タブ名の左右の余白px
+    static TAB_PAD_X  := 14  ; タブ名の左右の余白px（タブ幅の計算用）
+    static TAB_TEXT_INSET := 10  ; 名前の部品をタブの内側へ寄せる幅px（長い名前が … で切れても両端に余白が残る）
     static TAB_HEIGHT := 26  ; タブ1枠の高さpx
     static PLUS_WIDTH := 26  ; + ボタンの幅px
     static TAB_HISTORY_MAX := 20  ; タブ内ルート履歴の最大保持件数
@@ -31,7 +32,8 @@ class NaviTab {
     static _TabCount   := 1   ; 現在開いているタブ数
 
     ; --- タブバー GUI コントロール参照 ---
-    static _TabBtnCtrls    := []  ; タブラベルコントロール配列
+    static _TabBtnCtrls    := []  ; タブの名前の部品（背景の内側に余白を取って重ねる）
+    static _TabBgCtrls     := []  ; タブの背景の部品（タブの幅いっぱい。色とクリックを受け持つ）
     static _TabIndicators  := []  ; タブ毎の上端アクセントライン（アクティブタブのみ表示）
     static _TabDividers    := []  ; タブ間の縦線（TAB_MAX-1 個）
     static _TabPlusBtn     := ""  ; 新規タブ追加 + ボタン
@@ -60,6 +62,7 @@ class NaviTab {
     static BuildTabBar(guiObj) {
         nv := this._navi
         this._TabBtnCtrls   := []
+        this._TabBgCtrls    := []
         this._TabIndicators := []
         this._TabDividers   := []
         NaviTheme.SetFont(guiObj, "body")
@@ -79,19 +82,28 @@ class NaviTab {
             this._TabIndicators.Push(ind)
             ind.Visible := false
         }
-        ; タブラベル（アクセントラインの下に配置）
-        ; 0x4301 = SS_ENDELLIPSIS | SS_CENTERIMAGE（縦中央）| SS_NOTIFY | SS_CENTER
+        ; タブ（アクセントラインの下に配置）。背景（タブの幅いっぱい）の上に、左右へ余白を取った名前を重ねる
+        ; 名前は 0x4301 = SS_ENDELLIPSIS | SS_CENTERIMAGE（縦中央）| SS_NOTIFY | SS_CENTER
+        ; 位置と幅は UpdateTabBar で名前の長さに合わせて決め直す
+        this._TabIndicators[1].GetPos(&tabX, &indY)
+        tabY := indY + this.TAB_INDICATOR_H
+        inset := this.TAB_TEXT_INSET
+        bg   := " Background" . NaviTheme.SURFACE
         Loop this.TAB_MAX {
-            n    := A_Index
-            w    := this.TAB_WIDTH
-            bg   := " Background" . NaviTheme.SURFACE
-            xOpt := (n = 1) ? "xm y+0 w" . w . " h" . this.TAB_HEIGHT . " +0x4301" . bg
-                            : "x+1 yp w" . w . " h" . this.TAB_HEIGHT . " +0x4301" . bg
-            lbl  := guiObj.Add("Text", xOpt, this._GetTabLabel(n))
+            n := A_Index
+            w := this.TAB_WIDTH
+            x := tabX + (n - 1) * (w + 1)
+            back := guiObj.Add("Text", "x" . x . " y" . tabY . " w" . w . " h" . this.TAB_HEIGHT . " +0x100" . bg, "")
+            lbl  := guiObj.Add("Text", "x" . (x + inset) . " y" . tabY . " w" . (w - 2 * inset) . " h" . this.TAB_HEIGHT
+                . " +0x4301" . bg, this._GetTabLabel(n))
+            this._TabBgCtrls.Push(back)
             this._TabBtnCtrls.Push(lbl)
+            back.OnEvent("Click", this.MakeTabHandler(n))
             lbl.OnEvent("Click", this.MakeTabHandler(n))
-            if (n > this._TabCount)
+            if (n > this._TabCount) {
+                back.Visible := false
                 lbl.Visible := false
+            }
         }
         ; + ボタンのホバー背景（先に作成して z-order を下に。ホバー時のみ表示）
         plusBg := guiObj.Add("Text", "x+4 yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " Background" . NaviTheme.HOVER, "")
@@ -112,7 +124,7 @@ class NaviTab {
         ; タブ下の余白（アクティブタブが本体の白とつながるので線は引かない）
         ; 後に続くヘッダー行はこの下に並ぶので、直前の部品ではなくタブの下端を基準に置く
         totalW := nv.GUI_WIDTH + 2 * guiObj.MarginX
-        this._TabBtnCtrls[1].GetPos(, &labelY, , &labelH)
+        this._TabBgCtrls[1].GetPos(, &labelY, , &labelH)
         sep := guiObj.Add("Text", "x0 y" . (labelY + labelH) . " w" . totalW . " h2", "")
         this._TabSepCtrl := sep
         ; タブバー先頭の Y 座標を返す（_tabBarShift 計算用、インジケーターが一番上）
@@ -144,6 +156,19 @@ class NaviTab {
     }
 
     /**
+     * マウスの下の部品がどのタブか（背景・名前のどちらでも）。タブでなければ 0
+     */
+    static _TabIndexFromHwnd(hwnd) {
+        if (!hwnd)
+            return 0
+        loop Min(this._TabCount, this._TabBtnCtrls.Length) {
+            if (this._TabBtnCtrls[A_Index].Hwnd == hwnd || this._TabBgCtrls[A_Index].Hwnd == hwnd)
+                return A_Index
+        }
+        return 0
+    }
+
+    /**
      * WM_SETCURSOR ハンドラー: タブラベル・+ボタン上でハンドカーソルを表示
      * OnMessage 経由で呼び出される
      */
@@ -152,11 +177,9 @@ class NaviTab {
             DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))  ; IDC_HAND
             return true
         }
-        for ctrl in this._TabBtnCtrls {
-            if (wParam == ctrl.Hwnd) {
-                DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))
-                return true
-            }
+        if (this._TabIndexFromHwnd(wParam)) {
+            DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))
+            return true
         }
     }
 
@@ -165,15 +188,10 @@ class NaviTab {
      */
     static _OnMiddleClick() {
         MouseGetPos(, , , &ctrlHwnd, 2)
-        if (!ctrlHwnd)
-            return
-        for n, ctrl in this._TabBtnCtrls {
-            if (ctrl.Hwnd == ctrlHwnd && n <= this._TabCount) {
-                if (this._CurrentTab != n)
-                    this.SwitchToTab(n)
-                this.CloseTab()
-                return
-            }
+        if (n := this._TabIndexFromHwnd(ctrlHwnd)) {
+            if (this._CurrentTab != n)
+                this.SwitchToTab(n)
+            this.CloseTab()
         }
     }
 
@@ -182,15 +200,10 @@ class NaviTab {
      */
     static HandleRightClick() {
         MouseGetPos(, , , &ctrlHwnd, 2)
-        if (!ctrlHwnd)
+        if !(n := this._TabIndexFromHwnd(ctrlHwnd))
             return false
-        for n, ctrl in this._TabBtnCtrls {
-            if (ctrl.Hwnd == ctrlHwnd && n <= this._TabCount) {
-                this._ShowTabContextMenu(n)
-                return true
-            }
-        }
-        return false
+        this._ShowTabContextMenu(n)
+        return true
     }
 
     /**
@@ -246,20 +259,18 @@ class NaviTab {
         }
         this._SetPlusHover(false)
         ; タブホバー判定
-        for n, ctrl in this._TabBtnCtrls {
-            if (ctrl.Hwnd == ctrlHwnd && n <= this._TabCount) {
-                this._SetTabHover(n)
-                root := (n == this._CurrentTab) ? nv.lastRoot
-                    : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
-                if (root == "") {
-                    ToolTip("(新規タブ)", , , 2)
-                    return
-                }
-                fullPath := nv._FolderMap.Has(root) ? nv._FolderMap[root] : ""
-                tip := (fullPath != "" && fullPath != root) ? root . "`n" . fullPath : root
-                ToolTip(tip, , , 2)
+        if (n := this._TabIndexFromHwnd(ctrlHwnd)) {
+            this._SetTabHover(n)
+            root := (n == this._CurrentTab) ? nv.lastRoot
+                : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
+            if (root == "") {
+                ToolTip("(新規タブ)", , , 2)
                 return
             }
+            fullPath := nv._FolderMap.Has(root) ? nv._FolderMap[root] : ""
+            tip := (fullPath != "" && fullPath != root) ? root . "`n" . fullPath : root
+            ToolTip(tip, , , 2)
+            return
         }
         this._SetTabHover(0)
         ToolTip(, , , 2)
@@ -285,14 +296,16 @@ class NaviTab {
      * アクティブ=本体と同じ白 / ホバー=少し濃い灰色 / それ以外=帯と同じ灰色
      */
     static _PaintTab(n, hover := false) {
-        ctrl := this._TabBtnCtrls[n]
         if (n == this._CurrentTab)
-            ctrl.Opt("+c" . NaviTheme.TEXT . " +Background" . NaviTheme.BG)
+            text := NaviTheme.TEXT, back := NaviTheme.BG
         else if (hover)
-            ctrl.Opt("+c" . NaviTheme.TEXT . " +Background" . NaviTheme.HOVER)
+            text := NaviTheme.TEXT, back := NaviTheme.HOVER
         else
-            ctrl.Opt("+c" . NaviTheme.TEXT_MUTED . " +Background" . NaviTheme.SURFACE)
-        DllCall("InvalidateRect", "ptr", ctrl.Hwnd, "ptr", 0, "int", true)
+            text := NaviTheme.TEXT_MUTED, back := NaviTheme.SURFACE
+        for ctrl in [this._TabBgCtrls[n], this._TabBtnCtrls[n]] {
+            ctrl.Opt("+c" . text . " +Background" . back)
+            DllCall("InvalidateRect", "ptr", ctrl.Hwnd, "ptr", 0, "int", true)
+        }
     }
 
     /**
@@ -332,6 +345,7 @@ class NaviTab {
      */
     static Cleanup() {
         this._TabBtnCtrls    := []
+        this._TabBgCtrls     := []
         this._TabIndicators  := []
         this._TabDividers    := []
         this._TabPlusBtn     := ""
@@ -366,13 +380,16 @@ class NaviTab {
             ctrl := this._TabBtnCtrls[n]
             if (n > this._TabCount) {
                 ctrl.Visible := false
+                this._TabBgCtrls[n].Visible := false
                 continue
             }
             ctrl.Visible := true
+            this._TabBgCtrls[n].Visible := true
             DllCall("user32\SendMessageW", "ptr", ctrl.Hwnd,
                 "uint", nv.WM_SETTEXT, "ptr", 0, "wstr", this._GetTabLabel(n))
-            ; 名前の長さに合わせた幅で左から詰めて並べる（アクセントラインも同じ幅）
-            ctrl.Move(x, , widths[n])
+            ; 名前の長さに合わせた幅で左から詰めて並べる（背景とアクセントラインはタブの幅、名前は内側）
+            this._TabBgCtrls[n].Move(x, , widths[n])
+            ctrl.Move(x + this.TAB_TEXT_INSET, , Max(1, widths[n] - 2 * this.TAB_TEXT_INSET))
             this._TabIndicators[n].Move(x, , widths[n])
             x += widths[n] + 1
             this._PaintTab(n, n == this._HoveredTab)
@@ -397,6 +414,30 @@ class NaviTab {
         }
         this.SetTabBarVisible(true)
         this._LayoutDividers()  ; タブバーの表示状態が決まってから置く
+        this._RedrawTabBar()
+    }
+
+    /**
+     * タブの帯を下から順に描き直す
+     * タブの幅が変わって並べ直すと、元の場所に前の文字の一部が残ることがあるため
+     * （帯とタブは重なった兄弟の部品なので、帯 → 背景 → 名前 → 線 の順に描かせる）
+     */
+    static _RedrawTabBar() {
+        flags := 0x1 | 0x4 | 0x100  ; RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW
+        ctrls := [this._TabStripCtrl]
+        for c in this._TabBgCtrls
+            ctrls.Push(c)
+        for c in this._TabBtnCtrls
+            ctrls.Push(c)
+        for c in this._TabIndicators
+            ctrls.Push(c)
+        for c in this._TabDividers
+            ctrls.Push(c)
+        ctrls.Push(this._TabPlusHoverBg, this._TabPlusBtn)
+        for c in ctrls {
+            if (c && c.Visible)
+                DllCall("user32\RedrawWindow", "ptr", c.Hwnd, "ptr", 0, "ptr", 0, "uint", flags)
+        }
     }
 
     /**
@@ -409,7 +450,7 @@ class NaviTab {
             visible := show && (n < this._TabCount) && (n != this._CurrentTab) && (n + 1 != this._CurrentTab)
             if (visible) {
                 ; タブ n の右端（= タブ n と n+1 の間の 1px の隙間）。GetPos と Move は同じ DPI 換算の単位
-                this._TabBtnCtrls[n].GetPos(&tx, &ty, &tw, &th)
+                this._TabBgCtrls[n].GetPos(&tx, &ty, &tw, &th)
                 inset := Round(th * 0.25)
                 div.Move(tx + tw, ty + inset, 1, th - 2 * inset)
             }
@@ -459,8 +500,10 @@ class NaviTab {
         shift := show ? this._tabBarShift : -this._tabBarShift
 
         ; タブラベル・インジケーター・+ボタン・区切り線の表示切り替え（_TabCount を超えるものは非表示維持）
-        for n, ctrl in this._TabBtnCtrls
+        for n, ctrl in this._TabBtnCtrls {
             ctrl.Visible := show && (n <= this._TabCount)
+            this._TabBgCtrls[n].Visible := ctrl.Visible
+        }
         for n, ind in this._TabIndicators
             ind.Visible := show && (n == this._CurrentTab) && (n <= this._TabCount)
         if (this._TabPlusBtn)
