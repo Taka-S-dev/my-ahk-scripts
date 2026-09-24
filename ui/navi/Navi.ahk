@@ -36,7 +36,7 @@
 
 class Navi {
     ; --- クラス定数 ---
-    static GUI_WIDTH := 600
+    static GUI_WIDTH := 800  ; 3 列表示でも各列に名前が収まる幅
     static STATUS_LEFT_W := 210      ; ステータスバー左側（表示と件数）の幅
     static GUI_HEIGHT_APPROX := 565
     static _savedW := 0
