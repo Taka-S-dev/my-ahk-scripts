@@ -570,7 +570,8 @@ class NaviFilter {
                 for folderKey, nodeID in addedPaths {
                     if (this._FilterCancelled)
                         return
-                    if (folderKey == rootKey)
+                    ; 一致したフォルダは _LoadFilterSub の時点でファイルを表示済みなので、重ねて足さない
+                    if (folderKey == rootKey || nv.FilesShown.Has(nodeID))
                         continue
                     shown := []
                     count := 0
