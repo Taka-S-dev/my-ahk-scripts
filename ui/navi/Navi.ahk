@@ -29,6 +29,7 @@
 #Include *i Navi.Mark.ahk
 #Include *i Navi.DirList.ahk
 #Include *i Navi.Leader.ahk
+#Include *i Navi.Picker.ahk
 #Include ..\..\lib\TempCopy.ahk
 
 class Navi {
@@ -71,9 +72,7 @@ class Navi {
     ; 詳細リスト関連状態は NaviDetailList クラスで管理（Navi.DetailList.ahk）
     ; パンくず関連定数・状態は NaviBreadcrumb クラスで管理（Navi.Breadcrumb.ahk）
     static _AllFolderNames := []  ; 全ルート名リスト（フィルタ前）
-    static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
-    static DropdownGui := ""             ; ルート選択ドロップダウンGUI
     static _addRootGui := ""             ; ルートを追加する小窓
     static _addRootBrowsing := false     ; 「…」でフォルダ選択ダイアログを開いている間 true
     ; プロファイル関連状態は NaviProfile クラスで管理（Navi.Profile.ahk）
@@ -183,7 +182,6 @@ class Navi {
         autoFilesCheck.Visible := false
         autoFilesCheck.Value := (IniRead(this.IniPath, "Settings", "AutoShowFiles", "0") == "1")
         this._AllFolderNames := folderNames
-        this.FilteredNames := folderNames.Clone()
         this._FolderMap := folderMap
 
         ; --- パンくずリスト ---
@@ -437,7 +435,7 @@ class Navi {
             }
             ; 検索ウィンドウなど付随UIも確実に閉じる
             try NaviSearch._DestroyJumpGui()
-            this._CloseDropdown()
+            NaviPicker.Close(false)
             this.GuiObj.Destroy()
             this.GuiObj := ""
         }
@@ -460,7 +458,7 @@ class Navi {
         ; マーク状態をリセット
         NaviMark.Reset()
         ; プロファイルドロップダウンを閉じる
-        NaviProfile.CloseProfileDropdown()
+        NaviPicker.Close(false)
         ; 詳細リスト参照をリセット（+Owner で親破棄時に自動クローズされるため Destroy 不要）
         NaviDetailList._guiObj := ""
         ; タブボタンコントロールはGUI依存のためリセット（タブ状態は次回起動時に再利用）
@@ -1329,7 +1327,6 @@ class Navi {
 
         ; クラス状態を更新
         this._AllFolderNames := newNames
-        this.FilteredNames := newNames.Clone()
         this._FolderMap := folderMap
         this._FolderMap[name] := path
 
@@ -1613,36 +1610,6 @@ class Navi {
         }
     }
 
-    /**
-     * 入力欄 + ListBox の選択小窓（ルート選択・プロファイル選択）に Ctrl+H/J/K/L を割り当てる
-     * J/K=選択を下/上（端で折り返す）、L=決定、H=入力欄を 1 文字消す（左に移る先がないため）
-     */
-    static _BindPickerKeys(ddGui, filterCtrl, listCtrl, onConfirm) {
-        move(delta) {
-            total := SendMessage(0x018B, 0, 0, listCtrl)  ; LB_GETCOUNT
-            if (total <= 0)
-                return
-            cur := listCtrl.Value
-            next := (cur <= 0) ? 1 : Mod(cur - 1 + delta + total, total) + 1
-            listCtrl.Choose(next)
-        }
-        backspace() {
-            ; Focus() は入力欄の全文を選択するので、フォーカスが別の場所にあるときだけ移して末尾に置く
-            if (DllCall("user32\GetFocus", "ptr") != filterCtrl.Hwnd) {
-                filterCtrl.Focus()
-                len := StrLen(filterCtrl.Value)
-                SendMessage(0x00B1, len, len, filterCtrl)  ; EM_SETSEL
-            }
-            Navi._EditBackspace(filterCtrl)
-        }
-        HotIfWinActive("ahk_id " ddGui.Hwnd)
-        Hotkey("^j", (*) => move(1), "On")
-        Hotkey("^k", (*) => move(-1), "On")
-        Hotkey("^l", (*) => onConfirm(), "On")
-        Hotkey("^h", (*) => backspace(), "On")
-        HotIf()
-    }
-
     ; Ctrl を押したままキーを送ると Ctrl+Backspace / Ctrl+←→（単語単位）になるため、
     ; 入力欄の 1 文字削除・カーソル移動はメッセージで直接行う
     static _EditBackspace(edit) {
@@ -1826,120 +1793,33 @@ class Navi {
     }
 
     /**
-     * オーバーレイのリスト選択変更（クリック時）: ユーザーに見せるだけ。確定はEnter/ダブルクリック。
-     */
-    static _OnDropdownListChange() {
-    }
-
-    /**
-     * ルート選択オーバーレイを開く（rootBtnクリックで起動）
+     * ルート選択（ルートのボタン・Enter・コマンド一覧の r）
+     * 2 列目にフルパスを補足として出す。決定したらそのルートへ切り替える
      */
     static _OpenDropdown() {
-        if (this.DropdownGui && WinExist(this.DropdownGui))
-            return  ; すでに開いている
         if !(this.GuiObj && WinExist(this.GuiObj))
             return
-
-        ; 全ルートをFilteredNamesにリセット
-        this.FilteredNames := this._AllFolderNames.Clone()
-
-        ; オーバーレイGUIを作成
-        ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルート選択")
-        NaviTheme.ApplyPopup(ddGui)
-
-        filterEdit := ddGui.Add("Edit", "xm w260 vOverlayFilter")
-        try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
-            "wstr", "名前でフィルター...", "ptr")
-
-        ddList := ddGui.Add("ListBox", "xm w260 r8 vDDList", this.FilteredNames)
-
-        ; lastRootを選択
-        for i, n in this.FilteredNames {
-            if (n == this.lastRoot) {
-                ddList.Choose(i)
-                break
-            }
-        }
-
-        NaviTheme.SetFont(ddGui, "caption", NaviTheme.TEXT_SUBTLE)
-        ddGui.Add("Text", "xm w260", "↑↓ Ctrl+J/K: 移動  /  Enter Ctrl+L: 選択  /  Esc: キャンセル")
-
-        this.DropdownGui := ddGui
-
-        filterEdit.OnEvent("Change", (*) => this._OverlayFilterChange())
-        ddList.OnEvent("Change", (*) => this._OnDropdownListChange())
-        ddList.OnEvent("DoubleClick", (*) => this._ConfirmDropdown())
-        ddGui.OnEvent("Close", (*) => this._CloseDropdown())
-        ; WM_ACTIVATE: wParam=0 でウィンドウが非アクティブになった時にオーバーレイを閉じる
-        local ddHwnd := ddGui.Hwnd
-        local self := this
-        local wmActMsg2 := Navi.WM_ACTIVATE
-        wmActivate(wParam, lParam, msg, hwnd) {
-            if (hwnd = ddHwnd && wParam = 0) {
-                OnMessage(wmActMsg2, wmActivate, 0)  ; 登録解除
-                SetTimer(() => self._CloseDropdown(), -50)
-            }
-        }
-        OnMessage(wmActMsg2, wmActivate)
-
-        HotIfWinActive("ahk_id " ddGui.Hwnd)
-        Hotkey("~Enter", (*) => this._ConfirmDropdown(), "On")
-        Hotkey("Escape", (*) => this._CloseDropdown(), "On")
-        Hotkey("~Down", (*) => this._OverlayNavDown(), "On")
-        Hotkey("~Up", (*) => this._OverlayNavUp(), "On")
-        HotIf()
-        this._BindPickerKeys(ddGui, filterEdit, ddList, () => this._ConfirmDropdown())
-
-        ; rootBtnの位置にオーバーレイを配置
-        this.GuiObj.GetPos(&gx, &gy)
-        this.GuiObj["RootBtn"].GetPos(&bx, &by, &bw, &bh)
-        ddGui.Show("x" . (gx + bx) . " y" . (gy + by) . " w280 AutoSize")
+        items := []
+        for name in this._AllFolderNames
+            items.Push({ text: name, sub: this._FolderMap.Has(name) ? this._FolderMap[name] : "" })
+        NaviPicker.Open(this, {
+            anchor: this.GuiObj["RootBtn"], items: items, selected: this.lastRoot,
+            placeholder: "ルートを名前やパスで絞り込み...",
+            emptyText: "ルートがありません（⚙ → ルートを追加 から登録できます）",
+            onConfirm: (name) => this._SelectRoot(name)
+        })
     }
 
-    /**
-     * オーバーレイを閉じる（再入防止付き）
-     */
-    static _CloseDropdown() {
-        if !(this.DropdownGui && WinExist(this.DropdownGui))
+    ; 選んだルートへ切り替える（今のルートは履歴に積む）
+    static _SelectRoot(name) {
+        if !(name != "" && this._FolderMap.Has(name) && this.GuiObj && WinExist(this.GuiObj))
             return
-        local ddGui := this.DropdownGui
-        this.DropdownGui := ""  ; 先にクリアして再入防止
-        try ddGui.Destroy()
-    }
-
-    /**
-     * オーバーレイ選択を確定 → rootBtnを更新、ツリーを再描画してフォーカス移動
-     */
-    static _ConfirmDropdown() {
-        ; IME変換中のEnterは無視（日本語フィルタ確定操作を妨げない）
-        if (this.DropdownGui && WinExist(this.DropdownGui)) {
-            filterHwnd := this.DropdownGui["OverlayFilter"].Hwnd
-            hIMC := DllCall("imm32\ImmGetContext", "ptr", filterHwnd, "ptr")
-            if (hIMC) {
-                composing := DllCall("imm32\ImmGetCompositionStringW", "ptr", hIMC, "uint", 0x0008, "ptr", 0, "ptr", 0) > 0
-                DllCall("imm32\ImmReleaseContext", "ptr", filterHwnd, "ptr", hIMC)
-                if (composing)
-                    return
-            }
-        }
-        selectedTxt := ""
-        if (this.DropdownGui && WinExist(this.DropdownGui)) {
-            ddList := this.DropdownGui["DDList"]
-            selectedTxt := ddList.Text
-        }
-        this._CloseDropdown()
-        if (selectedTxt != "" && this._FolderMap.Has(selectedTxt) && this.GuiObj && WinExist(this.GuiObj)) {
-            NaviTab.PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
-            this.lastRoot := selectedTxt
-            this.GuiObj["RootBtn"].Text := this._TruncRootLabel(selectedTxt)
-            this.GuiObj["TreeFilter"].Value := ""
-            tv := this.GuiObj["FolderTree"]
-            this._RefreshTree(tv, this._FolderMap[selectedTxt])
-            NaviTab.UpdateTabBar()  ; タブラベルに新ルート名を反映
-        } else if (this.GuiObj && WinExist(this.GuiObj)) {
-            WinActivate("ahk_id " this.GuiObj.Hwnd)
-            this._FocusMainView()
-        }
+        NaviTab.PushTabHistory()  ; 現在のルートを履歴に積んでから切り替え
+        this.lastRoot := name
+        this.GuiObj["RootBtn"].Text := this._TruncRootLabel(name)
+        this.GuiObj["TreeFilter"].Value := ""
+        this._RefreshTree(this.GuiObj["FolderTree"], this._FolderMap[name])
+        NaviTab.UpdateTabBar()  ; タブラベルに新ルート名を反映
     }
 
     /**
@@ -1986,10 +1866,8 @@ class Navi {
      * Escキー: オーバーレイが開いていれば閉じる（選択変更なし）、なければNaviを閉じる
      */
     static _HandleEsc() {
-        if (this.DropdownGui && WinExist(this.DropdownGui)) {
-            this._CloseDropdown()
-            if (this.GuiObj && WinExist(this.GuiObj))
-                WinActivate("ahk_id " this.GuiObj.Hwnd)
+        if (NaviPicker.IsOpen()) {
+            NaviPicker.Close()
         } else if (this.GuiObj && WinExist(this.GuiObj) && this.GuiObj["TreeFilter"].Value != "") {
             ; ツリーフィルターにテキストがあればクリアしてフィルター欄にフォーカスを残す
             this.GuiObj["TreeFilter"].Value := ""
@@ -1998,64 +1876,6 @@ class Navi {
         } else {
             this._DestroyGui()
         }
-    }
-
-    /**
-     * オーバーレイのフィルターEdit変更: FilteredNamesを更新してリストに反映
-     */
-    static _OverlayFilterChange() {
-        if !(this.DropdownGui && WinExist(this.DropdownGui))
-            return
-        query := this.DropdownGui["OverlayFilter"].Value
-        this.FilteredNames := []
-        for name in this._AllFolderNames {
-            if (query = "" || InStr(name, query, false))
-                this.FilteredNames.Push(name)
-        }
-        ddList := this.DropdownGui["DDList"]
-        ddList.Delete()
-        if (this.FilteredNames.Length > 0) {
-            ddList.Add(this.FilteredNames)
-            ddList.Choose(1)
-        }
-    }
-
-    /**
-     * オーバーレイのFilterEdit上でDown: リスト選択を1つ下に移動（ラップあり）
-     */
-    static _OverlayNavDown() {
-        if !(this.DropdownGui && WinExist(this.DropdownGui))
-            return
-        try currFocus := DllCall("user32\GetFocus", "ptr")
-        catch
-            return
-        if (currFocus != this.DropdownGui["OverlayFilter"].Hwnd)
-            return  ; ListBoxにフォーカスがあれば~でネイティブ処理
-        ddList := this.DropdownGui["DDList"]
-        cur := ddList.Value
-        total := this.FilteredNames.Length
-        if (total = 0)
-            return
-        ddList.Choose((cur <= 0 || cur >= total) ? 1 : cur + 1)
-    }
-
-    /**
-     * オーバーレイのFilterEdit上でUp: リスト選択を1つ上に移動（ラップあり）
-     */
-    static _OverlayNavUp() {
-        if !(this.DropdownGui && WinExist(this.DropdownGui))
-            return
-        try currFocus := DllCall("user32\GetFocus", "ptr")
-        catch
-            return
-        if (currFocus != this.DropdownGui["OverlayFilter"].Hwnd)
-            return
-        ddList := this.DropdownGui["DDList"]
-        cur := ddList.Value
-        total := this.FilteredNames.Length
-        if (total = 0)
-            return
-        ddList.Choose((cur <= 1) ? total : cur - 1)
     }
 
     ; 右クリック: TreeView 上のアイテムを選択して Shell コンテキストメニューを表示

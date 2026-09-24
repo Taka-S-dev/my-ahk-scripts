@@ -233,13 +233,13 @@ class NaviDirList {
         if (stage = 0x1)          ; CDDS_PREPAINT
             return 0x20           ; CDRF_NOTIFYITEMDRAW
         if (stage = 0x10001) {    ; CDDS_ITEMPREPAINT: 列ごとの通知を頼む
-            this._PaintSelection(l)
+            NaviTheme.PaintSoftSelection(l, this._lvHwnd)
             return 0x22           ; CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT
         }
         if (stage = 0x30001) {    ; CDDS_SUBITEM | CDDS_ITEMPREPAINT
             subItem := NumGet(l, x64 ? 88 : 56, "int")  ; NMLVCUSTOMDRAW.iSubItem
             NumPut("uint", NaviTheme.BGR(NaviTheme.TEXT), l, x64 ? 80 : 48)  ; clrText
-            this._PaintSelection(l)
+            NaviTheme.PaintSoftSelection(l, this._lvHwnd)
             ; 「場所」のセルは文字を空にしてあり、背景・選択色だけ既定で描かせて文字は後で描く
             return (subItem = 1) ? 0x12 : 0x2  ; CDRF_NOTIFYPOSTPAINT | CDRF_NEWFONT / CDRF_NEWFONT
         }
@@ -249,20 +249,6 @@ class NaviDirList {
             return 0
         }
         return 0
-    }
-
-    ; リスト自体にフォーカスがないときだけ、選択行の背景を薄い青にする
-    static _PaintSelection(l) {
-        if (DllCall("user32\GetFocus", "ptr") = this._lvHwnd)
-            return                ; リストにフォーカスがあればテーマの選択色のまま
-        x64 := (A_PtrSize = 8)
-        item := NumGet(l, x64 ? 56 : 36, "uptr")
-        if !(SendMessage(0x102C, item, 0x2, this._lvHwnd) & 0x2)  ; LVM_GETITEMSTATE: LVIS_SELECTED
-            return
-        stateOff := x64 ? 64 : 40
-        ; CDIS_SELECTED を外してテーマの灰色を描かせず、背景色だけ自分で指定する
-        NumPut("uint", NumGet(l, stateOff, "uint") & ~0x1, l, stateOff)
-        NumPut("uint", NaviTheme.BGR(NaviTheme.ACCENT_SOFT), l, x64 ? 84 : 52)  ; clrTextBk
     }
 
     /**

@@ -68,6 +68,24 @@ class NaviTheme {
         this.SetFont(g, "body")
     }
 
+    /**
+     * 一覧（ListView）の NM_CUSTOMDRAW で、一覧自体にフォーカスがない間の選択行を ACCENT_SOFT で塗る
+     * テーマのままだと、入力欄で打っている間の選択行はほぼ見えない灰色になるため
+     * ITEMPREPAINT・SUBITEM の ITEMPREPAINT の両方で呼ぶ（CDRF_NEWFONT を返すこと）
+     */
+    static PaintSoftSelection(l, lvHwnd) {
+        if (DllCall("user32\GetFocus", "ptr") = lvHwnd)
+            return  ; 一覧にフォーカスがあればテーマの選択色のまま
+        x64 := (A_PtrSize = 8)
+        item := NumGet(l, x64 ? 56 : 36, "uptr")
+        if !(SendMessage(0x102C, item, 0x2, lvHwnd) & 0x2)  ; LVM_GETITEMSTATE: LVIS_SELECTED
+            return
+        stateOff := x64 ? 64 : 40
+        ; CDIS_SELECTED を外してテーマの灰色を描かせず、背景色だけ指定する
+        NumPut("uint", NumGet(l, stateOff, "uint") & ~0x1, l, stateOff)
+        NumPut("uint", this.BGR(this.ACCENT_SOFT), l, x64 ? 84 : 52)  ; clrTextBk
+    }
+
     ; RGB の 16 進（"0067C0"）を、カスタムドローで使う COLORREF（BGR の整数）にする
     static BGR(hex) {
         return Integer("0x" . SubStr(hex, 5, 2) . SubStr(hex, 3, 2) . SubStr(hex, 1, 2))
