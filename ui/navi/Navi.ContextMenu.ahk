@@ -136,7 +136,10 @@ class NaviContextMenu {
         HotIf()
 
         ; 選択アイテムの右端をメニュー表示位置に使う
-        if (NaviDirList.Active) {
+        if (NaviBrowse.Active) {
+            CoordMode("Mouse", "Screen")
+            MouseGetPos(&mx, &my)
+        } else if (NaviDirList.Active) {
             if !NaviDirList.GetMenuPoint(&mx, &my) {
                 CoordMode("Mouse", "Screen")
                 MouseGetPos(&mx, &my)

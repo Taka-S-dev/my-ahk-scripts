@@ -397,7 +397,7 @@ class NaviFilter {
         cb := () => this.ApplyTreeFilter(query)
         this._treeFilterCallback := cb
         ; ツリー再構築は重いので 300ms 待つ。リストは軽いので打鍵に追従させる
-        SetTimer(cb, NaviDirList.Active ? -NaviDirList.DEBOUNCE_MS : -300)
+        SetTimer(cb, (NaviDirList.Active || NaviBrowse.Active) ? -NaviDirList.DEBOUNCE_MS : -300)
     }
 
     /**
@@ -407,6 +407,11 @@ class NaviFilter {
     static ApplyTreeFilter(query) {
         nv := this._navi
         this._treeFilterCallback := ""
+        ; 3 列表示中は中央の列を絞り込む
+        if (NaviBrowse.Active) {
+            NaviBrowse.ApplyFilter(query)
+            return
+        }
         ; リスト表示中はツリーではなくリストを絞り込む
         if (NaviDirList.Active) {
             NaviDirList.Apply(query)

@@ -28,6 +28,7 @@
 #Include *i Navi.Breadcrumb.ahk
 #Include *i Navi.Mark.ahk
 #Include *i Navi.DirList.ahk
+#Include *i Navi.Browse.ahk
 #Include *i Navi.KeyMenu.ahk
 #Include *i Navi.Leader.ahk
 #Include *i Navi.Picker.ahk
@@ -110,6 +111,7 @@ class Navi {
         NaviBreadcrumb.Init(this)
         NaviMark.Init(this)
         NaviDirList.Init(this)
+        NaviBrowse.Init(this)
         NaviLeader.Init(this)
     }
 
@@ -124,7 +126,10 @@ class Navi {
             } else {
                 this.GuiObj.Show()
                 WinActivate(this.GuiObj)
-                this.GuiObj["TreeFilter"].Focus()
+                if (NaviBrowse.Active)
+                    NaviBrowse.FocusList()
+                else
+                    this.GuiObj["TreeFilter"].Focus()
             }
             return
         }
@@ -231,10 +236,12 @@ class Navi {
 
         ; --- フォルダ一覧（ツリーと同じ場所に重ね、Ctrl+E で切り替え）---
         NaviDirList.Build(this.GuiObj, tv)
+        ; --- 3 列ブラウズ（ツリーと同じ場所に重ね、Ctrl+B で切り替え）---
+        NaviBrowse.Build(this.GuiObj, tv)
 
         ; --- ルート登録用の入力欄 ---
-        ; 常に出すと 2 つ目の検索欄に見えて迷うので表示しない。ルートの追加は ⚙ メニューのフォルダ選択から行い、
-        ; 選んだパスをこの欄に入れて既存の登録処理（_QuickRegisterFromEdit）に渡す
+        ; 常に出すと 2 つ目の検索欄に見えて迷うので表示しない。ルートの追加は ⚙ →「ルートを追加」の小窓で
+        ; パスを受け取り、この欄に入れて既存の登録処理（_QuickRegisterFromEdit）に渡す
         quickEdit := this.GuiObj.Add("Edit", "xm w455 h1 vQuickPath -Tabstop", "")
         quickEdit.Visible := false
         this.QuickPathHwnd := quickEdit.Hwnd
@@ -274,6 +281,7 @@ class Navi {
         Hotkey("^d", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("^e", (*) => NaviDirList.Toggle(), "On")
+        Hotkey("^b", (*) => NaviBrowse.Toggle(), "On")
         ; コマンド一覧（Navi の中ではグローバルの日付入力より優先される）
         Hotkey("^;", (*) => NaviLeader.Show(), "On")
         ; Ctrl+H/J/K/L は Vim と同じく ←↓↑→（Ctrl+H はグローバルの HotstringManager より優先される）
@@ -325,14 +333,27 @@ class Navi {
         centerX := waL + (waR - waL - winW) // 2
         centerY := waT + (waB - waT - winH) // 2
 
+        ; 3 列と一覧が両方オンで保存されていたら 3 列を優先する
+        if (NaviBrowse.Active)
+            NaviDirList.Active := false
         NaviDirList.ApplyVisibility()
+        if (NaviBrowse.Active) {
+            this.GuiObj["FolderTree"].Visible := false
+            NaviBrowse.ApplyVisibility()
+        }
         this.GuiObj.Show("x" . centerX . " y" . centerY . " w" . winW . " h" . winH)
         ; 一覧の作成は WinExist が通る表示後に行う
         NaviDirList.ApplyCurrent()
+        if (NaviBrowse.Active) {
+            NaviBrowse.Open(NaviBrowse._RootPath())
+        }
         ; GUI 表示後に選択項目を再度可視化（フィルタの非同期処理を考慮して複数回リトライ）
         this._EnsureSelectionVisibleRetries := 0
         this._EnsureSelectionVisible()
-        this.GuiObj["TreeFilter"].Focus()
+        if (NaviBrowse.Active)
+            NaviBrowse.FocusList()
+        else
+            this.GuiObj["TreeFilter"].Focus()
     }
 
     /**
@@ -409,8 +430,8 @@ class Navi {
                 break
         }
         tv.Modify(currentID, "Select Vis")
-        ; リスト表示中は隠れているツリーにフォーカスを移さない
-        if (!NaviDirList.Active)
+        ; 一覧・3 列の表示中は隠れているツリーにフォーカスを移さない
+        if (!NaviDirList.Active && !NaviBrowse.Active)
             tv.Focus()
     }
 
@@ -481,6 +502,7 @@ class Navi {
               Ctrl+F        フォルダフィルターにフォーカス
               Ctrl+;        コマンド一覧（1 文字で実行）
               Ctrl+E        ツリー ↔ 一覧
+              Ctrl+B        ツリー ↔ 3 列ブラウズ（←→ で上がる・入る）
               Ctrl+H/J/K/L  ←↓↑→（Vim と同じ）
 
             【一覧】
@@ -994,6 +1016,11 @@ class Navi {
             if (setFocus)
                 this.GuiObj["TreeFilter"].Focus()
             SetTimer(() => NaviDirList.ApplyCurrent(), -1)
+        } else if (NaviBrowse.Active) {
+            ; ルートが変わったので 3 列もそのルートを開く（フォーカスは入力欄へ）
+            if (setFocus)
+                this.GuiObj["TreeFilter"].Focus()
+            SetTimer(() => NaviBrowse.Open(rootPath), -1)
         } else if (setFocus) {
             tv.Focus()
         }
@@ -1090,6 +1117,11 @@ class Navi {
             sb := this.GuiObj._sbRef
             ; ピン留めのチェックボックスは表示しないので、状態はここに出す
             pin := this.GuiObj["PinCheck"].Value ? "   📌 ピン留め中" : ""
+            if (NaviBrowse.Active) {
+                sb.SetText(NaviBrowse.StatusText() . pin, 1)
+                sb.SetText(NaviBrowse.StatusHints(), 2)
+                return
+            }
             if (NaviDirList.Active) {
                 sb.SetText(NaviDirList.StatusText() . pin, 1)
                 sb.SetText(NaviDirList.StatusHints(), 2)
@@ -1393,6 +1425,8 @@ class Navi {
             ; 検索モードなら検索実行、リスト表示なら選択行を開く、フィルターモードならツリーへフォーカス移動
             if (this._SearchMode) {
                 this._RunSearchFromFilter()
+            } else if (NaviBrowse.Active) {
+                NaviBrowse.FocusList()  ; ツリーと同じく入力欄 → 一覧へ
             } else if (NaviDirList.Active) {
                 this._HandleActivate()
             } else {
@@ -1414,6 +1448,8 @@ class Navi {
         ; ファイル検索の結果はツリー上に出すので、リスト表示中ならツリーに戻す
         if (this._SearchMode && NaviDirList.Active)
             NaviDirList._SetActive(false)
+        if (this._SearchMode && NaviBrowse.Active)
+            NaviBrowse.Exit(false)
         this.GuiObj["FilterToggle"].Text := this._SearchMode ? NaviTheme.ICON_SEARCH : NaviTheme.ICON_FOLDER
         ; 検索タイプボタンの表示切替・リセット
         this.GuiObj["SearchTypeBtn"].Visible := this._SearchMode
@@ -1475,6 +1511,8 @@ class Navi {
      * 選択中のフォルダ/ファイルの絶対パス（リスト表示中はリストの選択行、なければ ""）
      */
     static _GetSelectedPath() {
+        if (NaviBrowse.Active)
+            return NaviBrowse.SelectedPath()
         if (NaviDirList.Active)
             return NaviDirList.SelectedPath()
         tv := this.GuiObj["FolderTree"]
@@ -1482,9 +1520,19 @@ class Navi {
         return id ? this._GetTVFullPath(tv, id) : ""
     }
 
+    ; 3 列のどれかにフォーカスがあるか（入力欄は含めない。入力欄ではツリーのときと同じく文字の編集に使う）
+    static _InBrowse(focus) {
+        if (!focus || !this.GuiObj)
+            return false
+        for name in ["BrowseParent", "BrowseCur", "BrowsePreview", "BrowseText"]
+            if (focus = this.GuiObj[name].Hwnd)
+                return true
+        return false
+    }
+
     ; 一覧の本体（表示中のツリーまたはリスト）にフォーカスを移す
     static _FocusMainView() {
-        this.GuiObj[NaviDirList.Active ? "DirList" : "FolderTree"].Focus()
+        this.GuiObj[NaviBrowse.Active ? "BrowseCur" : NaviDirList.Active ? "DirList" : "FolderTree"].Focus()
     }
 
     static _HandleActivate() {
@@ -1551,6 +1599,11 @@ class Navi {
             return
         currFocus := 0
         try currFocus := DllCall("user32\GetFocus", "ptr")
+        ; 3 列のどこにフォーカスがあっても 1 つ上のフォルダへ
+        if (NaviBrowse.Active && this._InBrowse(currFocus)) {
+            NaviBrowse.Up()
+            return
+        }
         if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
             this.GuiObj["ProfileBtn"].Focus()
         } else if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
@@ -1579,6 +1632,11 @@ class Navi {
             return
         currFocus := 0
         try currFocus := DllCall("user32\GetFocus", "ptr")
+        ; 3 列のどこにフォーカスがあっても選んでいるフォルダへ入る
+        if (NaviBrowse.Active && this._InBrowse(currFocus)) {
+            NaviBrowse.Down()
+            return
+        }
         if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd)
             this.GuiObj["RootBtn"].Focus()
         else if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
@@ -1602,6 +1660,8 @@ class Navi {
         } else if (this._tvHwnd != 0 && currFocus = this._tvHwnd) {
             PostMessage(0x0100, 0x27, 0, this._tvHwnd)  ; WM_KEYDOWN VK_RIGHT: TreeView展開
             PostMessage(0x0101, 0x27, 0, this._tvHwnd)  ; WM_KEYUP
+        } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
+            Send "{Right}"  ; 入力欄のカーソル移動
         }
     }
 
@@ -1636,6 +1696,17 @@ class Navi {
         try currFocus := DllCall("user32\GetFocus", "ptr")
         filterHwnd := this.GuiObj.HasOwnProp("_treeFilterHwnd") ? this.GuiObj._treeFilterHwnd : 0
         lvHwnd := this.GuiObj["DirList"].Hwnd
+
+        ; 3 列にフォーカスがあるとき: h で上へ、l で入る、j/k で中央の列を移動
+        if (NaviBrowse.Active && this._InBrowse(currFocus)) {
+            switch key {
+                case "h": NaviBrowse.Up()
+                case "l": NaviBrowse.Down()
+                case "j": NaviBrowse.Move(1)
+                case "k": NaviBrowse.Move(-1)
+            }
+            return
+        }
 
         ; 入力欄の h: カーソルを 1 文字左へ（先頭なら ← と同じく左のボタンへ）
         ; 入力欄の l: 一覧表示中は選択行をツリーで表示、ツリー表示中はカーソルを 1 文字右へ
@@ -1718,6 +1789,10 @@ class Navi {
         } else if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
             ; ルートボタン → ツリーフィルター欄へ
             this.GuiObj["TreeFilter"].Focus()
+        } else if (NaviBrowse.Active && this._InBrowse(currFocus)) {
+            NaviBrowse.Move(1)  ; 3 列のどこにフォーカスがあっても中央の列の選択を下へ
+        } else if (NaviBrowse.Active && this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
+            NaviBrowse.FocusList()  ; ツリーと同じく入力欄 → 一覧へ
         } else if (NaviDirList.Active && this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
             ; リスト表示中は入力欄にフォーカスを残したまま選択行を下へ
             NaviDirList.Move(1)
@@ -1855,6 +1930,7 @@ class Navi {
         tvH := Max(60, h - this._tvY - sbH - NaviTheme.SP_S)
         this.GuiObj["FolderTree"].Move(, , ctrlW, tvH)
         NaviDirList.OnResize(ctrlW, tvH)
+        NaviBrowse.OnResize(ctrlW, tvH)
     }
 
     /**
@@ -1882,6 +1958,12 @@ class Navi {
             return
         tv := this.GuiObj["FolderTree"]
         MouseGetPos(, , , &underHwnd, 2)
+        if (NaviBrowse.Active && underHwnd = this.GuiObj["BrowseCur"].Hwnd) {
+            path := NaviBrowse.SelectRowAtMouse()
+            if (path != "")
+                SetTimer(() => NaviContextMenu.Show(path, this), -1)
+            return
+        }
         if (NaviDirList.Active && underHwnd = this.GuiObj["DirList"].Hwnd) {
             path := NaviDirList.SelectRowAtMouse()
             if (path != "")

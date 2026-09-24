@@ -617,6 +617,10 @@ class NaviTab {
             ; フィルタ非同期完了後にも復元できるよう目標パスを保存
             nv._RestoreTargetPath := state.path
         }
+        ; 3 列の表示中は、切り替えたタブのルートを 3 列で開き直す
+        ; （上の ApplyTreeFilter は 3 列の中央の列に効いてしまうので、開き直して絞り込みも消す）
+        if (NaviBrowse.Active && rootPath != "")
+            NaviBrowse.Open(rootPath)
     }
 
     /**

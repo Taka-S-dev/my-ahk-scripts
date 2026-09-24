@@ -51,8 +51,8 @@ class NaviBreadcrumb {
                 this.StopWatcher()
                 return
             }
-            if (NaviDirList.Active) {
-                path := NaviDirList.SelectedPath()
+            if (NaviBrowse.Active || NaviDirList.Active) {
+                path := NaviBrowse.Active ? NaviBrowse.SelectedPath() : NaviDirList.SelectedPath()
                 if (path != nv.GuiObj["Breadcrumb"].Value)
                     nv.GuiObj["Breadcrumb"].Value := path
                 this._lastSelectedId := -1  ; ツリーへ戻ったときに必ず更新させる
@@ -75,8 +75,8 @@ class NaviBreadcrumb {
         try {
             if !(nv.GuiObj && nv.GuiObj.Hwnd && WinExist("ahk_id " nv.GuiObj.Hwnd))
                 return
-            if (NaviDirList.Active) {
-                nv.GuiObj["Breadcrumb"].Value := NaviDirList.SelectedPath()
+            if (NaviBrowse.Active || NaviDirList.Active) {
+                nv.GuiObj["Breadcrumb"].Value := NaviBrowse.Active ? NaviBrowse.SelectedPath() : NaviDirList.SelectedPath()
                 this._lastSelectedId := -1
                 return
             }
@@ -118,7 +118,7 @@ class NaviBreadcrumb {
     static _OnClick() {
         nv := this._navi
         ; 階層メニューはツリーのノードへ飛ぶので、リスト表示中は使わない
-        if (NaviDirList.Active)
+        if (NaviDirList.Active || NaviBrowse.Active)
             return
         tv := nv.GuiObj["FolderTree"]
         id := tv.GetSelection()

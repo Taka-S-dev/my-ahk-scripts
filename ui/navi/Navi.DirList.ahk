@@ -200,6 +200,8 @@ class NaviDirList {
 
     static _SetActive(on) {
         nv := this._navi
+        if (on && NaviBrowse.Active)
+            NaviBrowse.Exit(false)
         this.Active := on
         IniWrite(on ? "1" : "0", nv.IniPath, "Settings", "DirListMode")
         this.ApplyVisibility()
