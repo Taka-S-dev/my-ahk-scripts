@@ -17,6 +17,7 @@ class NaviDirList {
     static Active := false          ; true=リストビュー表示中 / false=ツリー表示中
     static Kind := "dirs"           ; "dirs"=フォルダ一覧 / "files"=ファイル一覧
     static _rows := []              ; 表示中の行番号 → 絶対パス
+    static _locs := []              ; 表示中の行番号 → 場所 { head: ルート名(+\), rest: その下のパス }
     static _matchCount := 0         ; 直近の一致件数（表示上限を超えた分も含む）
     static _pending := ""           ; 再入中に届いた最新クエリ
     static _pendingSet := false
@@ -218,29 +219,92 @@ class NaviDirList {
     }
 
     /**
-     * WM_NOTIFY → NM_CUSTOMDRAW: 入力欄にフォーカスがある間も選択行を薄い青で見せる
-     * （テーマのままだとフォーカスのないリストの選択行はほぼ見えない灰色になる）
+     * WM_NOTIFY → NM_CUSTOMDRAW（列ごとに描画を受け取る）
+     * - 「場所」の列は補足情報なので TEXT_MUTED で名前より一段控えめにする
+     * - 入力欄にフォーカスがある間も選択行を薄い青で見せる
+     *   （テーマのままだとフォーカスのないリストの選択行はほぼ見えない灰色になる）
      * 他の WM_NOTIFY ハンドラーと共存するため、このリスト以外の通知には "" を返す
      */
     static _OnCustomDraw(l) {
         if (NumGet(l, 0, "ptr") != this._lvHwnd || NumGet(l, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
             return
-        stage := NumGet(l, A_PtrSize = 8 ? 24 : 12, "uint")
+        x64 := (A_PtrSize = 8)
+        stage := NumGet(l, x64 ? 24 : 12, "uint")
         if (stage = 0x1)          ; CDDS_PREPAINT
             return 0x20           ; CDRF_NOTIFYITEMDRAW
-        if (stage != 0x10001)     ; CDDS_ITEMPREPAINT 以外は既定の描画
+        if (stage = 0x10001) {    ; CDDS_ITEMPREPAINT: 列ごとの通知を頼む
+            this._PaintSelection(l)
+            return 0x22           ; CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT
+        }
+        if (stage = 0x30001) {    ; CDDS_SUBITEM | CDDS_ITEMPREPAINT
+            subItem := NumGet(l, x64 ? 88 : 56, "int")  ; NMLVCUSTOMDRAW.iSubItem
+            NumPut("uint", NaviTheme.BGR(NaviTheme.TEXT), l, x64 ? 80 : 48)  ; clrText
+            this._PaintSelection(l)
+            ; 「場所」のセルは文字を空にしてあり、背景・選択色だけ既定で描かせて文字は後で描く
+            return (subItem = 1) ? 0x12 : 0x2  ; CDRF_NOTIFYPOSTPAINT | CDRF_NEWFONT / CDRF_NEWFONT
+        }
+        if (stage = 0x30002) {    ; CDDS_SUBITEM | CDDS_ITEMPOSTPAINT
+            if (NumGet(l, x64 ? 88 : 56, "int") = 1)
+                this._DrawLocation(l)
             return 0
+        }
+        return 0
+    }
+
+    ; リスト自体にフォーカスがないときだけ、選択行の背景を薄い青にする
+    static _PaintSelection(l) {
         if (DllCall("user32\GetFocus", "ptr") = this._lvHwnd)
-            return 0              ; リスト自体にフォーカスがあればテーマの選択色のまま
-        item := NumGet(l, A_PtrSize = 8 ? 56 : 36, "uptr")
+            return                ; リストにフォーカスがあればテーマの選択色のまま
+        x64 := (A_PtrSize = 8)
+        item := NumGet(l, x64 ? 56 : 36, "uptr")
         if !(SendMessage(0x102C, item, 0x2, this._lvHwnd) & 0x2)  ; LVM_GETITEMSTATE: LVIS_SELECTED
-            return 0
-        stateOff := A_PtrSize = 8 ? 64 : 40
+            return
+        stateOff := x64 ? 64 : 40
         ; CDIS_SELECTED を外してテーマの灰色を描かせず、背景色だけ自分で指定する
         NumPut("uint", NumGet(l, stateOff, "uint") & ~0x1, l, stateOff)
-        NumPut("uint", NaviTheme.BGR(NaviTheme.ACCENT_SOFT), l, A_PtrSize = 8 ? 84 : 52)  ; clrTextBk
-        return 0x2                ; CDRF_NEWFONT
+        NumPut("uint", NaviTheme.BGR(NaviTheme.ACCENT_SOFT), l, x64 ? 84 : 52)  ; clrTextBk
     }
+
+    /**
+     * 「場所」のセルを 2 段の色で描く: ルート名の部分は TEXT_SUBTLE、その下のパスは TEXT_MUTED
+     * どの行も同じルート名で始まるので、そこを一段薄くして行ごとに違う部分を読みやすくする
+     */
+    static _DrawLocation(l) {
+        x64 := (A_PtrSize = 8)
+        row := NumGet(l, x64 ? 56 : 36, "uptr") + 1
+        if (row < 1 || row > this._locs.Length)
+            return
+        loc := this._locs[row]
+        hdc := NumGet(l, x64 ? 32 : 16, "ptr")
+        rect := Buffer(16, 0)
+        NumPut("int", 2, rect, 0)  ; left = LVIR_LABEL
+        NumPut("int", 1, rect, 4)  ; top = iSubItem
+        if !SendMessage(0x1038, row - 1, rect.Ptr, this._lvHwnd)  ; LVM_GETSUBITEMRECT
+            return
+        pad := Round(6 * A_ScreenDPI / 96)  ; 既定の文字の左余白に合わせる
+        left := NumGet(rect, 0, "int") + pad
+        right := NumGet(rect, 8, "int") - pad
+        if (right <= left)
+            return
+        oldFont := DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", SendMessage(0x0031, 0, 0, this._lvHwnd), "ptr")  ; WM_GETFONT
+        DllCall("gdi32\SetBkMode", "ptr", hdc, "int", 1)  ; TRANSPARENT
+        flags := 0x20 | 0x4 | 0x800 | 0x8000  ; DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS
+        ; ルート名（とそれに続く \）
+        size := Buffer(8, 0)
+        DllCall("gdi32\GetTextExtentPoint32W", "ptr", hdc, "wstr", loc.head, "int", StrLen(loc.head), "ptr", size)
+        NumPut("int", left, rect, 0), NumPut("int", right, rect, 8)
+        DllCall("gdi32\SetTextColor", "ptr", hdc, "uint", NaviTheme.BGR(NaviTheme.TEXT_SUBTLE))
+        DllCall("user32\DrawTextW", "ptr", hdc, "wstr", loc.head, "int", -1, "ptr", rect, "uint", flags)
+        ; その下のパス
+        restLeft := left + NumGet(size, 0, "int")
+        if (loc.rest != "" && restLeft < right) {
+            NumPut("int", restLeft, rect, 0)
+            DllCall("gdi32\SetTextColor", "ptr", hdc, "uint", NaviTheme.BGR(NaviTheme.TEXT_MUTED))
+            DllCall("user32\DrawTextW", "ptr", hdc, "wstr", loc.rest, "int", -1, "ptr", rect, "uint", flags)
+        }
+        DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", oldFont)
+    }
+
 
     ; ウィンドウリサイズ時に TreeView と同じ位置・大きさへ合わせる
     static OnResize(w, h) {
@@ -413,10 +477,14 @@ class NaviDirList {
         lv.Opt("-Redraw")
         lv.Delete()
         this._rows := []
+        this._locs := []
         for rel in top {
             SplitPath(rel, &name, &dir)
-            lv.Add(isFiles ? nv._GetFileIconStr(name) : "Icon1", name, dir)
+            ; 場所はすべてルート名から始まるパスにそろえる（ルート直下も空欄にならない）
+            ; セルの文字は _DrawLocation が 2 段の色で描くので、一覧には空で入れる
+            lv.Add(isFiles ? nv._GetFileIconStr(name) : "Icon1", name, "")
             this._rows.Push(rootBase . "\" . rel)
+            this._locs.Push({ head: nv.lastRoot . ((dir != "") ? "\" : ""), rest: dir })
         }
         lv.Modify(1, "Select Focus Vis")
         lv.Opt("+Redraw")
@@ -481,6 +549,7 @@ class NaviDirList {
         lv.Delete()
         lv.Add(, msg)
         this._rows := []
+        this._locs := []
         this._matchCount := 0
         nv._UpdateStatusBar()
     }
