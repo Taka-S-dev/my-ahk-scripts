@@ -63,7 +63,6 @@ class Navi {
     static lastRoot := ""
     static lastPath := ""
     static GuiObj := ""
-    static QuickPathFocused := false
     static QuickPathHwnd := 0
     static _TreeFilterFocused := false
     static FilesShown := Map()
@@ -75,6 +74,8 @@ class Navi {
     static FilteredNames := []    ; フィルタ後のルート名リスト
     static _FolderMap := Map()    ; ルート名→パスマップ
     static DropdownGui := ""             ; ルート選択ドロップダウンGUI
+    static _addRootGui := ""             ; ルートを追加する小窓
+    static _addRootBrowsing := false     ; 「…」でフォルダ選択ダイアログを開いている間 true
     ; プロファイル関連状態は NaviProfile クラスで管理（Navi.Profile.ahk）
     ; フィルタ関連状態は NaviFilter クラスで管理（Navi.Filter.ahk）
     ; マーク関連状態・定数は NaviMark クラスで管理（Navi.Mark.ahk）
@@ -84,9 +85,7 @@ class Navi {
     static _IconCache := Map()       ; 拡張子→ImageList インデックスキャッシュ
     static _ILNextIdx := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
-    static _rootBtnRightGap := 0      ; RootBtn 右側の固定幅（リサイズ計算用）
     static _tvHwnd := 0        ; TreeView の Hwnd
-    static _quickPathH := 22       ; QuickPath 欄の高さ（リサイズ計算用）
     static _SearchMode := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
     static _SearchTypeFilter := "all"  ; 検索対象種別（"all" / "dir" / "file"）
 
@@ -157,36 +156,41 @@ class Navi {
         _tabBarTopY_ := NaviTab.BuildTabBar(this.GuiObj)
         NaviTheme.SetFont(this.GuiObj, "body")
 
-        ; --- ヘッダー行（プロファイル・ルート選択・編集・設定・チェックボックス）---
+        ; --- ヘッダー行 ---
+        ; 「今どこを見ているか」（プロファイル › ルート）だけを左に置き、設定類は右端の ⚙ メニューにまとめる
+        ; 0x100=BS_LEFT: 選択欄として読めるよう文字を左寄せにする
+        sp := NaviTheme.SP_S
         rootBtnText := this._TruncRootLabel(this.lastRoot)
-        btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", NaviProfile.GetProfileBtnText())
+        btnProfile := this.GuiObj.Add("Button", "xm y+" . sp . " w95 h" . NaviTheme.CONTROL_H . " -Tabstop +0x100 vProfileBtn"
+            , NaviProfile.GetProfileBtnText())
         this.GuiObj._profileBtnHwnd := btnProfile.Hwnd
         ; › セパレーターで階層を表現
         NaviTheme.SetFont(this.GuiObj, "body", NaviTheme.TEXT_SUBTLE)
-        this.GuiObj.Add("Text", "x+3 yp w14 h26 +0x201 vProfileSep", "›")
-        NaviTheme.SetFont(this.GuiObj, "body")  ; SS_CENTER|SS_NOTIFY
-        ; Root は主役として大きめに
-        rootBtn := this.GuiObj.Add("Button", "x+3 yp w190 h26 vRootBtn", rootBtnText)
+        this.GuiObj.Add("Text", "x+3 yp w14 h" . NaviTheme.CONTROL_H . " +0x201 vProfileSep", "›")  ; SS_CENTER|SS_NOTIFY
+        NaviTheme.SetFont(this.GuiObj, "body")
+        ; ルートは主役なので ⚙ の手前まで伸ばす（幅は _OnResize で窓に合わせる）
+        rootBtn := this.GuiObj.Add("Button", "x+3 yp w" . (455 - 95 - 3 - 14 - 3 - sp - NaviTheme.CONTROL_H)
+            . " h" . NaviTheme.CONTROL_H . " +0x100 vRootBtn", rootBtnText)
         this.GuiObj._rootBtnHwnd := rootBtn.Hwnd
-        btnEdit := this.GuiObj.Add("Button", "x+5 yp w40 h26 -Tabstop", "編集")
-        this.GuiObj._btnEditHwnd := btnEdit.Hwnd
-        this.GuiObj._btnEditCtrl := btnEdit
-        btnSettings := this.GuiObj.Add("Button", "x+3 yp w26 h26 -Tabstop", "⚙")
+        btnSettings := this.GuiObj.Add("Button", "x+" . sp . " yp w" . NaviTheme.CONTROL_H . " h" . NaviTheme.CONTROL_H
+            . " -Tabstop vSettingsBtn", "⚙")
         this.GuiObj._btnSettingsCtrl := btnSettings
-        pinCheck := this.GuiObj.Add("Checkbox", "x+8 yp+4 vPinCheck -Tabstop", "ピン留め")
-        this.GuiObj._pinCheckHwnd := pinCheck.Hwnd
-        autoFilesCheck := this.GuiObj.Add("Checkbox", "x+5 yp vAutoFilesCheck -Tabstop", "ファイル表示")
+        ; 以下は表示しない。ピン留め・ファイル表示の状態の置き場として残し（各所が .Value を読む）、
+        ; 切り替えは ⚙ メニュー・コマンド一覧・Ctrl+P から行う
+        pinCheck := this.GuiObj.Add("Checkbox", "xp yp vPinCheck -Tabstop", "ピン留め")
+        pinCheck.Visible := false
+        autoFilesCheck := this.GuiObj.Add("Checkbox", "xp yp vAutoFilesCheck -Tabstop", "ファイル表示")
+        autoFilesCheck.Visible := false
         autoFilesCheck.Value := (IniRead(this.IniPath, "Settings", "AutoShowFiles", "0") == "1")
-        autoFilesCheck.OnEvent("Click", (*) => IniWrite(
-            this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles"))
-        this.GuiObj._autoFilesCheckHwnd := autoFilesCheck.Hwnd
         this._AllFolderNames := folderNames
         this.FilteredNames := folderNames.Clone()
         this._FolderMap := folderMap
 
         ; --- パンくずリスト ---
         NaviTheme.SetFont(this.GuiObj, "body", NaviTheme.TEXT_MUTED)
-        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . NaviBreadcrumb.BREADCRUMB_HEIGHT . " vBreadcrumb +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
+        ; 直前は非表示の小さな部品なので、ヘッダー行の下端から位置を決める
+        btnProfile.GetPos(, &_hdrY_, , &_hdrH_)
+        breadcrumb := this.GuiObj.Add("Text", "xm y" . (_hdrY_ + _hdrH_ + sp) . " w455 h" . NaviBreadcrumb.BREADCRUMB_HEIGHT . " vBreadcrumb +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
         breadcrumb.OnEvent("Click", (*) => NaviBreadcrumb._OnClick())
         NaviBreadcrumb._hwnd := breadcrumb.Hwnd
         OnMessage(this.WM_SETCURSOR, NaviBreadcrumb._OnSetCursor.Bind(NaviBreadcrumb))
@@ -194,7 +198,7 @@ class Navi {
         NaviTheme.SetFont(this.GuiObj, "body")
 
         ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
-        filterToggle := this.GuiObj.Add("Button", "xm w28 h22 -Tabstop vFilterToggle", "📁")
+        filterToggle := this.GuiObj.Add("Button", "xm y+" . sp . " w28 h22 -Tabstop vFilterToggle", "📁")
         filterToggle.OnEvent("Click", (*) => this._ToggleSearchMode())
         this.GuiObj._filterToggleHwnd := filterToggle.Hwnd
         searchTypeBtn := this.GuiObj.Add("Button", "x+3 yp w28 h22 -Tabstop vSearchTypeBtn", "*")
@@ -221,7 +225,7 @@ class Navi {
         ; --- TreeView ---
         ; 点線の代わりにインデントガイドを描き（NaviTreeDraw）、行全体を選択（0x1000=TVS_FULLROWSELECT）
         ; 0x4=TVS_LINESATROOT: ルートにも開閉矢印を付け、ガイドの位置を全階層でそろえる
-        tv := this.GuiObj.Add("TreeView", "xm w455 r15 vFolderTree -Lines +0x1004")
+        tv := this.GuiObj.Add("TreeView", "xm y+" . sp . " w455 r15 vFolderTree -Lines +0x1004")
         this._SetupTreeIcons(tv)
         this._tvHwnd := tv.Hwnd
         this._ApplyExplorerTheme(tv)
@@ -231,16 +235,12 @@ class Navi {
         ; --- フォルダ一覧（ツリーと同じ場所に重ね、Ctrl+E で切り替え）---
         NaviDirList.Build(this.GuiObj, tv)
 
-        ; --- クイック登録欄（下部）---
-        quickEdit := this.GuiObj.Add("Edit", "xm w455 vQuickPath -Tabstop", "")
-        try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr",
-            "ルートを追加: フルパスを入力して Enter", "ptr")
-        NaviTheme.SetFont(quickEdit, "body", NaviTheme.TEXT_SUBTLE)
-        quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
-        quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
+        ; --- ルート登録用の入力欄 ---
+        ; 常に出すと 2 つ目の検索欄に見えて迷うので表示しない。ルートの追加は ⚙ メニューのフォルダ選択から行い、
+        ; 選んだパスをこの欄に入れて既存の登録処理（_QuickRegisterFromEdit）に渡す
+        quickEdit := this.GuiObj.Add("Edit", "xm w455 h1 vQuickPath -Tabstop", "")
+        quickEdit.Visible := false
         this.QuickPathHwnd := quickEdit.Hwnd
-        quickEdit.GetPos(, , , &_qpH_)
-        this._quickPathH := _qpH_
 
         ; ステータスバーによる操作案内
         NaviTheme.SetFont(this.GuiObj, "caption")
@@ -253,8 +253,6 @@ class Navi {
         ; リサイズ計算用に TreeView・RootBtn の位置を記録
         tv.GetPos(, &_tvY_)
         this._tvY := _tvY_
-        this.GuiObj["RootBtn"].GetPos(, , &_rbW_)
-        this._rootBtnRightGap := 455 - _rbW_
         ; タブバー非表示時のシフト量を確定（ヘッダーY - タブバー開始Y）
         btnProfile.GetPos(, &_headerY_)
         NaviTab._tabBarShift := _headerY_ - _tabBarTopY_
@@ -268,8 +266,7 @@ class Navi {
         this.GuiObj.OnEvent("Size", (g, mm, w, h) => this._OnResize(mm, w, h))
 
         rootBtn.OnEvent("Click", (*) => this._OpenDropdown())
-        btnEdit.OnEvent("Click", (*) => this._ShowEditGui(this.GuiObj))
-        btnSettings.OnEvent("Click", (*) => this._ShowSettingsGui(this.GuiObj))
+        btnSettings.OnEvent("Click", (*) => this._ShowSettingsMenu())
         btnProfile.OnEvent("Click", (*) => NaviProfile.OpenProfileDropdown())
         tv.OnEvent("ItemExpand", (obj, id, *) => this._OnItemExpand(obj, id))
         tv.OnEvent("DoubleClick", (obj, id, *) => this._HandleActivate())
@@ -280,7 +277,7 @@ class Navi {
         Hotkey("Space", (*) => this._HandleSpace(), "On")
         Hotkey("Enter", (*) => this._HandleEnter(), "On")
         Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
-        Hotkey("^p", (*) => (this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value), "On")
+        Hotkey("^p", (*) => this._TogglePin(), "On")
         Hotkey("^d", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("^e", (*) => NaviDirList.Toggle(), "On")
@@ -1098,14 +1095,170 @@ class Navi {
     static _UpdateStatusBar() {
         try {
             sb := this.GuiObj._sbRef
+            ; ピン留めのチェックボックスは表示しないので、状態はここに出す
+            pin := this.GuiObj["PinCheck"].Value ? "   📌 ピン留め中" : ""
             if (NaviDirList.Active) {
-                sb.SetText(NaviDirList.StatusText(), 1)
+                sb.SetText(NaviDirList.StatusText() . pin, 1)
                 sb.SetText(NaviDirList.StatusHints(), 2)
                 return
             }
-            sb.SetText(NaviMark._MarkFilterActive ? " ツリー（マークのみ）" : " ツリー", 1)
+            sb.SetText((NaviMark._MarkFilterActive ? " ツリー（マークのみ）" : " ツリー") . pin, 1)
             sb.SetText(" Ctrl+; コマンド     Space メニュー     Enter 開く     F1 ヘルプ", 2)
         }
+    }
+
+    ; ピン留め（操作後もウィンドウを閉じない）を切り替える
+    static _TogglePin() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value
+        this._UpdateStatusBar()
+    }
+
+    ; ツリーでフォルダを開いたときにファイルも表示するかを切り替える
+    static _ToggleAutoFiles() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        cb := this.GuiObj["AutoFilesCheck"]
+        cb.Value := !cb.Value
+        IniWrite(cb.Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles")
+    }
+
+    /**
+     * ⚙ ボタンのメニュー（ヘッダー行から外した設定類をまとめる）
+     * オン・オフのある項目はチェックで今の状態を示す
+     */
+    static _ShowSettingsMenu() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        m := Menu()
+        m.Add("ピン留め`tCtrl+P", (*) => this._TogglePin())
+        if (this.GuiObj["PinCheck"].Value)
+            m.Check("ピン留め`tCtrl+P")
+        m.Add("ツリーにファイルも表示", (*) => this._ToggleAutoFiles())
+        if (this.GuiObj["AutoFilesCheck"].Value)
+            m.Check("ツリーにファイルも表示")
+        m.Add()
+        m.Add("ルートを追加...", (*) => this._AddRootDialog())
+        m.Add("ルートを編集...", (*) => this._ShowEditGui(this.GuiObj))
+        m.Add()
+        m.Add("設定...", (*) => this._ShowSettingsGui(this.GuiObj))
+        ; ⚙ の真下に出す。Esc はメニューを閉じるのに使うので、Navi を閉じるホットキーを一時的に止める
+        this.GuiObj["SettingsBtn"].GetPos(&bx, &by, &bw, &bh)
+        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
+        Hotkey("Esc", "Off")
+        HotIf()
+        m.Show(bx + bw, by + bh)
+        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
+        Hotkey("Esc", "On")
+        HotIf()
+    }
+
+    /**
+     * ルートを追加する小窓（ルート選択と同じ見た目・位置）
+     * フルパスを入力して Enter で登録する。.txt ならプロファイルとして読み込む
+     * クリップボードにフォルダのパスがあれば最初から入れておく
+     * 登録は非表示の QuickPath にパスを入れて既存の _QuickRegisterFromEdit に渡す
+     */
+    static _AddRootDialog() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (this._addRootGui && WinExist(this._addRootGui))
+            return
+        g := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルートを追加")
+        NaviTheme.ApplyPopup(g)
+        this._addRootGui := g
+        pathEdit := g.Add("Edit", "xm w360 vRootPath")
+        try DllCall("user32\SendMessageW", "ptr", pathEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
+            "wstr", "フォルダのフルパス（.txt ならプロファイルを読み込み）", "ptr")
+        browse := g.Add("Button", "x+" . NaviTheme.SP_XS . " yp hp w32", "…")
+        NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
+        g.Add("Text", "xm w400 vRootMsg", "Enter: 追加  /  Esc: キャンセル")
+        ; クリップボードにフォルダのパスがあれば入れておく（コピーして開けば Enter だけで済む）
+        clip := Trim(A_Clipboard, " `t`r`n`"")
+        if (clip != "" && !InStr(clip, "`n") && DirExist(clip))
+            pathEdit.Value := clip
+
+        browse.OnEvent("Click", (*) => this._AddRootBrowse())
+        g.OnEvent("Close", (*) => this._CloseAddRoot())
+        ; 他のウィンドウに切り替わったら閉じる（ルート選択の小窓と同じ）
+        local ddHwnd := g.Hwnd
+        local self := this
+        local wmActMsg := this.WM_ACTIVATE
+        wmAct(wParam, lParam, msg, hwnd) {
+            if (hwnd = ddHwnd && (wParam & 0xFFFF) = 0 && !self._addRootBrowsing) {
+                OnMessage(wmActMsg, wmAct, 0)
+                SetTimer(() => self._CloseAddRoot(), -50)
+            }
+        }
+        OnMessage(wmActMsg, wmAct)
+        HotIfWinActive("ahk_id " g.Hwnd)
+        Hotkey("Enter", (*) => this._SubmitAddRoot(), "On")
+        Hotkey("Escape", (*) => this._CloseAddRoot(), "On")
+        HotIf()
+
+        this.GuiObj.GetPos(&gx, &gy)
+        this.GuiObj["RootBtn"].GetPos(&bx, &by, &bw, &bh)
+        g.Show("x" . (gx + bx) . " y" . (gy + by + bh) . " AutoSize")
+        pathEdit.Focus()
+        SendMessage(0x00B1, 0, -1, pathEdit)  ; EM_SETSEL: 全選択して、打てばすぐ置き換えられるようにする
+    }
+
+    ; 「…」: フォルダを選んで入力欄に入れる（登録は Enter で行う）
+    static _AddRootBrowse() {
+        g := this._addRootGui
+        if !(g && WinExist(g))
+            return
+        this._addRootBrowsing := true  ; ダイアログを開いている間は小窓を閉じない
+        g.Opt("+OwnDialogs")
+        start := Trim(g["RootPath"].Value, ' "')
+        if !DirExist(start)
+            start := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
+        path := DirSelect("*" . start, 3, "ルートに追加するフォルダを選択")
+        this._addRootBrowsing := false
+        if (path != "" && g && WinExist(g)) {
+            g["RootPath"].Value := path
+            g["RootPath"].Focus()
+        }
+    }
+
+    ; Enter: 入力を確かめて登録する。見つからなければ小窓を閉じずに知らせる
+    static _SubmitAddRoot() {
+        g := this._addRootGui
+        if !(g && WinExist(g))
+            return
+        ; IME 変換中の Enter は確定に使う
+        hIMC := DllCall("imm32\ImmGetContext", "ptr", g["RootPath"].Hwnd, "ptr")
+        if (hIMC) {
+            composing := DllCall("imm32\ImmGetCompositionStringW", "ptr", hIMC, "uint", 0x0008, "ptr", 0, "ptr", 0) > 0
+            DllCall("imm32\ImmReleaseContext", "ptr", g["RootPath"].Hwnd, "ptr", hIMC)
+            if (composing) {
+                Send "{Enter}"
+                return
+            }
+        }
+        path := RTrim(Trim(g["RootPath"].Value, ' "'), "\")
+        if (StrLen(path) == 2 && SubStr(path, 2) == ":")
+            path .= "\"  ; C: → C:\（ドライブ直下）
+        isProfile := (SubStr(StrLower(path), -3) == ".txt") && FileExist(path)
+        if (path == "" || !(DirExist(path) || isProfile)) {
+            msg := g["RootMsg"]
+            msg.Opt("c" . NaviTheme.FOUND)
+            msg.Value := (path == "") ? "パスを入力してください" : "フォルダが見つかりません: " . path
+            return
+        }
+        this._CloseAddRoot()
+        this.GuiObj["QuickPath"].Value := path
+        this._QuickRegisterFromEdit()
+    }
+
+    static _CloseAddRoot() {
+        g := this._addRootGui
+        this._addRootGui := ""
+        if (g && WinExist(g))
+            try g.Destroy()
+        if (this.GuiObj && WinExist(this.GuiObj))
+            WinActivate("ahk_id " this.GuiObj.Hwnd)
     }
 
     ; ツリー・リストを Windows 11 のエクスプローラーと同じ見た目（ホバー表示・選択の色）にする
@@ -1135,10 +1288,11 @@ class Navi {
 
     ; RootBtn (w190) に収まるよう長い名前を切り詰める
     ; ▾ を付けて、押すと選べるボタンだと分かるようにする
+    ; ボタンは左寄せ（BS_LEFT）なので、枠に文字がくっつかないよう先頭に余白を入れる
     static _TruncRootLabel(name) {
         if (name == "")
-            return "ルートを選択 ▾"
-        return ((StrLen(name) > 18) ? SubStr(name, 1, 16) . "…" : name) . " ▾"
+            return "  ルートを選択 ▾"
+        return "  " . ((StrLen(name) > 40) ? SubStr(name, 1, 38) . "…" : name) . " ▾"
     }
 
     static _QuickRegisterFromEdit() {
@@ -1215,11 +1369,6 @@ class Navi {
             }
         }
 
-        if (this.QuickPathHwnd && currFocus = this.QuickPathHwnd) {
-            ; クイック登録欄がフォーカスなら登録を優先
-            this._QuickRegisterFromEdit()
-            return
-        }
         if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
             ; ルートボタンがフォーカスならオーバーレイを開く
             this._OpenDropdown()
@@ -1233,25 +1382,9 @@ class Navi {
             this._CycleSearchType()
             return
         }
-        if (this.GuiObj.HasOwnProp("_btnEditHwnd") && currFocus = this.GuiObj._btnEditHwnd) {
-            ; 編集ボタンがフォーカスなら編集GUIを開く
-            this._ShowEditGui(this.GuiObj)
-            return
-        }
         if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd) {
             ; プロファイルボタンがフォーカスならドロップダウンを開く
             NaviProfile.OpenProfileDropdown()
-            return
-        }
-        if (this.GuiObj.HasOwnProp("_pinCheckHwnd") && currFocus = this.GuiObj._pinCheckHwnd) {
-            ; ピン留めチェックボックスがフォーカスならトグル
-            this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value
-            return
-        }
-        if (this.GuiObj.HasOwnProp("_autoFilesCheckHwnd") && currFocus = this.GuiObj._autoFilesCheckHwnd) {
-            ; ファイル表示チェックボックスがフォーカスならトグル
-            this.GuiObj["AutoFilesCheck"].Value := !this.GuiObj["AutoFilesCheck"].Value
-            IniWrite(this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles")
             return
         }
         if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
@@ -1416,17 +1549,6 @@ class Navi {
         ; ツリーフィルター欄にフォーカスがある場合はスペースを手動で送る
         if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
             Send "{Space}"  ; IMEのスペース変換も通るよう実キーとして送信
-            return
-        }
-        ; ピン留めチェックボックスがフォーカスならトグル
-        if (this.GuiObj.HasOwnProp("_pinCheckHwnd") && currFocus = this.GuiObj._pinCheckHwnd) {
-            this.GuiObj["PinCheck"].Value := !this.GuiObj["PinCheck"].Value
-            return
-        }
-        ; ファイル表示チェックボックスがフォーカスならトグル
-        if (this.GuiObj.HasOwnProp("_autoFilesCheckHwnd") && currFocus = this.GuiObj._autoFilesCheckHwnd) {
-            this.GuiObj["AutoFilesCheck"].Value := !this.GuiObj["AutoFilesCheck"].Value
-            IniWrite(this.GuiObj["AutoFilesCheck"].Value ? "1" : "0", this.IniPath, "Settings", "AutoShowFiles")
             return
         }
         NaviActions.ShowActionMenu()
@@ -1822,13 +1944,21 @@ class Navi {
 
     /**
      * ウィンドウリサイズ: 幅は全幅コントロールが追従、高さは TreeView が伸縮する
-     * RootBtn 行（編集・ピン留め・ファイル表示）は固定のまま
+     * ヘッダー行は ⚙ を右端に置き、ルートのボタンをその手前まで伸ばす
      */
     static _OnResize(minmax, w, h) {
         if (minmax = -1 || !(this.GuiObj && WinExist(this.GuiObj)))
             return
         margin := this.GuiObj.MarginX
         ctrlW := w - 2 * margin
+
+        ; ヘッダー行: ⚙ を右端へ、ルートのボタンを ⚙ の手前まで
+        settingsBtn := this.GuiObj["SettingsBtn"]
+        settingsBtn.GetPos(, , &_sbtnW_)
+        settingsX := w - margin - _sbtnW_
+        settingsBtn.Move(settingsX)
+        this.GuiObj["RootBtn"].GetPos(&_rootX_)
+        this.GuiObj["RootBtn"].Move(, , Max(80, settingsX - NaviTheme.SP_S - _rootX_))
 
         ; 全幅コントロールを幅に追従させる
         this.GuiObj["Breadcrumb"].Move(, , ctrlW)
@@ -1843,16 +1973,13 @@ class Navi {
         this.GuiObj["TreeFilter"].GetPos(&_tfX_)
         this.GuiObj["TreeFilter"].Move(, , w - margin - _tfX_)
 
-        ; TreeView は QuickPath と StatusBar の上まで高さを埋める
+        ; TreeView は StatusBar の上まで高さを埋める（ステータスバーとの間は SP_S あける）
         sbH := 28  ; フォールバック値
         if (this.GuiObj.HasOwnProp("_sbRef"))
             this.GuiObj._sbRef.GetPos(, , , &sbH)
-        qpH := this._quickPathH
-        tvH := Max(60, h - this._tvY - qpH - sbH)
+        tvH := Max(60, h - this._tvY - sbH - NaviTheme.SP_S)
         this.GuiObj["FolderTree"].Move(, , ctrlW, tvH)
         NaviDirList.OnResize(ctrlW, tvH)
-        ; QuickPath を TreeView 直下に追従
-        this.GuiObj["QuickPath"].Move(, this._tvY + tvH, ctrlW, qpH)
     }
 
     /**

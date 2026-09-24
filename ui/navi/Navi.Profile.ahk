@@ -169,12 +169,12 @@ class NaviProfile {
         nv := this._navi
         last := IniRead(nv.IniPath, "Settings", "LastProfile", "")
         if (last == "")
-            return "Profile ▾"
+            return "  Profile ▾"
         name := RegExReplace(last, ".*\\")
         name := RegExReplace(name, "\.txt$")
         maxLen := this._PROFILE_BTN_MAX_LEN
-        ; ▾ を付けて、押すと選べるボタンだと分かるようにする
-        return ((StrLen(name) > maxLen) ? SubStr(name, 1, maxLen - 1) . "…" : name) . " ▾"
+        ; ▾ を付けて、押すと選べるボタンだと分かるようにする。左寄せのボタンなので先頭に余白を入れる
+        return "  " . ((StrLen(name) > maxLen) ? SubStr(name, 1, maxLen - 1) . "…" : name) . " ▾"
     }
 
     static UpdateProfileBtn() {

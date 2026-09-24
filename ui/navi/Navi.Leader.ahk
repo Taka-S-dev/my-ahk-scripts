@@ -38,7 +38,7 @@ class NaviLeader {
             run: (nv) => NaviDirList.Active ? NaviDirList.RevealInTree() : nv.GuiObj["FolderTree"].Focus(),
             on: (nv) => !NaviDirList.Active },
         { key: "a", group: "表示", label: "ツリーにファイルも表示",
-            run: (nv) => NaviLeader._ToggleAutoFiles(nv),
+            run: (nv) => nv._ToggleAutoFiles(),
             on: (nv) => nv.GuiObj["AutoFilesCheck"].Value },
         { key: "r", group: "移動", label: "ルートを選ぶ", run: (nv) => nv._OpenDropdown() },
         { key: "s", group: "移動", label: "プロファイルを選ぶ", run: (nv) => NaviProfile.OpenProfileDropdown() },
@@ -54,8 +54,9 @@ class NaviLeader {
         { key: "n", group: "ウィンドウ", label: "新しいタブ", run: (nv) => NaviTab.NewTab() },
         { key: "w", group: "ウィンドウ", label: "タブを閉じる", run: (nv) => NaviTab.CloseTab() },
         { key: "p", group: "ウィンドウ", label: "ピン留め",
-            run: (nv) => (nv.GuiObj["PinCheck"].Value := !nv.GuiObj["PinCheck"].Value),
+            run: (nv) => nv._TogglePin(),
             on: (nv) => nv.GuiObj["PinCheck"].Value },
+        { key: "+", group: "ウィンドウ", label: "ルートを追加", run: (nv) => nv._AddRootDialog() },
         { key: "e", group: "ウィンドウ", label: "ルートを編集", run: (nv) => nv._ShowEditGui(nv.GuiObj) },
         { key: ",", group: "ウィンドウ", label: "設定", run: (nv) => nv._ShowSettingsGui(nv.GuiObj) },
         { key: "?", group: "ウィンドウ", label: "ショートカット一覧", run: (nv) => nv._ShowHelp() },
@@ -189,12 +190,5 @@ class NaviLeader {
             if (backToNavi && nv.GuiObj && WinExist(nv.GuiObj))
                 WinActivate("ahk_id " . nv.GuiObj.Hwnd)
         }
-    }
-
-    ; ツリーにファイルも表示する設定を切り替える（ヘッダーのチェックボックスと同じ）
-    static _ToggleAutoFiles(nv) {
-        cb := nv.GuiObj["AutoFilesCheck"]
-        cb.Value := !cb.Value
-        IniWrite(cb.Value ? "1" : "0", nv.IniPath, "Settings", "AutoShowFiles")
     }
 }

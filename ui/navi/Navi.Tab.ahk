@@ -472,7 +472,7 @@ class NaviTab {
         ctrls := [
             nv.GuiObj["ProfileBtn"], nv.GuiObj["ProfileSep"],
             nv.GuiObj["RootBtn"],
-            nv.GuiObj._btnEditCtrl, nv.GuiObj._btnSettingsCtrl,
+            nv.GuiObj._btnSettingsCtrl,
             nv.GuiObj["PinCheck"], nv.GuiObj["AutoFilesCheck"],
             nv.GuiObj["Breadcrumb"], nv.GuiObj["FilterToggle"],
             nv.GuiObj["SearchTypeBtn"], nv.GuiObj["TreeFilter"],
