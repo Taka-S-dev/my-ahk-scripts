@@ -14,7 +14,6 @@ class NaviBreadcrumb {
     static _lastSelectedId := 0   ; 前回の選択ノード ID（変更検知用）
 
     ; --- 定数 ---
-    static BREADCRUMB_COLOR    := "505050"  ; パンくずテキスト色（グレー）
     static BREADCRUMB_HEIGHT   := 20        ; パンくずコントロールの高さ（px）
     static BREADCRUMB_WATCH_MS := 100       ; 選択監視タイマー間隔（ms）
 

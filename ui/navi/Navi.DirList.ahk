@@ -24,7 +24,6 @@ class NaviDirList {
     static _navCond := ""           ; Up / PgUp / PgDn ホットキーの HotIf 条件
     static _lvHwnd := 0
     static _drawHandler := ""       ; 選択行を塗る WM_NOTIFY ハンドラー
-    static SEL_BG_COLOR := 0xF7E4CC  ; 入力欄にいる間の選択行の背景（BGR: RGB(204,228,247) 薄い青）
     static _listCond := ""          ; Shift+Tab ホットキーの HotIf 条件
 
     ; --- ファイルインデックス（Show のたびに作り直す）---
@@ -71,6 +70,15 @@ class NaviDirList {
         lv.Visible := false
         lv.SetImageList(nv._ILHandle, 1)
         nv._ApplyExplorerTheme(lv)
+        ; ツリーの行の高さを一覧の行の高さにそろえ、表示を切り替えても行の間隔が変わらないようにする
+        ; （一覧の行の高さは広げられないので、ツリーの方を合わせる）
+        lv.Add(, "x")
+        rect := Buffer(16, 0)  ; LVIR_BOUNDS=0
+        SendMessage(0x100E, 0, rect.Ptr, lv)  ; LVM_GETITEMRECT
+        rowH := NumGet(rect, 12, "int") - NumGet(rect, 4, "int")
+        lv.Delete()
+        if (rowH > 0)
+            SendMessage(0x111B, rowH, 0, tv)  ; TVM_SETITEMHEIGHT
         this._lvHwnd := lv.Hwnd
         if (this._drawHandler == "") {
             this._drawHandler := (w, l, m, h) => this._OnCustomDraw(l)
@@ -230,7 +238,7 @@ class NaviDirList {
         stateOff := A_PtrSize = 8 ? 64 : 40
         ; CDIS_SELECTED を外してテーマの灰色を描かせず、背景色だけ自分で指定する
         NumPut("uint", NumGet(l, stateOff, "uint") & ~0x1, l, stateOff)
-        NumPut("uint", this.SEL_BG_COLOR, l, A_PtrSize = 8 ? 84 : 52)  ; clrTextBk
+        NumPut("uint", NaviTheme.BGR(NaviTheme.ACCENT_SOFT), l, A_PtrSize = 8 ? 84 : 52)  ; clrTextBk
         return 0x2                ; CDRF_NEWFONT
     }
 

@@ -19,7 +19,6 @@ class NaviMark {
     static _LastTreeRootPath := ""    ; 前回の _RefreshTree ルートパス（マーク初期化判定用）
 
     ; --- 定数 ---
-    static MARK_COLOR := 0x0000AA00  ; マーク着色色 BGR: 緑
 
     static Init(naviRef) {
         this._navi := naviRef

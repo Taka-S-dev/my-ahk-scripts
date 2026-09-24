@@ -32,10 +32,7 @@ class NaviSearch {
     static JumpListView := ""      ; 一体型ウィンドウのListViewへの参照
     static _HighlightedPaths := [] ; HighlightedIds と同順のパス一覧（リスト同期用）
     static _HighlightedIdSet := Map()  ; カスタムドロー用 O(1) ルックアップ
-    static _CustomDrawHandler := ""    ; WM_NOTIFY ハンドラー参照
-    static _CustomDrawTvHwnd := 0      ; 対象TreeViewのHwnd
     static _NaviRef          := ""     ; Navi インスタンス参照（#Warn 回避用）
-    static HIGHLIGHT_COLOR := 0x0000A5FF ; ハイライト色(COLORREF) = オレンジ R255 G165 B0
 
     ; 調整可能な設定値
     static MAX_RESULTS := 1000          ; 検索結果の最大件数
@@ -749,12 +746,12 @@ class NaviSearch {
         currentTimeout := (this.TimeoutMs <= 0) ? 0 : this.TimeoutMs // 1000
 
         eg := Gui("+AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox +Owner" . parentGui.Hwnd, "検索設定")
-        eg.SetFont("s9", "Segoe UI")
+        NaviTheme.ApplyPopup(eg)
 
         ; タイムアウト設定
         eg.Add("Text", "xm", "タイムアウト（秒、0=無制限）:")
         timeoutEdit := eg.Add("Edit", "x+" . this.GAP_X_MED . " yp-3 w" . this.SETTINGS_TIMEOUT_W . " vTimeout Number", currentTimeout)
-        eg.Add("Text", "x+" . this.GAP_X_MED . " yp+3 c808080", "秒")
+        eg.Add("Text", "x+" . this.GAP_X_MED . " yp+3 c" . NaviTheme.TEXT_SUBTLE, "秒")
 
         ; fd バックエンド
         useFdCb := eg.Add("CheckBox", "xm", "fd を使用して高速検索（fd.exe が必要）")
@@ -843,12 +840,12 @@ class NaviSearch {
     static _PromptQuery(navi, basePath) {
         title := "Navi - ローカル検索"
         g := Gui("+AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", title)
-        g.SetFont("s9", "Segoe UI")
+        NaviTheme.ApplyPopup(g)
         g.Add("Text", "xm", "検索語を入力")
         ; ヘルプアイコン（ホバーでツールチップ表示）
-        helpText := g.Add("Text", "x+5 yp cBlue", "[?]")
+        helpText := g.Add("Text", "x+5 yp c" . NaviTheme.ACCENT, "[?]")
         helpText.OnEvent("Click", (*) => this._ShowSearchHelp())
-        g.Add("Text", "xm c808080", "Base: " . basePath)
+        g.Add("Text", "xm c" . NaviTheme.TEXT_MUTED, "Base: " . basePath)
         inputEdit := g.Add("Edit", "xm w" . this.EDIT_W . " vQ")
         ; 検索対象ラジオボタン
         g.Add("Text", "xm", "対象:")
@@ -1103,8 +1100,9 @@ class NaviSearch {
         this._HighlightedIdSet := Map()
         for id in this.HighlightedIds
             this._HighlightedIdSet[id] := true
-        ; NM_CUSTOMDRAW ハンドラー登録
-        this._EnsureCustomDraw(tv, navi)
+        ; 着色は NaviTreeDraw がまとめて行う（_HighlightedIdSet を参照）
+        this._NaviRef := navi
+        NaviTreeDraw.Attach(tv)
         ; 最初の結果へスクロール位置を合わせてから再描画を再開（Results基準）
         this.HighlightedIdx := 0
         if (this.Results.Length > 0) {
@@ -1290,8 +1288,8 @@ class NaviSearch {
         this.JumpGui := ""
         this.JumpLabel := ""
         g := Gui("+Owner" . navi.GuiObj.Hwnd . " +Resize +AlwaysOnTop +ToolWindow -MaximizeBox -MinimizeBox", "検索ヒット")
-        g.SetFont("s9", "Segoe UI")
-        g.MarginY := 6
+        NaviTheme.ApplyPopup(g)
+        g.MarginY := NaviTheme.SP_S
         ; ボタン行
         prev      := g.Add("Button", "xm w" . this.BTN_W_SMALL . " -Tabstop", "前へ")
         next      := g.Add("Button", "x+" . this.GAP_X_SMALL . " w" . this.BTN_W_SMALL . " -Tabstop", "次へ")
@@ -1564,47 +1562,6 @@ class NaviSearch {
             }
         } catch {
             this._StopParentWatch()
-        }
-    }
-
-    ; NM_CUSTOMDRAW ハンドラーを登録（未登録なら）
-    static _EnsureCustomDraw(tv, navi) {
-        this._CustomDrawTvHwnd := tv.Hwnd
-        this._NaviRef := navi
-        if (this._CustomDrawHandler != "")
-            return
-        handler := (w, l, m, h) => NaviSearch._OnWMNotify(w, l, m, h)
-        OnMessage(0x004E, handler)
-        this._CustomDrawHandler := handler
-    }
-
-    ; WM_NOTIFY → NM_CUSTOMDRAW ハンドラー
-    static _OnWMNotify(wParam, lParam, msg, hwnd) {
-        ; 対象TreeView以外は無視
-        if (NumGet(lParam, 0, "ptr") != NaviSearch._CustomDrawTvHwnd)
-            return
-        ; NMHDR.code  offset = A_PtrSize*2 (64bit:16 / 32bit:8)
-        if (NumGet(lParam, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
-            return
-        ; NMCUSTOMDRAW.dwDrawStage  offset (64bit:24 / 32bit:12)
-        stageOff := (A_PtrSize = 8) ? 24 : 12
-        stage    := NumGet(lParam, stageOff, "uint")
-        if (stage = 0x1) {  ; CDDS_PREPAINT
-            return NaviSearch._HighlightedIdSet.Count > 0 ? 0x20 : 0  ; CDRF_NOTIFYITEMDRAW / CDRF_DODEFAULT
-        }
-        if (stage = 0x10001) {  ; CDDS_ITEMPREPAINT
-            ; NMCUSTOMDRAW.dwItemSpec (HTREEITEM)  offset (64bit:56 / 32bit:36)
-            specOff := (A_PtrSize = 8) ? 56 : 36
-            itemId  := NumGet(lParam, specOff, "ptr")
-            ; フィルタマッチノードは NaviFilter の filter ハンドラーに委譲（優先度: filter > search）
-            if (NaviFilter._FilterMatchIdSet.Has(itemId))
-                return
-            if (NaviSearch._HighlightedIdSet.Has(itemId)) {
-                ; NMTVCUSTOMDRAW.clrText  offset (64bit:80 / 32bit:48)
-                clrOff := (A_PtrSize = 8) ? 80 : 48
-                NumPut("uint", NaviSearch.HIGHLIGHT_COLOR, lParam, clrOff)
-                return 0  ; CDRF_DODEFAULT（変更した色で描画）
-            }
         }
     }
 

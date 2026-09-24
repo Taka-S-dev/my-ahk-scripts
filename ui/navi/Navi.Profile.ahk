@@ -198,9 +198,7 @@ class NaviProfile {
         this._ProfileFilteredNames := this._AllProfileNames.Clone()
 
         ddGui := Gui("+Owner" . nv.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "プロファイル")
-        ddGui.MarginX := 8
-        ddGui.MarginY := 8
-        ddGui.SetFont("s10", "Yu Gothic UI")
+        NaviTheme.ApplyPopup(ddGui)
 
         filterEdit := ddGui.Add("Edit", "xm w200 vProfileFilter")
         try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", nv.EM_SETCUEBANNER, "ptr", 1,
@@ -210,8 +208,8 @@ class NaviProfile {
         if (this._ProfileFilteredNames.Length > 0)
             ddList.Choose(1)
 
-        ddGui.SetFont("s8")
-        ddGui.Add("Text", "xm c808080", "↑↓ Ctrl+J/K: 移動  Enter Ctrl+L: ロード  Esc: 閉じる")
+        NaviTheme.SetFont(ddGui, "caption", NaviTheme.TEXT_SUBTLE)
+        ddGui.Add("Text", "xm", "↑↓ Ctrl+J/K: 移動  Enter Ctrl+L: ロード  Esc: 閉じる")
         this.ProfileDropdownGui := ddGui
 
         filterEdit.OnEvent("Change",      (*) => this._ProfileOverlayFilterChange())

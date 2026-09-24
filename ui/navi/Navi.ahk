@@ -16,6 +16,8 @@
 ;
 ; ==============================================================================
 #Requires AutoHotkey v2.0
+#Include *i Navi.Theme.ahk
+#Include *i Navi.TreeDraw.ahk
 #Include *i Navi.Search.ahk
 #Include *i Navi.ContextMenu.ahk
 #Include *i Navi.Action.ahk
@@ -32,8 +34,6 @@
 class Navi {
     ; --- クラス定数 ---
     static GUI_WIDTH := 600
-    static BG_COLOR := "FFFFFF"      ; 本体の背景色（選択中のタブと同じ色にしてつなげる）
-    static TREE_ITEM_H := 22         ; ツリーの 1 行の高さ
     static STATUS_LEFT_W := 210      ; ステータスバー左側（表示と件数）の幅
     static GUI_HEIGHT_APPROX := 565
     static _savedW := 0
@@ -48,7 +48,6 @@ class Navi {
     static TEMP_PREFIX := "TEMP_"
 
     ; --- アクションメニュー用の定数 ---
-    static MENU_BG_COLOR := "262626"  ; メニューの背景色
     static MENU_WIDTH := 210       ; メニューの幅
     static MENU_BTN_W := 190       ; ボタンの幅
     static MENU_BTN_H := 26        ; ボタンの高さ
@@ -139,8 +138,8 @@ class Navi {
         this.GuiObj := ""
 
         this.GuiObj := Gui("+AlwaysOnTop +Resize", "Navi")
-        this.GuiObj.BackColor := this.BG_COLOR
-        this.GuiObj.SetFont("s9", "Yu Gothic UI")
+        this.GuiObj.BackColor := NaviTheme.BG
+        NaviTheme.SetFont(this.GuiObj, "body")
 
         folderMap := Map(), folderNames := []
         this._LoadFolders(folderMap, folderNames)
@@ -156,17 +155,16 @@ class Navi {
 
         ; --- タブバー（最上部）---
         _tabBarTopY_ := NaviTab.BuildTabBar(this.GuiObj)
-        this.GuiObj.SetFont("s9", "Yu Gothic UI")
+        NaviTheme.SetFont(this.GuiObj, "body")
 
         ; --- ヘッダー行（プロファイル・ルート選択・編集・設定・チェックボックス）---
         rootBtnText := this._TruncRootLabel(this.lastRoot)
-        ; Profile は小さいフォントで控えめに（文脈ラベル的な扱い）
-        this.GuiObj.SetFont("s8", "Yu Gothic UI")
         btnProfile := this.GuiObj.Add("Button", "xm y+2 w95 h26 -Tabstop vProfileBtn", NaviProfile.GetProfileBtnText())
         this.GuiObj._profileBtnHwnd := btnProfile.Hwnd
         ; › セパレーターで階層を表現
-        this.GuiObj.SetFont("s9", "Yu Gothic UI")
-        this.GuiObj.Add("Text", "x+3 yp w14 h26 +0x201 vProfileSep", "›")  ; SS_CENTER|SS_NOTIFY
+        NaviTheme.SetFont(this.GuiObj, "body", NaviTheme.TEXT_SUBTLE)
+        this.GuiObj.Add("Text", "x+3 yp w14 h26 +0x201 vProfileSep", "›")
+        NaviTheme.SetFont(this.GuiObj, "body")  ; SS_CENTER|SS_NOTIFY
         ; Root は主役として大きめに
         rootBtn := this.GuiObj.Add("Button", "x+3 yp w190 h26 vRootBtn", rootBtnText)
         this.GuiObj._rootBtnHwnd := rootBtn.Hwnd
@@ -187,13 +185,13 @@ class Navi {
         this._FolderMap := folderMap
 
         ; --- パンくずリスト ---
-        this.GuiObj.SetFont("s9", "Yu Gothic UI")
-        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . NaviBreadcrumb.BREADCRUMB_HEIGHT . " vBreadcrumb c" . NaviBreadcrumb.BREADCRUMB_COLOR . " +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
+        NaviTheme.SetFont(this.GuiObj, "body", NaviTheme.TEXT_MUTED)
+        breadcrumb := this.GuiObj.Add("Text", "xm w455 h" . NaviBreadcrumb.BREADCRUMB_HEIGHT . " vBreadcrumb +0x8100", "")  ; SS_NOTIFY(0x100)|SS_PATHELLIPSIS(0x8000)
         breadcrumb.OnEvent("Click", (*) => NaviBreadcrumb._OnClick())
         NaviBreadcrumb._hwnd := breadcrumb.Hwnd
         OnMessage(this.WM_SETCURSOR, NaviBreadcrumb._OnSetCursor.Bind(NaviBreadcrumb))
         OnMessage(this.WM_SETCURSOR, NaviTab._OnSetCursor.Bind(NaviTab))
-        this.GuiObj.SetFont("s9", "Yu Gothic UI")
+        NaviTheme.SetFont(this.GuiObj, "body")
 
         ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
         filterToggle := this.GuiObj.Add("Button", "xm w28 h22 -Tabstop vFilterToggle", "📁")
@@ -221,13 +219,14 @@ class Navi {
         this.GuiObj._treeFilterHwnd := treeFilter.Hwnd
 
         ; --- TreeView ---
-        ; 点線なし・行全体の選択（0x1000=TVS_FULLROWSELECT）にしてエクスプローラーと同じ見た目にする
-        tv := this.GuiObj.Add("TreeView", "xm w455 r15 vFolderTree -Lines +0x1000")
+        ; 点線の代わりにインデントガイドを描き（NaviTreeDraw）、行全体を選択（0x1000=TVS_FULLROWSELECT）
+        ; 0x4=TVS_LINESATROOT: ルートにも開閉矢印を付け、ガイドの位置を全階層でそろえる
+        tv := this.GuiObj.Add("TreeView", "xm w455 r15 vFolderTree -Lines +0x1004")
         this._SetupTreeIcons(tv)
         this._tvHwnd := tv.Hwnd
         this._ApplyExplorerTheme(tv)
         SendMessage(0x112C, 0x4, 0x4, tv)                 ; TVM_SETEXTENDEDSTYLE: TVS_EX_DOUBLEBUFFER
-        SendMessage(0x111B, this.TREE_ITEM_H, 0, tv)      ; TVM_SETITEMHEIGHT
+        NaviTreeDraw.Attach(tv)  ; 文字色・選択行・インデントガイド
 
         ; --- フォルダ一覧（ツリーと同じ場所に重ね、Ctrl+E で切り替え）---
         NaviDirList.Build(this.GuiObj, tv)
@@ -236,7 +235,7 @@ class Navi {
         quickEdit := this.GuiObj.Add("Edit", "xm w455 vQuickPath -Tabstop", "")
         try DllCall("user32\SendMessageW", "ptr", quickEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr",
             "ルートを追加: フルパスを入力して Enter", "ptr")
-        quickEdit.SetFont("s9 c808080", "Yu Gothic UI")
+        NaviTheme.SetFont(quickEdit, "body", NaviTheme.TEXT_SUBTLE)
         quickEdit.OnEvent("Focus", (*) => (Navi.QuickPathFocused := true))
         quickEdit.OnEvent("LoseFocus", (*) => (Navi.QuickPathFocused := false))
         this.QuickPathHwnd := quickEdit.Hwnd
@@ -244,7 +243,7 @@ class Navi {
         this._quickPathH := _qpH_
 
         ; ステータスバーによる操作案内
-        this.GuiObj.SetFont("s8", "Yu Gothic UI")
+        NaviTheme.SetFont(this.GuiObj, "caption")
         ; 左: 今の表示と件数 / 右: 操作の案内
         sb := this.GuiObj.Add("StatusBar")
         sb.SetParts(this.STATUS_LEFT_W)
@@ -528,7 +527,7 @@ class Navi {
         parentGui.GetPos(&px, &py, &pw, &ph)
         parentGui.Opt("+Disabled")
         editGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MinimizeBox +Resize", "ルートディレクトリ編集")
-        editGui.SetFont("s10", "Yu Gothic UI")
+        NaviTheme.ApplyPopup(editGui)
         ; --- プロファイル管理 GroupBox（最上部）---
         profBox := editGui.Add("GroupBox", "xm w550 h54", "プロファイル管理")
         profNames := NaviProfile.GetProfileList()
@@ -614,14 +613,13 @@ class Navi {
         parentGui.GetPos(&px, &py, &pw, &ph)
         parentGui.Opt("+Disabled")
         settGui := Gui("+Owner" . parentGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "Navi 設定")
-        settGui.SetFont("s10", "Yu Gothic UI")
-        settGui.MarginX := 16
-        settGui.MarginY := 12
+        NaviTheme.ApplyPopup(settGui)
+        settGui.MarginX := NaviTheme.SP_L
 
         ; --- 外部ファイラー ---
-        settGui.SetFont("s10 Bold")
+        NaviTheme.SetFont(settGui, "heading")
         settGui.Add("Text", "xm", "外部ファイラー")
-        settGui.SetFont("s10 Norm")
+        NaviTheme.SetFont(settGui, "body")
         explorerPath := IniRead(this.IniPath, "Settings", "ExplorerPath", "explorer.exe")
         useDefaultCb := settGui.Add("CheckBox", "xm y+8", "標準エクスプローラーを使用する")
         useDefaultCb.Value := (explorerPath == "explorer.exe") ? 1 : 0
@@ -640,17 +638,17 @@ class Navi {
 
         ; --- 動作 ---
         settGui.Add("Text", "xm y+14 w400 0x10")
-        settGui.SetFont("s10 Bold")
+        NaviTheme.SetFont(settGui, "heading")
         settGui.Add("Text", "xm y+10", "動作")
-        settGui.SetFont("s10 Norm")
+        NaviTheme.SetFont(settGui, "body")
         autoMinCb := settGui.Add("CheckBox", "xm y+8", "アクション実行後に自動最小化する（ピン留めON時は無効）")
         autoMinCb.Value := (IniRead(this.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1") ? 1 : 0
 
         ; --- フォルダフィルター ---
         settGui.Add("Text", "xm y+14 w400 0x10")
-        settGui.SetFont("s10 Bold")
+        NaviTheme.SetFont(settGui, "heading")
         settGui.Add("Text", "xm y+10", "フォルダフィルター")
-        settGui.SetFont("s10 Norm")
+        NaviTheme.SetFont(settGui, "body")
         fdFilterCb := settGui.Add("CheckBox", "xm y+8", "高速化する（fd.exe が必要）")
         fdFilterCb.Value := (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") != "0") ? 1 : 0
         settGui.Add("Text", "xm y+10", "最大階層深度（0 = 無制限）:")
@@ -684,7 +682,7 @@ class Navi {
     static _ShowEntryGui(editGui, lv, row := 0) {
         editGui.GetPos(&ex, &ey, &ew, &eh), editGui.Opt("+Disabled")
         entryGui := Gui("+Owner" . editGui.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", row ? "項目の修正" : "項目の追加")
-        entryGui.SetFont("s10", "Yu Gothic UI")
+        NaviTheme.ApplyPopup(entryGui)
         entryGui.Add("Text", "xm", "名称:"), nameEdit := entryGui.Add("Edit", "xm w400 vName", row ? lv.GetText(row, 1) :
             "")
         entryGui.Add("Text", "xm", "パス:"), pathEdit := entryGui.Add("Edit", "xm w350 vPath", row ? lv.GetText(row, 2) :
@@ -1725,9 +1723,7 @@ class Navi {
 
         ; オーバーレイGUIを作成
         ddGui := Gui("+Owner" . this.GuiObj.Hwnd . " +AlwaysOnTop -MaximizeBox -MinimizeBox", "ルート選択")
-        ddGui.MarginX := 8
-        ddGui.MarginY := 8
-        ddGui.SetFont("s10", "Yu Gothic UI")
+        NaviTheme.ApplyPopup(ddGui)
 
         filterEdit := ddGui.Add("Edit", "xm w260 vOverlayFilter")
         try DllCall("user32\SendMessageW", "ptr", filterEdit.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
@@ -1743,8 +1739,8 @@ class Navi {
             }
         }
 
-        ddGui.SetFont("s8")
-        ddGui.Add("Text", "xm w260 c808080", "↑↓ Ctrl+J/K: 移動  /  Enter Ctrl+L: 選択  /  Esc: キャンセル")
+        NaviTheme.SetFont(ddGui, "caption", NaviTheme.TEXT_SUBTLE)
+        ddGui.Add("Text", "xm w260", "↑↓ Ctrl+J/K: 移動  /  Enter Ctrl+L: 選択  /  Esc: キャンセル")
 
         this.DropdownGui := ddGui
 

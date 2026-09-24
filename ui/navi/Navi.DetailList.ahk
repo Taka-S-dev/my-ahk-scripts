@@ -59,7 +59,7 @@ class NaviDetailList {
 
         dlGui := Gui("+Owner" . nv.GuiObj.Hwnd . " +Resize", "詳細リスト - " . targetDir)
         this._guiObj := dlGui
-        dlGui.SetFont("s10", "Yu Gothic UI")
+        NaviTheme.ApplyPopup(dlGui)
 
         ; ListView を作成（名前、種類、サイズ、作成日時、更新日時）
         lv := dlGui.Add("ListView", "r20 w900 Grid Sort", ["名前", "種類", "サイズ", "作成日時", "更新日時"])
@@ -104,12 +104,12 @@ class NaviDetailList {
         lv.ModifyCol(5, 180)  ; 更新日時
 
         ; ステータスバー
-        dlGui.SetFont("s8")
+        NaviTheme.SetFont(dlGui, "caption")
         sb := dlGui.Add("StatusBar")
         sb.SetText(" [Space] アクションメニュー  /  [Enter] エクスプローラー  /  項目数: " . itemCount)
 
         ; 閉じるボタン
-        dlGui.SetFont("s10")
+        NaviTheme.SetFont(dlGui, "body")
         btnClose := dlGui.Add("Button", "w100 Default", "閉じる")
         btnClose.OnEvent("Click", (*) => this.Close())
 
@@ -173,14 +173,12 @@ class NaviDetailList {
         dlGui.Opt("+Disabled")
 
         actGui := Gui("+Owner" . dlGui.Hwnd . " -Caption +AlwaysOnTop +Border")
-        actGui.BackColor := nv.MENU_BG_COLOR
-        actGui.MarginX   := 10
-        actGui.MarginY   := 8
+        NaviTheme.ApplyPopup(actGui)
 
-        actGui.SetFont("s8 w400 cA0A0A0", "Yu Gothic UI")
+        NaviTheme.SetFont(actGui, "caption", NaviTheme.TEXT_MUTED)
         actGui.Add("Text", "Center w" . nv.MENU_BTN_W, itemName)
 
-        actGui.SetFont("s9 w400 cWhite")
+        NaviTheme.SetFont(actGui, "body")
         ; NaviActions に登録されたアクションからボタンを生成（ソート済み）
         keys := []
         for k, _ in NaviActions.Actions

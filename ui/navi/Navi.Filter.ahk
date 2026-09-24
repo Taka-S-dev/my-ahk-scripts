@@ -45,9 +45,6 @@ class NaviFilter {
 
     ; --- カスタムドロー ---
     static _FilterMatchIdSet := Map()  ; マッチノードID集合
-    static _FilterTvHwnd     := 0      ; カスタムドロー対象 TreeView の Hwnd
-    static _FilterDrawHandler := ""    ; WM_NOTIFY ハンドラー参照
-    static FILTER_MATCH_COLOR := 0x00CC5500  ; フィルタマッチ着色色 BGR: RGB(0,85,204)=青
 
     static Init(naviRef) {
         this._navi := naviRef
@@ -619,42 +616,9 @@ class NaviFilter {
     ; カスタムドロー（フィルタマッチ着色）
     ; ==============================================================================
 
-    ; フィルタマッチ着色カスタムドロー登録（初回のみ）
+    ; 着色は NaviTreeDraw がまとめて行う（一致したノードは _FilterMatchIdSet を参照）
     static EnsureFilterDraw(tv) {
-        this._FilterTvHwnd := tv.Hwnd
-        if (this._FilterDrawHandler != "")
-            return
-        handler := (w, l, m, h) => NaviFilter._OnFilterNotify(w, l, m, h)
-        OnMessage(NaviFilter._navi.WM_NOTIFY, handler)
-        this._FilterDrawHandler := handler
-    }
-
-    ; WM_NOTIFY → NM_CUSTOMDRAW ハンドラー（フィルタマッチノードの着色）
-    ; NaviSearch の検索ハイライトハンドラーと共存: マッチ無しは "" を返し次のハンドラーへ委譲
-    static _OnFilterNotify(wParam, lParam, msg, hwnd) {
-        if (NumGet(lParam, 0, "ptr") != NaviFilter._FilterTvHwnd)
-            return
-        if (NumGet(lParam, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
-            return
-        stageOff := (A_PtrSize = 8) ? 24 : 12
-        stage    := NumGet(lParam, stageOff, "uint")
-        if (stage = 0x1) {  ; CDDS_PREPAINT
-            return (NaviFilter._FilterMatchIdSet.Count > 0 || NaviMark._MarkedIdSet.Count > 0) ? 0x20 : ""
-        }
-        if (stage = 0x10001) {  ; CDDS_ITEMPREPAINT
-            specOff := (A_PtrSize = 8) ? 56 : 36
-            itemId  := NumGet(lParam, specOff, "ptr")
-            clrOff  := (A_PtrSize = 8) ? 80 : 48
-            ; マーク色はフィルタマッチ色より優先
-            if (NaviMark._MarkedIdSet.Has(itemId)) {
-                NumPut("uint", NaviMark.MARK_COLOR, lParam, clrOff)
-                return 0
-            }
-            if (NaviFilter._FilterMatchIdSet.Has(itemId)) {
-                NumPut("uint", NaviFilter.FILTER_MATCH_COLOR, lParam, clrOff)
-                return 0
-            }
-        }
+        NaviTreeDraw.Attach(tv)
     }
 
     /**

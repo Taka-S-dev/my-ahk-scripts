@@ -43,15 +43,13 @@ class NaviActions {
         nv.GuiObj.Opt("+Disabled")
 
         actGui := Gui("+Owner" . nv.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border")
-        actGui.BackColor := nv.MENU_BG_COLOR
-        actGui.MarginX := 10
-        actGui.MarginY := 8
+        NaviTheme.ApplyPopup(actGui)
 
         folderName := (InStr(fullPath, "\")) ? StrSplit(fullPath, "\")[-1] : fullPath
-        actGui.SetFont("s8 w400 cA0A0A0", "Yu Gothic UI")
+        NaviTheme.SetFont(actGui, "caption", NaviTheme.TEXT_MUTED)
         actGui.Add("Text", "Center w" . nv.MENU_BTN_W, folderName)
 
-        actGui.SetFont("s9 w400 cWhite")
+        NaviTheme.SetFont(actGui, "body")
         ; Actions Map に登録されたアクションからボタンを生成
         keys := []
         for k, _ in this.Actions

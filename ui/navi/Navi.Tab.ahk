@@ -21,14 +21,9 @@ class NaviTab {
     static TAB_HEIGHT := 26  ; タブ1枠の高さpx
     static PLUS_WIDTH := 26  ; + ボタンの幅px
     static TAB_HISTORY_MAX := 20  ; タブ内ルート履歴の最大保持件数
-    static TAB_INDICATOR_COLOR := 0x0078D4  ; アクティブタブ上端のアクセントライン色（Windows accent blue）
     static TAB_INDICATOR_H     := 2         ; アクセントラインの高さpx
-    static TAB_TEXT_ACTIVE     := "1F1F1F"  ; アクティブタブの文字色
-    static TAB_TEXT_INACTIVE   := "6B6B6B"  ; 非アクティブタブの文字色
-    static TAB_TEXT_HOVER      := "303030"  ; ホバー時の文字色
-    ; VSCode・ブラウザと同じく、タブの帯を灰色にし、アクティブタブだけ本体と同じ白でつなげる
-    static TAB_STRIP_COLOR     := "EFEFEF"  ; タブの帯・非アクティブタブの背景
-    static TAB_HOVER_COLOR     := "E2E2E2"  ; ホバー中の非アクティブタブ・+ボタンの背景
+    ; 色は NaviTheme を使う。VSCode・ブラウザと同じく、タブの帯を SURFACE にし、
+    ; アクティブタブだけ本体と同じ BG でつなげる
 
     ; --- タブ状態 ---
     static _Tabs       := []  ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
@@ -67,12 +62,12 @@ class NaviTab {
         this._TabBtnCtrls   := []
         this._TabIndicators := []
         this._TabDividers   := []
-        guiObj.SetFont("s9", "Yu Gothic UI")
-        indColor := "Background" . Format("{:06X}", this.TAB_INDICATOR_COLOR)
+        NaviTheme.SetFont(guiObj, "body")
+        indColor := "Background" . NaviTheme.ACCENT
         ; タブの帯（最初に作って z-order を一番下にする）。上端からタブの下端まで全幅で敷く
         stripH := guiObj.MarginY + this.TAB_INDICATOR_H + this.TAB_HEIGHT
         strip := guiObj.Add("Text", "x0 y0 w" . (nv.GUI_WIDTH + 2 * guiObj.MarginX) . " h" . stripH
-            . " Background" . this.TAB_STRIP_COLOR, "")
+            . " Background" . NaviTheme.SURFACE, "")
         this._TabStripCtrl := strip
         ; VSCode風: アクティブタブの上端にアクセントラインを表示
         Loop this.TAB_MAX {
@@ -89,7 +84,7 @@ class NaviTab {
         Loop this.TAB_MAX {
             n    := A_Index
             w    := this.TAB_WIDTH
-            bg   := " Background" . this.TAB_STRIP_COLOR
+            bg   := " Background" . NaviTheme.SURFACE
             xOpt := (n = 1) ? "xm y+0 w" . w . " h" . this.TAB_HEIGHT . " +0x4301" . bg
                             : "x+1 yp w" . w . " h" . this.TAB_HEIGHT . " +0x4301" . bg
             lbl  := guiObj.Add("Text", xOpt, this._GetTabLabel(n))
@@ -99,13 +94,13 @@ class NaviTab {
                 lbl.Visible := false
         }
         ; + ボタンのホバー背景（先に作成して z-order を下に。ホバー時のみ表示）
-        plusBg := guiObj.Add("Text", "x+4 yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " Background" . this.TAB_HOVER_COLOR, "")
+        plusBg := guiObj.Add("Text", "x+4 yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " Background" . NaviTheme.HOVER, "")
         plusBg.Visible := false
         this._TabPlusHoverBg := plusBg
         ; + ボタン（新規タブ追加）
-        guiObj.SetFont("s11")
-        plus := guiObj.Add("Text", "xp yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " +0x301 BackgroundTrans c606060", "+")
-        guiObj.SetFont("s9")
+        guiObj.SetFont("s11 c" . NaviTheme.TEXT_MUTED)
+        plus := guiObj.Add("Text", "xp yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " +0x301 BackgroundTrans", "+")
+        NaviTheme.SetFont(guiObj, "body")
         plus.OnEvent("Click", (*) => this.NewTab())
         this._TabPlusBtn := plus
         ; タブ間の縦線（TAB_MAX-1 個、SS_GRAYRECT スタイル）。タブバーの上端からラベル下端まで貫通させる
@@ -297,11 +292,11 @@ class NaviTab {
     static _PaintTab(n, hover := false) {
         ctrl := this._TabBtnCtrls[n]
         if (n == this._CurrentTab)
-            ctrl.Opt("+c" . this.TAB_TEXT_ACTIVE . " +Background" . this._navi.BG_COLOR)
+            ctrl.Opt("+c" . NaviTheme.TEXT . " +Background" . NaviTheme.BG)
         else if (hover)
-            ctrl.Opt("+c" . this.TAB_TEXT_HOVER . " +Background" . this.TAB_HOVER_COLOR)
+            ctrl.Opt("+c" . NaviTheme.TEXT . " +Background" . NaviTheme.HOVER)
         else
-            ctrl.Opt("+c" . this.TAB_TEXT_INACTIVE . " +Background" . this.TAB_STRIP_COLOR)
+            ctrl.Opt("+c" . NaviTheme.TEXT_MUTED . " +Background" . NaviTheme.SURFACE)
         DllCall("InvalidateRect", "ptr", ctrl.Hwnd, "ptr", 0, "int", true)
     }
 
@@ -332,7 +327,7 @@ class NaviTab {
         if (this._TabPlusHoverBg)
             this._TabPlusHoverBg.Visible := hover && this._TabPlusBtn.Visible
         ; 文字色も変更（ホバー時は黒で強調）
-        color := hover ? "000000" : "606060"
+        color := hover ? NaviTheme.TEXT : NaviTheme.TEXT_MUTED
         this._TabPlusBtn.Opt("+c" . color)
         DllCall("InvalidateRect", "ptr", this._TabPlusBtn.Hwnd, "ptr", 0, "int", true)
     }

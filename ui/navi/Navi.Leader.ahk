@@ -14,10 +14,7 @@ class NaviLeader {
     static _ih := ""
     static _activateCb := ""
 
-    static BG_COLOR    := "1E1E1E"
-    static KEY_COLOR   := "E5C07B"
-    static LABEL_COLOR := "D4D4D4"
-    static GROUP_COLOR := "8A8A8A"
+    ; 色・文字・余白は NaviTheme を使う（キー=ACCENT の等幅太字、項目=本文、見出し・案内=TEXT_SUBTLE）
     static COL_W       := 200  ; 1 列の幅
     static TIMEOUT_S   := 30   ; 何も押さなければ閉じるまでの秒数
 
@@ -79,17 +76,16 @@ class NaviLeader {
         }
 
         g := Gui("+Owner" . nv.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border +ToolWindow")
-        g.BackColor := this.BG_COLOR
-        g.MarginX := 14
-        g.MarginY := 10
+        NaviTheme.ApplyPopup(g)
+        g.MarginX := NaviTheme.SP_L
         this._gui := g
 
         bottom := 0
         for ci, groups in this.COLUMNS {
             x := g.MarginX + (ci - 1) * this.COL_W
             for gi, group in groups {
-                g.SetFont("s8 norm c" . this.GROUP_COLOR, "Yu Gothic UI")
-                pos := (gi == 1) ? "x" . x . " y" . g.MarginY : "x" . x . " y+12"
+                NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
+                pos := (gi == 1) ? "x" . x . " y" . g.MarginY : "x" . x . " y+" . NaviTheme.SP_M
                 g.Add("Text", pos . " w" . (this.COL_W - 10), group)
                 for cmd in this.Commands {
                     if (cmd.group != group)
@@ -97,9 +93,9 @@ class NaviLeader {
                     isOn := false
                     if cmd.HasOwnProp("on")
                         try isOn := cmd.on.Call(nv)
-                    g.SetFont("s10 bold c" . this.KEY_COLOR, "Consolas")
-                    k := g.Add("Text", "x" . x . " y+4 w22", cmd.key)
-                    g.SetFont("s9 norm c" . this.LABEL_COLOR, "Yu Gothic UI")
+                    NaviTheme.SetFont(g, "key", NaviTheme.ACCENT)
+                    k := g.Add("Text", "x" . x . " y+" . NaviTheme.SP_XS . " w22", cmd.key)
+                    NaviTheme.SetFont(g, "body")
                     l := g.Add("Text", "x+6 yp+1 w" . (this.COL_W - 38), (isOn ? "✓ " : "") . cmd.label)
                     k.OnEvent("Click", ((c, *) => this._Run(c)).Bind(cmd))
                     l.OnEvent("Click", ((c, *) => this._Run(c)).Bind(cmd))
@@ -108,8 +104,8 @@ class NaviLeader {
                 }
             }
         }
-        g.SetFont("s8 norm c" . this.GROUP_COLOR, "Yu Gothic UI")
-        g.Add("Text", "x" . g.MarginX . " y" . (bottom + 12), "1 文字で実行 ・ クリックでも実行 ・ Esc で閉じる")
+        NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
+        g.Add("Text", "x" . g.MarginX . " y" . (bottom + NaviTheme.SP_M),"1 文字で実行 ・ クリックでも実行 ・ Esc で閉じる")
 
         ; Navi の中央に出す
         g.Show("Hide AutoSize")
