@@ -38,6 +38,7 @@ class NaviLeader {
             on: (nv) => nv.GuiObj["AutoFilesCheck"].Value },
         { key: "r", group: "移動", label: "ルートを選ぶ", run: (nv) => nv._OpenDropdown() },
         { key: "s", group: "移動", label: "プロファイルを選ぶ", run: (nv) => NaviProfile.OpenProfileDropdown() },
+        { key: ".", group: "移動", label: "ルートとして開く", run: (nv) => nv.UseAsTempRoot() },
         { key: "[", group: "移動", label: "前のルートへ戻る", run: (nv) => NaviTab.TabNavBack() },
         { key: "]", group: "移動", label: "次のルートへ進む", run: (nv) => NaviTab.TabNavForward() },
         { key: "/", group: "移動", label: "入力欄へ", run: (nv) => nv.GuiObj["TreeFilter"].Focus() },

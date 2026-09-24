@@ -657,7 +657,7 @@ class NaviTab {
         root := (n == this._CurrentTab) ? this._navi.lastRoot
             : (n <= this._Tabs.Length && this._Tabs[n] != "") ? this._Tabs[n].root : ""
         ; 省略はしない。幅に入りきらない分はラベルの SS_ENDELLIPSIS が … にする
-        return (root == "") ? "New" : root
+        return (root == "") ? "New" : this._navi.RootLabel(root)
     }
 
     /**

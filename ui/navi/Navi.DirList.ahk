@@ -472,7 +472,7 @@ class NaviDirList {
             ; セルの文字は _DrawLocation が 2 段の色で描くので、一覧には空で入れる
             lv.Add(isFiles ? nv._GetFileIconStr(name) : "Icon1", name, "")
             this._rows.Push(rootBase . "\" . rel)
-            this._locs.Push({ head: nv.lastRoot . ((dir != "") ? "\" : ""), rest: dir })
+            this._locs.Push({ head: nv.RootLabel(nv.lastRoot) . ((dir != "") ? "\" : ""), rest: dir })
         }
         lv.Modify(1, "Select Focus Vis")
         lv.Opt("+Redraw")

@@ -118,6 +118,7 @@ class NaviProfile {
 
         ; 新プロファイルのタブ状態を読み込み
         NaviTab.LoadTabsFromIni()
+        nv._KeepTempRoots()
 
         ; マーク状態をリセット
         NaviMark.Reset()

@@ -184,6 +184,7 @@ class Navi {
         autoFilesCheck.Value := (IniRead(this.IniPath, "Settings", "AutoShowFiles", "0") == "1")
         this._AllFolderNames := folderNames
         this._FolderMap := folderMap
+        this._KeepTempRoots()  ; タブが一時的なルートを開いていれば引き継ぐ
 
         ; --- パンくずリスト ---
         NaviTheme.SetFont(this.GuiObj, "body", NaviTheme.TEXT_MUTED)
@@ -282,6 +283,7 @@ class Navi {
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("^e", (*) => NaviDirList.Toggle(), "On")
         Hotkey("^b", (*) => NaviBrowse.Toggle(), "On")
+        Hotkey("^+b", (*) => this.UseAsTempRoot(), "On")
         ; コマンド一覧（Navi の中ではグローバルの日付入力より優先される）
         Hotkey("^;", (*) => NaviLeader.Show(), "On")
         ; Ctrl+H/J/K/L は Vim と同じく ←↓↑→（Ctrl+H はグローバルの HotstringManager より優先される）
@@ -503,6 +505,7 @@ class Navi {
               Ctrl+;        コマンド一覧（1 文字で実行）
               Ctrl+E        ツリー ↔ 一覧
               Ctrl+B        ツリー ↔ 3 列ブラウズ（←→ で上がる・入る）
+              Ctrl+Shift+B  今のフォルダをルートとして開く（一時的。ルートの一覧には登録しない）
               Ctrl+H/J/K/L  ←↓↑→（Vim と同じ）
 
             【一覧】
@@ -1317,7 +1320,93 @@ class Navi {
     static _TruncRootLabel(name) {
         if (name == "")
             return "  ルートを選択 ▾"
-        return "  " . ((StrLen(name) > 40) ? SubStr(name, 1, 38) . "…" : name) . " ▾"
+        label := this.RootLabel(name)
+        label := (StrLen(label) > 40) ? SubStr(label, 1, 38) . "…" : label
+        return "  " . label . (this.IsTempRoot(name) ? "（一時）" : "") . " ▾"
+    }
+
+    ; ==============================================================================
+    ; 一時的なルート
+    ; 登録していないフォルダを、そのタブのルートとして開く（ルートの一覧やプロファイルには載せない）。
+    ; 名前の代わりにフルパスをキーにして _FolderMap に入れる。登録したルートの名前は "\" を含まないので区別できる
+    ; ==============================================================================
+
+    static IsTempRoot(name) => InStr(name, "\") > 0
+
+    /** 画面に出すルートの名前（一時的なルートはフォルダ名。ドライブの直下はドライブ名） */
+    static RootLabel(name) {
+        if !this.IsTempRoot(name)
+            return name
+        SplitPath(RTrim(name, "\"), &folder)
+        return (folder != "") ? folder : name
+    }
+
+    /**
+     * 今のフォルダを一時的なルートにしてツリーで表示する（3 列では中央の列のフォルダ、
+     * ツリー・一覧では選んでいるフォルダ。ファイルならその親）。意図せずルートが変わらないよう、
+     * このコマンド（Ctrl+Shift+B / コマンド一覧）でだけ切り替える。前のルートへは Alt+← で戻れる
+     */
+    static UseAsTempRoot() {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        reveal := ""
+        if (NaviBrowse.Active) {
+            path := NaviBrowse._cur
+            reveal := NaviBrowse.SelectedPath()
+        } else {
+            path := this._GetSelectedPath()
+            if (path != "" && !DirExist(path) && FileExist(path)) {
+                reveal := path
+                SplitPath(path, , &path)
+            }
+        }
+        if (path == "" || !DirExist(path)) {
+            ToolTip("ルートにできるフォルダを選んでください")
+            SetTimer(() => ToolTip(), -this.TOOLTIP_ERROR_DURATION)
+            return
+        }
+        if (StrLen(path) > 3)
+            path := RTrim(path, "\")
+        ; 登録したルートと同じフォルダなら、そのルートに切り替える
+        name := path
+        for n in this._AllFolderNames {
+            if (this._FolderMap.Has(n) && StrLower(RTrim(this._FolderMap[n], "\")) = StrLower(RTrim(path, "\"))) {
+                name := n
+                break
+            }
+        }
+        if (NaviBrowse.Active)
+            NaviBrowse.Exit(false)
+        else if (NaviDirList.Active)
+            NaviDirList._SetActive(false)
+        tv := this.GuiObj["FolderTree"]
+        if (name != this.lastRoot) {
+            if !this._FolderMap.Has(name)
+                this._FolderMap[name] := path
+            this._SelectRoot(name)
+        }
+        if (reveal != "")
+            this._FocusPath(tv, reveal)
+        tv.Focus()
+        NaviBreadcrumb.Refresh()
+        this._UpdateStatusBar()
+    }
+
+    ; _FolderMap を作り直したとき、タブ（履歴を含む）が開いている一時的なルートを入れ直す
+    static _KeepTempRoots() {
+        roots := [this.lastRoot]
+        for tab in NaviTab._Tabs {
+            if (tab == "")
+                continue
+            roots.Push(tab.root)
+            for s in tab.history
+                roots.Push(s.root)
+            for s in tab.future
+                roots.Push(s.root)
+        }
+        for r in roots
+            if (this.IsTempRoot(r) && !this._FolderMap.Has(r) && DirExist(r))
+                this._FolderMap[r] := r
     }
 
     static _QuickRegisterFromEdit() {
@@ -1356,6 +1445,7 @@ class Navi {
         this._AllFolderNames := newNames
         this._FolderMap := folderMap
         this._FolderMap[name] := path
+        this._KeepTempRoots()
 
         ; UIを更新
         rootBtn := this.GuiObj["RootBtn"]
