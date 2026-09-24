@@ -169,43 +169,9 @@ class NaviDetailList {
             return
         }
 
-        dlGui.GetPos(&gx, &gy, &gw, &gh)
-        dlGui.Opt("+Disabled")
-
-        actGui := Gui("+Owner" . dlGui.Hwnd . " -Caption +AlwaysOnTop +Border")
-        NaviTheme.ApplyPopup(actGui)
-
-        NaviTheme.SetFont(actGui, "caption", NaviTheme.TEXT_MUTED)
-        actGui.Add("Text", "Center w" . nv.MENU_BTN_W, itemName)
-
-        NaviTheme.SetFont(actGui, "body")
-        ; NaviActions に登録されたアクションからボタンを生成（ソート済み）
-        keys := []
-        for k, _ in NaviActions.Actions
-            keys.Push(k)
-        if (keys.Length > 1) {
-            tmp := ""
-            for _, kk in keys
-                tmp .= kk . "`n"
-            tmp := Sort(RTrim(tmp, "`n"))
-            keys := StrSplit(tmp, "`n")
-        }
-
-        for k in keys {
-            act := NaviActions.Actions[k]
-            btn := actGui.Add("Button", "w" . nv.MENU_BTN_W . " h" . nv.MENU_BTN_H . " xm", act.label)
-            btn.OnEvent("Click", ((kk, *) => (
-                dlGui.Opt("-Disabled"),
-                actGui.Destroy(),
-                this._Execute(dlGui, lv, row, targetDir, kk)
-            )).Bind(k))
-        }
-
-        btnCancel := actGui.Add("Button", "w" . nv.MENU_BTN_W . " h" . nv.MENU_BTN_H . " xm y+6", "&X: Cancel")
-        btnCancel.OnEvent("Click",  (*) => (dlGui.Opt("-Disabled"), actGui.Destroy()))
-        actGui.OnEvent("Escape",    (*) => (dlGui.Opt("-Disabled"), actGui.Destroy()))
-
-        actGui.Show("AutoSize x" . gx + (gw - nv.MENU_WIDTH) // 2 . " y" . gy + (gh - nv.MENU_OFFSET_Y) // 2)
+        ; メインのアクションメニューと同じ部品・同じ見出しで出す（詳細リストの中央）
+        NaviKeyMenu.Show({ owner: dlGui, title: itemName, columns: NaviActions.MENU_COLUMNS
+            , items: NaviActions.MenuItems((k) => this._Execute(dlGui, lv, row, targetDir, k)) })
     }
 
     /**

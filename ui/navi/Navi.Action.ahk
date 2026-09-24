@@ -2,7 +2,7 @@
 ; ==============================================================================
 ; Module:       Navi.Action.ahk
 ; Description:  Navi用アクション管理モジュール
-;               - アクションの登録・実行・メニュー表示
+;               - アクションの登録・実行・メニュー表示（表示は NaviKeyMenu。見出し「開く / コピー / その他」で分ける）
 ;               - _DefaultActions テーブルへの1行追加でアクションを拡張可能
 ;               - Navi.ini [Actions] セクション経由でシェルアクションを追加可能
 ; Usage:        NaviActions.Init(naviRef) を Navi.Init() から呼び出す
@@ -10,7 +10,9 @@
 
 class NaviActions {
     static _navi := ""
-    static Actions := Map()  ; key(lower) => {label, run: (path)=>void}
+    static Actions := Map()  ; key(lower) => {label, group, run: (path)=>void}
+    ; メニューの列ごとの見出し。設定ファイルで足したアクションは「その他」に入る
+    static MENU_COLUMNS := [["開く"], ["コピー", "その他"]]
 
     static Init(naviRef) {
         this._navi := naviRef
@@ -18,17 +20,35 @@ class NaviActions {
         this._LoadUserActions()
     }
 
-    static RegisterAction(key, label, fn) {
-        this.Actions[StrLower(key)] := { label: label, run: fn }
+    static RegisterAction(key, label, fn, group := "その他") {
+        this.Actions[StrLower(key)] := { label: label, group: group, run: fn }
     }
 
-    static RegisterShellAction(key, label, cmdTemplate, runOpt := "") {
+    static RegisterShellAction(key, label, cmdTemplate, runOpt := "", group := "その他") {
         ; {path} を選択パスで置換して実行
         this.RegisterAction(key, label, (path) => (
             Run(StrReplace(cmdTemplate, "{path}", path), , runOpt)
-        ))
+        ), group)
     }
 
+    /**
+     * メニューに出す項目（キー順）。run には選んだキーを渡す処理を束ねる
+     * 名前の頭の "&E: " のようなキーの表記は、キーを別の列に出すので外す
+     */
+    static MenuItems(runFn) {
+        keys := ""
+        for k, _ in this.Actions
+            keys .= k . "`n"
+        items := []
+        for k in StrSplit(Sort(RTrim(keys, "`n")), "`n") {
+            act := this.Actions[k]
+            items.Push({ key: k, group: act.group, run: runFn.Bind(k)
+                , label: RegExReplace(act.label, "^&?\S\s*:\s*") })
+        }
+        return items
+    }
+
+    ; アクションメニュー（Space）: 選んでいるフォルダ/ファイルに対するアクションを 1 文字で実行する
     static ShowActionMenu() {
         nv := this._navi
         fullPath := nv._GetSelectedPath()
@@ -37,47 +57,9 @@ class NaviActions {
             SetTimer(() => ToolTip(), -1000)
             return
         }
-
-        nv.GuiObj.GetPos(&gx, &gy, &gw, &gh)
-
-        nv.GuiObj.Opt("+Disabled")
-
-        actGui := Gui("+Owner" . nv.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border")
-        NaviTheme.ApplyPopup(actGui)
-
-        folderName := (InStr(fullPath, "\")) ? StrSplit(fullPath, "\")[-1] : fullPath
-        NaviTheme.SetFont(actGui, "caption", NaviTheme.TEXT_MUTED)
-        actGui.Add("Text", "Center w" . nv.MENU_BTN_W, folderName)
-
-        NaviTheme.SetFont(actGui, "body")
-        ; Actions Map に登録されたアクションからボタンを生成
-        keys := []
-        for k, _ in this.Actions
-            keys.Push(k)
-        ; AHK v2 arrays don't have a Sort method. Use global Sort() on a joined string.
-        if (keys.Length > 1) {
-            tmp := ""
-            for _, kk in keys
-                tmp .= kk . "`n"
-            tmp := Sort(RTrim(tmp, "`n"))
-            keys := StrSplit(tmp, "`n")
-        }
-
-        for k in keys {
-            act := this.Actions[k]
-            btn := actGui.Add("Button", "w" . nv.MENU_BTN_W . " h" . nv.MENU_BTN_H . " xm", act.label)
-            btn.OnEvent("Click", ((kk, *) => (
-                nv.GuiObj.Opt("-Disabled"),
-                actGui.Destroy(),
-                this.Execute(kk)
-            )).Bind(k))
-        }
-
-        btnCancel := actGui.Add("Button", "w" . nv.MENU_BTN_W . " h" . nv.MENU_BTN_H . " xm y+6", "&X: Cancel")
-        btnCancel.OnEvent("Click", (*) => (nv.GuiObj.Opt("-Disabled"), actGui.Destroy()))
-        actGui.OnEvent("Escape", (*) => (nv.GuiObj.Opt("-Disabled"), actGui.Destroy()))
-
-        actGui.Show("AutoSize x" . gx + (gw - nv.MENU_WIDTH) // 2 . " y" . gy + (gh - nv.MENU_OFFSET_Y) // 2)
+        name := (InStr(fullPath, "\")) ? StrSplit(RTrim(fullPath, "\"), "\")[-1] : fullPath
+        NaviKeyMenu.Show({ owner: nv.GuiObj, title: name, columns: this.MENU_COLUMNS
+            , items: this.MenuItems((k) => this.Execute(k)) })
     }
 
     static Execute(key) {
@@ -140,25 +122,36 @@ class NaviActions {
     ; 新しいアクションを追加するにはここに1行追加するだけ。
     ;
     ; 形式:
-    ;   fn    形式: { key: "x", label: "&X: 表示名", fn: (path, nv) => 処理 }
-    ;   shell 形式: { key: "x", label: "&X: 表示名", shell: "コマンド {path}", opt: "Hide"(省略可) }
+    ;   fn    形式: { key: "x", group: "開く", label: "&X: 表示名", fn: (path, nv) => 処理 }
+    ;   shell 形式: { key: "x", group: "開く", label: "&X: 表示名", shell: "コマンド {path}", opt: "Hide"(省略可) }
+    ;   group はメニューの見出し（MENU_COLUMNS のいずれか。ない見出しは最後の列に足される）
     ;
     ; fn の引数:
     ;   path ... 選択されたフォルダ/ファイルの絶対パス
     ;   nv   ... Navi インスタンス（GuiObj, ExplorerPath, TOOLTIP_* 等にアクセス可）
     ; ==============================================================================
-    static _DefaultActions := [{ key: "e", label: "&E: Explorer",
-        fn: (path, nv) => (DirExist(path) || SplitPath(path, , &path), nv._ActivateOrOpenExplorer(path)) }, { key: "t", label: "&t: Preferred Explorer",
+    static _DefaultActions := [
+        { key: "e", group: "開く", label: "&E: Explorer",
+            fn: (path, nv) => (DirExist(path) || SplitPath(path, , &path), nv._ActivateOrOpenExplorer(path)) },
+        { key: "t", group: "開く", label: "&t: Preferred Explorer",
             fn: (path, nv) => (DirExist(path) || SplitPath(path, , &path),
                 (nv.ExplorerPath == "explorer.exe")
                     ? Run('explorer.exe "' . path . '"')
-                : (FileExist(nv.ExplorerPath) ? Run('"' . nv.ExplorerPath . '" "' . path . '"') : 0)) }, { key: "v", label: "&V: VS Code", shell: A_ComSpec . ' /c code "{path}"', opt: "Hide" }, { key: "c", label: "&C: Command Prompt", shell: A_ComSpec . ' /K cd /d "{path}"' }, { key: "p", label: "&P: PowerShell",
-                    shell: 'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"' }, { key: "k", label: "&K: Copy Path",
-                        fn: (path, nv) => (A_Clipboard := path, ToolTip("Path Copied: " . path),
-                            SetTimer(() => ToolTip(), -nv.TOOLTIP_COPY_DURATION)) }, { key: "n", label: "&N: Copy Name",
-                                fn: (path, nv) => (SplitPath(path, &fn), name := (fn != "" ? fn : path),
-                                    A_Clipboard := name, ToolTip("Name Copied: " . name),
-                                    SetTimer(() => ToolTip(), -nv.TOOLTIP_COPY_DURATION)) }, { key: "o", label: "&O: Open Temp Copy", fn: (path, *) => TempCopy.Open(path) }, { key: "f", label: "&F: Search (Local)", fn: (path, nv) => NaviSearch.RunLocal(nv, path) }, { key: "r", label: "&R: Right-Click Menu", fn: (path, nv) => NaviContextMenu.Show(path, nv) },
+                : (FileExist(nv.ExplorerPath) ? Run('"' . nv.ExplorerPath . '" "' . path . '"') : 0)) },
+        { key: "v", group: "開く", label: "&V: VS Code", shell: A_ComSpec . ' /c code "{path}"', opt: "Hide" },
+        { key: "c", group: "開く", label: "&C: Command Prompt", shell: A_ComSpec . ' /K cd /d "{path}"' },
+        { key: "p", group: "開く", label: "&P: PowerShell",
+            shell: 'powershell.exe -NoExit -Command Set-Location -LiteralPath "{path}"' },
+        { key: "o", group: "開く", label: "&O: Open Temp Copy", fn: (path, *) => TempCopy.Open(path) },
+        { key: "k", group: "コピー", label: "&K: Copy Path",
+            fn: (path, nv) => (A_Clipboard := path, ToolTip("Path Copied: " . path),
+                SetTimer(() => ToolTip(), -nv.TOOLTIP_COPY_DURATION)) },
+        { key: "n", group: "コピー", label: "&N: Copy Name",
+            fn: (path, nv) => (SplitPath(path, &fn), name := (fn != "" ? fn : path),
+                A_Clipboard := name, ToolTip("Name Copied: " . name),
+                SetTimer(() => ToolTip(), -nv.TOOLTIP_COPY_DURATION)) },
+        { key: "f", group: "その他", label: "&F: Search (Local)", fn: (path, nv) => NaviSearch.RunLocal(nv, path) },
+        { key: "r", group: "その他", label: "&R: Right-Click Menu", fn: (path, nv) => NaviContextMenu.Show(path, nv) },
     ]
 
     static _InitDefaultActions() {
@@ -166,10 +159,10 @@ class NaviActions {
         for entry in this._DefaultActions {
             if entry.HasOwnProp("shell") {
                 opt := entry.HasOwnProp("opt") ? entry.opt : ""
-                this.RegisterShellAction(entry.key, entry.label, entry.shell, opt)
+                this.RegisterShellAction(entry.key, entry.label, entry.shell, opt, entry.group)
             } else {
                 ; .Bind(fn) でループ変数を値キャプチャ（参照キャプチャによる上書き防止）
-                this.RegisterAction(entry.key, entry.label, ((f, path) => f(path, nv)).Bind(entry.fn))
+                this.RegisterAction(entry.key, entry.label, ((f, path) => f(path, nv)).Bind(entry.fn), entry.group)
             }
         }
     }

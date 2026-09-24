@@ -28,6 +28,7 @@
 #Include *i Navi.Breadcrumb.ahk
 #Include *i Navi.Mark.ahk
 #Include *i Navi.DirList.ahk
+#Include *i Navi.KeyMenu.ahk
 #Include *i Navi.Leader.ahk
 #Include *i Navi.Picker.ahk
 #Include ..\..\lib\TempCopy.ahk
@@ -47,12 +48,6 @@ class Navi {
     static TOOLTIP_COPY_DURATION := 2000
     static TEMP_DIR_SUBPATH := "\temp"
     static TEMP_PREFIX := "TEMP_"
-
-    ; --- アクションメニュー用の定数 ---
-    static MENU_WIDTH := 210       ; メニューの幅
-    static MENU_BTN_W := 190       ; ボタンの幅
-    static MENU_BTN_H := 26        ; ボタンの高さ
-    static MENU_OFFSET_Y := 240    ; 中央配置の計算用オフセット
 
     ; --- 位置決定用の定数 ---
     static CARET_OFFSET_X := 5     ; キャレットからのXオフセット

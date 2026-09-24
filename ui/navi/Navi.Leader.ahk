@@ -2,21 +2,13 @@
 ; ==============================================================================
 ; Module:       Navi.Leader.ahk
 ; Description:  Navi のコマンド一覧（LazyVim の which-key のような 1 文字コマンド）
-;               - Ctrl+; で一覧を出し、1 文字押すとその場で実行して閉じる
-;               - 行のクリックでも実行できる。Esc・他のウィンドウへの切り替えで閉じる
+;               - Ctrl+; で一覧を出し、1 文字押すとその場で実行して閉じる（表示は NaviKeyMenu）
 ;               - コマンドは Commands に 1 行足すだけで増やせる
 ; Usage:        NaviLeader.Init(naviRef) を Navi.Init() から呼び出す
 ; ==============================================================================
 
 class NaviLeader {
     static _navi := ""
-    static _gui := ""
-    static _ih := ""
-    static _activateCb := ""
-
-    ; 色・文字・余白は NaviTheme を使う（キー=ACCENT の等幅太字、項目=本文、見出し・案内=TEXT_SUBTLE）
-    static COL_W       := 200  ; 1 列の幅
-    static TIMEOUT_S   := 30   ; 何も押さなければ閉じるまでの秒数
 
     ; 列ごとに並べるグループ
     static COLUMNS := [["表示", "移動"], ["選択中", "ウィンドウ"]]
@@ -71,124 +63,16 @@ class NaviLeader {
         nv := this._navi
         if !(nv.GuiObj && WinExist(nv.GuiObj))
             return
-        if (this._gui) {
-            this.Close()
-            return
-        }
-
-        g := Gui("+Owner" . nv.GuiObj.Hwnd . " -Caption +AlwaysOnTop +Border +ToolWindow")
-        NaviTheme.ApplyPopup(g)
-        g.MarginX := NaviTheme.SP_L
-        this._gui := g
-
-        bottom := 0
-        for ci, groups in this.COLUMNS {
-            x := g.MarginX + (ci - 1) * this.COL_W
-            for gi, group in groups {
-                NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
-                pos := (gi == 1) ? "x" . x . " y" . g.MarginY : "x" . x . " y+" . NaviTheme.SP_M
-                g.Add("Text", pos . " w" . (this.COL_W - 10), group)
-                for cmd in this.Commands {
-                    if (cmd.group != group)
-                        continue
-                    isOn := false
-                    if cmd.HasOwnProp("on")
-                        try isOn := cmd.on.Call(nv)
-                    NaviTheme.SetFont(g, "key", NaviTheme.ACCENT)
-                    k := g.Add("Text", "x" . x . " y+" . NaviTheme.SP_XS . " w22", cmd.key)
-                    NaviTheme.SetFont(g, "body")
-                    l := g.Add("Text", "x+6 yp+1 w" . (this.COL_W - 38), (isOn ? "✓ " : "") . cmd.label)
-                    k.OnEvent("Click", ((c, *) => this._Run(c)).Bind(cmd))
-                    l.OnEvent("Click", ((c, *) => this._Run(c)).Bind(cmd))
-                    l.GetPos(, &ly, , &lh)
-                    bottom := Max(bottom, ly + lh)
-                }
-            }
-        }
-        NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
-        g.Add("Text", "x" . g.MarginX . " y" . (bottom + NaviTheme.SP_M),"1 文字で実行 ・ クリックでも実行 ・ Esc で閉じる")
-
-        ; Navi の中央に出す
-        g.Show("Hide AutoSize")
-        nv.GuiObj.GetPos(&nx, &ny, &nw, &nh)
-        g.GetPos(, , &w, &h)
-        g.Show("x" . (nx + (nw - w) // 2) . " y" . (ny + (nh - h) // 2))
-
-        ; ほかのウィンドウに切り替わったら閉じる
-        popupHwnd := g.Hwnd
-        cb := (wParam, lParam, msg, hwnd) => (hwnd = popupHwnd && (wParam & 0xFFFF) = 0)
-            ? SetTimer(() => this.Close(false), -1) : ""
-        this._activateCb := cb
-        OnMessage(Navi.WM_ACTIVATE, cb)
-
-        ; 1 文字だけ受け取る（一覧が前面にあるので Navi のホットキーには渡らない）
-        ih := InputHook("L1 T" . this.TIMEOUT_S, "{Esc}")
-        ih.OnEnd := (h) => SetTimer(() => this._OnInputEnd(h), -1)
-        this._ih := ih
-        ih.Start()
-    }
-
-    static _OnInputEnd(ih) {
-        if (ih != this._ih)
-            return
-        key := (ih.EndReason = "Max") ? ih.Input : ""
-        if (key == "") {
-            this.Close()
-            return
-        }
-        ; 大文字小文字を区別して探し、なければ小文字のコマンドを使う
-        cmd := this._Find(key)
-        if (!cmd && key != StrLower(key))
-            cmd := this._Find(StrLower(key))
-        if (cmd)
-            this._Run(cmd)
-        else
-            this.Close()
-    }
-
-    static _Find(key) {
+        items := []
         for cmd in this.Commands {
-            if (cmd.key == key)
-                return cmd
+            item := { key: cmd.key, label: cmd.label, group: cmd.group, run: ((c) => c.run.Call(nv)).Bind(cmd) }
+            if cmd.HasOwnProp("on")
+                item.on := ((c) => c.on.Call(nv)).Bind(cmd)
+            items.Push(item)
         }
-        return ""
+        NaviKeyMenu.Show({ owner: nv.GuiObj, columns: this.COLUMNS, items: items
+            , afterRun: () => nv._UpdateStatusBar() })
     }
 
-    ; 一覧を閉じて Navi に戻り、コマンドを実行する
-    static _Run(cmd) {
-        nv := this._navi
-        this.Close()
-        if !(nv.GuiObj && WinExist(nv.GuiObj))
-            return
-        try cmd.run.Call(nv)
-        catch as e {
-            ToolTip("コマンドエラー: " . e.Message)
-            SetTimer(() => ToolTip(), -nv.TOOLTIP_ERROR_DURATION)
-        }
-        nv._UpdateStatusBar()
-    }
-
-    /**
-     * 一覧を閉じる
-     * backToNavi: Navi を前面に戻すか（他のウィンドウに切り替わって閉じるときは戻さない）
-     */
-    static Close(backToNavi := true) {
-        nv := this._navi
-        if (this._activateCb != "") {
-            OnMessage(Navi.WM_ACTIVATE, this._activateCb, 0)
-            this._activateCb := ""
-        }
-        if (this._ih) {
-            ih := this._ih
-            this._ih := ""  ; 先に外して _OnInputEnd の再入を防ぐ
-            try ih.Stop()
-        }
-        if (this._gui) {
-            g := this._gui
-            this._gui := ""
-            try g.Destroy()
-            if (backToNavi && nv.GuiObj && WinExist(nv.GuiObj))
-                WinActivate("ahk_id " . nv.GuiObj.Hwnd)
-        }
-    }
+    static Close(backToNavi := true) => NaviKeyMenu.Close(backToNavi)
 }
