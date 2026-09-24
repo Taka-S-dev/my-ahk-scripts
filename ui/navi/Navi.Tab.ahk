@@ -103,22 +103,17 @@ class NaviTab {
         NaviTheme.SetFont(guiObj, "body")
         plus.OnEvent("Click", (*) => this.NewTab())
         this._TabPlusBtn := plus
-        ; タブ間の縦線（TAB_MAX-1 個、SS_GRAYRECT スタイル）。タブバーの上端からラベル下端まで貫通させる
-        margin := guiObj.MarginX
-        divY := guiObj.MarginY
-        divH := this.TAB_INDICATOR_H + this.TAB_HEIGHT
+        ; タブ間の区切り線（TAB_MAX-1 個）。タブ同士の 1px の隙間に置き、位置と表示は UpdateTabBar で決める
         Loop (this.TAB_MAX - 1) {
-            n  := A_Index
-            dx := margin + n * this.TAB_WIDTH + (n - 1)
-            ; +0x5 = SS_GRAYRECT (Win32の標準的な灰色矩形スタイル)
-            ; 帯とアクティブタブの色の差で区切りが見えるので、縦線は表示しない（参照だけ残す）
-            div := guiObj.Add("Text", "x" . dx . " y" . divY . " w1 h" . divH . " +0x5", "")
+            div := guiObj.Add("Text", "x0 y0 w1 h1 Background" . NaviTheme.DIVIDER, "")
             div.Visible := false
             this._TabDividers.Push(div)
         }
         ; タブ下の余白（アクティブタブが本体の白とつながるので線は引かない）
+        ; 後に続くヘッダー行はこの下に並ぶので、直前の部品ではなくタブの下端を基準に置く
         totalW := nv.GUI_WIDTH + 2 * guiObj.MarginX
-        sep := guiObj.Add("Text", "x0 y+0 w" . totalW . " h2", "")
+        this._TabBtnCtrls[1].GetPos(, &labelY, , &labelH)
+        sep := guiObj.Add("Text", "x0 y" . (labelY + labelH) . " w" . totalW . " h2", "")
         this._TabSepCtrl := sep
         ; タブバー先頭の Y 座標を返す（_tabBarShift 計算用、インジケーターが一番上）
         tabBarTopY := 0
@@ -401,6 +396,27 @@ class NaviTab {
                 this._TabPlusHoverBg.Visible := false
         }
         this.SetTabBarVisible(this._TabCount > 1)
+        this._LayoutDividers()  ; タブバーの表示状態が決まってから置く
+    }
+
+    /**
+     * タブの間の区切り線を置く（Chrome・Fork と同じく、タブの高さより上下を少し詰める）
+     * アクティブタブは白い面が区切りになるので、その両隣の線は出さない
+     */
+    static _LayoutDividers() {
+        show := (this._TabCount > 1) && this._tabBarVisible
+        for n, div in this._TabDividers {
+            visible := show && (n < this._TabCount) && (n != this._CurrentTab) && (n + 1 != this._CurrentTab)
+            if (visible) {
+                ; タブ n の右端（= タブ n と n+1 の間の 1px の隙間）。GetPos と Move は同じ DPI 換算の単位
+                this._TabBtnCtrls[n].GetPos(&tx, &ty, &tw, &th)
+                inset := Round(th * 0.25)
+                div.Move(tx + tw, ty + inset, 1, th - 2 * inset)
+            }
+            div.Visible := visible
+            if (visible)
+                DllCall("InvalidateRect", "ptr", div.Hwnd, "ptr", 0, "int", true)
+        }
     }
 
     /**
@@ -418,10 +434,9 @@ class NaviTab {
             widths.Push(w)
             total += w + 1
         }
-        nv.GuiObj.GetClientPos(, , &cw)
-        cw := Round(cw * 96 / A_ScreenDPI)
+        nv.GuiObj.GetClientPos(, , &cw)  ; GetClientPos は Move と同じ DPI 換算の単位で返す
         if (cw <= 0)  ; 表示前は幅が 0 なので、表示するときの幅で計算する
-            cw := (nv._savedW > 0) ? Round(nv._savedW * 96 / A_ScreenDPI) : nv.GUI_WIDTH + 2 * nv.GuiObj.MarginX
+            cw := (nv._savedW > 0) ? nv._savedW : nv.GUI_WIDTH + 2 * nv.GuiObj.MarginX
         avail := cw - 2 * nv.GuiObj.MarginX - this.PLUS_WIDTH - 4
         if (total > avail && total > 0) {
             ratio := avail / total
@@ -469,6 +484,7 @@ class NaviTab {
             ctrl.Move(, cy + shift)
         }
         nv._tvY += shift
+        this._LayoutDividers()
     }
 
     ; ==============================================================================

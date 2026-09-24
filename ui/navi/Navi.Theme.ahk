@@ -14,6 +14,7 @@ class NaviTheme {
     static SURFACE     := "F3F3F3"  ; タブの帯など、本体より一段下がった面
     static HOVER       := "E5E5E5"  ; マウスを乗せたときの面
     static GUIDE       := "DCDCDC"  ; ツリーのインデントガイド
+    static DIVIDER     := "C8C8C8"  ; タブの間の区切り線
 
     ; --- 文字の色 ---
     static TEXT        := "1F1F1F"  ; 本文
