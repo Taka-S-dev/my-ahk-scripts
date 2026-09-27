@@ -472,6 +472,9 @@ class Navi {
         NaviFilter.CancelDebounce()
         NaviFilter.ResetForNewRoot()
         NaviDirList.CancelFileIndex()
+        ; 集めた一覧は閉じると捨てるので、ネットワーク上のルートを読んでよいという答えも忘れる
+        ; （次に開いて一覧を出すときは読み直しになるので、そのたびに確認する）
+        NaviDirList.ForgetNetworkAnswers()
         NaviLeader.Close(false)
         ; マーク状態をリセット
         NaviMark.Reset()

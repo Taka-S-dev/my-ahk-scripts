@@ -156,7 +156,7 @@ class NaviSearch {
             this._EnsureJumpGui(navi)
         ; バックエンド選択: fd が利用可能かつ有効、かつネットワークパスでない場合に fd を使用
         fdPath := ""
-        if (this.UseFd && !NaviFilter._IsNetworkPath(basePath))
+        if (this.UseFd && !NaviFilter.IsOnNetwork(basePath))
             fdPath := this._FindFd()
         if (fdPath != "")
             this._RunWithFd(navi, basePath, q, typeFilter, incGroups, notAlts)

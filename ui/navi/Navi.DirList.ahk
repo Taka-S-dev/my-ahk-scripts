@@ -26,6 +26,8 @@ class NaviDirList {
     static _lvHwnd := 0
     static _drawHandler := ""       ; 選択行を塗る WM_NOTIFY ハンドラー
     static _listCond := ""          ; Shift+Tab ホットキーの HotIf 条件
+    static _netAllowed := Map()     ; 一覧を作ってよいと答えたネットワーク上のルート（Navi を閉じるまで覚える）
+    static _asking := false         ; 確認ダイアログを出している間
 
     ; --- ファイルインデックス（Show のたびに作り直す）---
     static _FileIndex := []
@@ -429,6 +431,11 @@ class NaviDirList {
             return
         }
         isFiles := (this.Kind == "files")
+        ; まだ集めていないネットワーク上のルートは、配下を全部読みに行く前に確かめる
+        built := isFiles ? (this._FileIndexedRoot == rootPath || (this._FilePid != 0 && this._FileRoot == rootPath))
+            : (NaviFilter._IndexedRoot == rootPath)
+        if (!built && !this._ConfirmNetwork(rootPath))
+            return
         if (isFiles) {
             if !this._EnsureFileIndex(rootPath) {
                 this._ShowMessage("ファイルを集めています…")
@@ -531,6 +538,39 @@ class NaviDirList {
     }
 
     ; 一覧を空にして 1 行だけメッセージを出す（選択しても何も起きない行）
+    /**
+     * ネットワーク上のルートなら、一覧を作る前に確認する。「いいえ」ならツリーに戻して false を返す
+     * 一覧は配下のフォルダ（ファイル）をすべて読むので、ファイルサーバーに負荷がかかり時間もかかる
+     */
+    static _ConfirmNetwork(rootPath) {
+        if (this._netAllowed.Has(StrLower(rootPath)) || !NaviFilter.IsOnNetwork(rootPath))
+            return true
+        if (this._asking)  ; 確認中に届いた入力による作り直しは、答えが出るまで止めておく
+            return false
+        nv := this._navi
+        this._asking := true
+        this._ShowMessage("ネットワーク上のフォルダです")
+        what := (this.Kind == "files") ? "ファイル" : "フォルダ"
+        ans := MsgBox(rootPath . "`n`nはネットワーク上のフォルダです。一覧を作るには配下の" . what
+            . "をすべて読むため、サーバーに負荷がかかり、時間もかかります。`n`n一覧を作りますか？"
+            , "Navi", "YesNo Icon! Default2 Owner" . nv.GuiObj.Hwnd)
+        this._asking := false
+        if (ans == "Yes") {
+            this._netAllowed[StrLower(rootPath)] := true
+            return true
+        }
+        if (this.Active && nv.GuiObj && WinExist(nv.GuiObj)) {
+            this._SetActive(false)
+            nv.GuiObj["FolderTree"].Focus()
+        }
+        return false
+    }
+
+    /** ネットワーク上のルートを読んでよいという答えを忘れる（Navi を閉じたとき） */
+    static ForgetNetworkAnswers() {
+        this._netAllowed := Map()
+    }
+
     static _ShowMessage(msg) {
         nv := this._navi
         lv := nv.GuiObj["DirList"]
@@ -646,7 +686,7 @@ class NaviDirList {
             return false
         this.CancelFileIndex()
         ; ネットワークパスは fd を使わない（フォルダインデックスと同じくサーバー負荷対策）
-        useFd := !NaviFilter._IsNetworkPath(rootPath)
+        useFd := !NaviFilter.IsOnNetwork(rootPath)
             && (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
         fdPath := useFd ? NaviSearch._FindFd() : ""
         if (fdPath != "" && this._StartFileIndexFd(rootPath, fdPath))

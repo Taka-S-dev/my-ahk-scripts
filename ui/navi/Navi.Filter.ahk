@@ -50,8 +50,19 @@ class NaviFilter {
         this._navi := naviRef
     }
 
-    ; UNC パス（\\server\share）かどうかを返す
-    static _IsNetworkPath(path) => (SubStr(path, 1, 2) == "\\")
+    ; ネットワーク上のフォルダか（UNC パス \\server\share か、ネットワークドライブに割り当てたドライブ文字）
+    ; 配下を再帰的に読む処理（先読み・fd・変更監視）は、サーバー負荷を避けるためこれが真なら止める
+    static IsOnNetwork(path) {
+        if (SubStr(path, 1, 2) == "\\")
+            return true
+        if !RegExMatch(path, "^[A-Za-z]:")
+            return false
+        try {
+            return DriveGetType(SubStr(path, 1, 2) . "\") == "Network"
+        } catch {
+            return false  ; 存在しないドライブ
+        }
+    }
 
     ; ==============================================================================
     ; フォルダインデックス構築
@@ -204,7 +215,7 @@ class NaviFilter {
             return false
         }
         ; ネットワークパスは fd を使用しない（サーバー負荷対策）
-        useFd  := !this._IsNetworkPath(rootPath)
+        useFd  := !this.IsOnNetwork(rootPath)
                && (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
         fdPath := useFd ? NaviSearch._FindFd() : ""
         if (fdPath != "" && this._StartFolderIndexFd(rootPath, fdPath)) {
@@ -222,7 +233,7 @@ class NaviFilter {
      */
     static PrefetchFolderIndex(rootPath) {
         ; ネットワークパスは自動インデックス構築をスキップ（サーバー負荷対策）
-        if (this._IsNetworkPath(rootPath))
+        if (this.IsOnNetwork(rootPath))
             return
         if (this._IndexedRoot == rootPath || (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath))
             return
@@ -259,7 +270,7 @@ class NaviFilter {
 
     ; ==============================================================================
     ; ディレクトリ変更監視（FindFirstChangeNotification + SetTimer ポーリング）
-    ; ネットワークパス非対応のため _IsNetworkPath チェックで除外する
+    ; ネットワークパス非対応のため IsOnNetwork で除外する
     ; ==============================================================================
 
     /**
@@ -269,7 +280,7 @@ class NaviFilter {
      */
     static _StartDirWatch(rootPath) {
         this._StopDirWatch()
-        if (this._IsNetworkPath(rootPath))
+        if (this.IsOnNetwork(rootPath))
             return
         ; ディレクトリハンドルを開く（FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED）
         hDir := DllCall("CreateFileW"
