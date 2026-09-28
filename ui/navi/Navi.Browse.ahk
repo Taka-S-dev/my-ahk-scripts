@@ -24,6 +24,8 @@ class NaviBrowse {
     static _drawHandler := ""
     static _roles := Map()          ; 一覧の hwnd → "parent" / "cur" / "preview"
     static _filling := false        ; 中央の列を作り直している間は右の列の更新を止める
+    static _parentHdr := 0          ; 左の列の見出し（クリックで 1 つ上へ）
+    static _hdrHandlers := ""       ; 見出しのクリック・カーソルのメッセージハンドラー
 
     ; 中央（今いるフォルダ）を一番広くして主役にする（yazi の既定も中央が最も広い）
     static COL_LEFT := 0.20         ; 左の列の幅（全体に対する比率）
@@ -79,6 +81,19 @@ class NaviBrowse {
         cur.OnEvent("ItemSelect", (*) => this._SchedulePreview())
         cur.OnEvent("DoubleClick", (*) => this.Activate())
         parent.OnEvent("Click", (*) => this._ClickParent())
+        ; 左の列の見出し（‹ 親フォルダ名）はクリックで 1 つ上へ。見出しをボタンにするとマウスを乗せたとき
+        ; 青く光って選択中に見えるので、ボタンにはせず手の形のカーソルとクリックだけを自前で扱う
+        this._parentHdr := SendMessage(0x101F, 0, 0, parent)  ; LVM_GETHEADER
+        if (this._hdrHandlers == "") {
+            this._hdrHandlers := Map(0x0201, (w, l, m, hw) => this._OnHeaderClick(hw)   ; WM_LBUTTONDOWN
+                , 0x0203, (w, l, m, hw) => this._OnHeaderClick(hw)                    ; WM_LBUTTONDBLCLK
+                , 0x0020, (w, l, m, hw) => this._OnHeaderCursor(w))                    ; WM_SETCURSOR
+            for msg, fn in this._hdrHandlers
+                OnMessage(msg, fn)
+        }
+        ; ダブルクリックは左の列の階層へ上がる（1 回目のクリックでその行へ移ってから、1 つ上へ）
+        ; 2 回目のクリックでもその行へ移る処理が走るので、上がるのはそのあとに回す
+        parent.OnEvent("DoubleClick", (*) => SetTimer(() => this.Up(), -150))
         preview.OnEvent("Click", (*) => this._ClickPreview())
         if (this._drawHandler == "") {
             this._drawHandler := (w, l, m, hw) => this._OnCustomDraw(l)
@@ -110,6 +125,21 @@ class NaviBrowse {
         g["BrowseParent"].ModifyCol(1, Max(40, wl))
         g["BrowseCur"].ModifyCol(1, Max(40, wc - SysGet(2) - 4))
         g["BrowsePreview"].ModifyCol(1, Max(40, wr))
+    }
+
+    ; 左の列の見出しのクリック: 1 つ上へ（見出しの幅変更などの既定の動きはさせない）
+    static _OnHeaderClick(hwnd) {
+        if (hwnd != this._parentHdr || !this.Active)
+            return
+        this.Up()
+        return 0
+    }
+
+    static _OnHeaderCursor(hwnd) {
+        if (hwnd != this._parentHdr || !this.Active || this._cur == "")
+            return
+        DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))  ; IDC_HAND
+        return true
     }
 
     ; 部品の見える範囲を左上から w x h（Move と同じ単位）に切る
@@ -262,6 +292,46 @@ class NaviBrowse {
             return
         this._Remember()
         this.Open(this._ParentOf(this._cur), this._NameOf(this._cur))
+    }
+
+    /**
+     * パンくずのクリック: 今いるフォルダから上の階層を一覧したメニューを出し、選んだ階層まで上がる
+     * （上がると、通ってきたフォルダを選んだ状態になる）
+     */
+    static ShowAncestorMenu() {
+        nv := this._navi
+        if (!this.Active || this._cur == "")
+            return
+        chain := []  ; 上の階層から順に { path, child（その階層で選ぶ名前） }
+        p := this._cur, child := ""
+        loop {
+            chain.InsertAt(1, { path: p, child: child })
+            child := this._NameOf(p)
+            p := this._ParentOf(p)
+            if (p == "" || !DirExist(p))
+                break
+        }
+        chain.InsertAt(1, { path: "", child: (p == "") ? child : "" })  ; 一番上はドライブの一覧
+        m := Menu()
+        for i, c in chain {
+            indent := ""
+            loop i - 1
+                indent .= "    "
+            label := indent . ((c.path == "") ? "ドライブ" : this._NameOf(c.path))
+            m.Add(label, ((c, *) => (this._Remember(), this.Open(c.path, c.child))).Bind(c))
+            if (i == chain.Length) {
+                m.Check(label)    ; 今いるフォルダ
+                m.Disable(label)
+            }
+        }
+        ; メニューの Esc を Navi を閉じるホットキーに取られないよう、表示中は止める
+        HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
+        Hotkey("Esc", "Off")
+        HotIf()
+        m.Show()
+        HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
+        Hotkey("Esc", "On")
+        HotIf()
     }
 
     /** 選んでいるフォルダに入る（ファイルなら何もしない） */

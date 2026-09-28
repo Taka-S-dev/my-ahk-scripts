@@ -117,8 +117,12 @@ class NaviBreadcrumb {
      */
     static _OnClick() {
         nv := this._navi
-        ; 階層メニューはツリーのノードへ飛ぶので、リスト表示中は使わない
-        if (NaviDirList.Active || NaviBrowse.Active)
+        ; 3 列では上の階層へ上がるメニューにする。一覧は階層を持たないので使わない
+        if (NaviBrowse.Active) {
+            NaviBrowse.ShowAncestorMenu()
+            return
+        }
+        if (NaviDirList.Active)
             return
         tv := nv.GuiObj["FolderTree"]
         id := tv.GetSelection()
