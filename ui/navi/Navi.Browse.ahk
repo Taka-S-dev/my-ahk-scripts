@@ -701,7 +701,17 @@ class NaviBrowse {
     /** ステータスバー左側: 今いるフォルダと件数 */
     static StatusText() {
         where := (this._cur == "") ? "ドライブ" : this._NameOf(this._cur)
-        return " 3 列   " . where . "   " . this._shown.Length . " 件"
+        ; ルートの外へ上がると、ルートのボタンと見ている場所が食い違うので、それを示す
+        return " 3 列" . (this._InRoot() ? "" : "（ルート外）") . "   " . where . "   " . this._shown.Length . " 件"
+    }
+
+    ; 今いるフォルダがルートの中か（ルートそのものも含む）
+    static _InRoot() {
+        root := RTrim(this._RootPath(), "\")
+        if (root == "" || this._cur == "")
+            return root == ""
+        cur := RTrim(this._cur, "\")
+        return (StrLower(cur) == StrLower(root)) || (StrLower(SubStr(cur, 1, StrLen(root) + 1)) == StrLower(root . "\"))
     }
 
     /** ステータスバー右側: 操作の案内 */
