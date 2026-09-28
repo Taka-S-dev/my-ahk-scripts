@@ -30,6 +30,8 @@ class NaviBrowse {
     ; 戻る・進む（エクスプローラーと同じ）: 3 列で開いたフォルダの履歴をタブごとに持つ（起動中だけ）
     static _hist := Map()           ; タブ番号 → { back: [{ path, sel }], fwd: [...] }
     static _opened := false         ; 今の画面で一度でも開いたか（最初に開いた場所は履歴に積まない）
+    static _curTab := 0             ; _cur がどのタブで開いた場所か（タブを切り替えても 3 列の場所はタブごとに覚える）
+    static _openSeq := 0            ; Open するたびに増える番号（予約した Open が、あとから開いた場所を上書きしないため）
     static _navBtns := Map()        ; 戻る・進む・上へのボタンの hwnd → { name, tip }
     static _navEnabled := Map()     ; ボタン名 → 押せるか
     static _tipFor := 0             ; ツールチップを出しているボタンの hwnd
@@ -379,7 +381,9 @@ class NaviBrowse {
             h.fwd := []
         }
         this._opened := true
+        this._openSeq++
         this._cur := path
+        this._curTab := NaviTab._CurrentTab
         if (selectName == "" && this._lastSel.Has(StrLower(path)))
             selectName := this._lastSel[StrLower(path)]
         this._entries := this._List(path)
@@ -434,7 +438,34 @@ class NaviBrowse {
     /** 履歴を消す（タブを閉じてタブ番号がずれるとき） */
     static ForgetHistory() {
         this._hist := Map()
+        this._curTab := 0  ; 番号がずれるので、今の場所がどのタブのものかも分からなくなる
         try this.UpdateNavButtons()
+    }
+
+    /**
+     * 今のタブで 3 列が開いている場所 { root, path, sel }（このタブでまだ開いていなければ ""）
+     * タブを切り替えるときと Navi を閉じるときに、タブの状態として保存する
+     */
+    static Location() {
+        if (!this._opened || this._curTab != NaviTab._CurrentTab)
+            return ""
+        item := this._SelectedItem()
+        return { root: this._navi.lastRoot, path: this._cur, sel: item ? item.name : "" }
+    }
+
+    /**
+     * タブに覚えていた 3 列の場所を開く（ブラウザのタブと同じく、切り替えて戻っても元の場所のまま）
+     * 覚えていない・ルートが変わった・フォルダがもう開けないときは、そのタブのルートを開く
+     */
+    static OpenTabLocation(tab := "") {
+        nv := this._navi
+        if (tab == "" && NaviTab._CurrentTab <= NaviTab._Tabs.Length)
+            tab := NaviTab._Tabs[NaviTab._CurrentTab]
+        loc := (IsObject(tab) && tab.HasOwnProp("browse")) ? tab.browse : ""
+        if (IsObject(loc) && loc.root == nv.lastRoot && (loc.path == "" || DirExist(loc.path)))
+            this.Open(loc.path, loc.sel, false)
+        else
+            this.Open(this._RootPath(), "", false)
     }
 
     /** 1 つ上のフォルダへ。今いたフォルダを選んだ状態にする（ドライブの一番上からはドライブの一覧へ） */

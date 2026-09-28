@@ -638,6 +638,9 @@ class NaviTab {
         tab := this._Tabs[this._CurrentTab]
         tab.root := s.root, tab.filter := s.filter, tab.marks := s.marks
         tab.markFilter := s.markFilter, tab.path := s.path
+        ; 3 列の場所（このタブで 3 列を開いていたときだけ。ツリーで使っていた間は前に覚えた場所を残す）
+        if IsObject(loc := NaviBrowse.Location())
+            tab.browse := loc
     }
 
     /**
@@ -689,10 +692,11 @@ class NaviTab {
             ; フィルタ非同期完了後にも復元できるよう目標パスを保存
             nv._RestoreTargetPath := state.path
         }
-        ; 3 列の表示中は、切り替えたタブのルートを 3 列で開き直す
+        ; 3 列の表示中は、このタブで 3 列が開いていた場所（なければルート）を開き直す
         ; （上の ApplyTreeFilter は 3 列の中央の列に効いてしまうので、開き直して絞り込みも消す）
+        ; 前のタブの場所をこのタブの戻る履歴には積まない
         if (NaviBrowse.Active && rootPath != "")
-            NaviBrowse.Open(rootPath, "", false)  ; 前のタブの場所をこのタブの戻る履歴に積まない
+            NaviBrowse.OpenTabLocation(state)
     }
 
     /**
@@ -950,6 +954,11 @@ class NaviTab {
             for k, v in tab.marks
                 markStr .= (markStr == "" ? "" : "|") . v
             IniWrite(markStr, nv.IniPath, sec, "Tab" . n . "Marks")
+            ; 3 列の場所（今のルートで開いていたものだけ。"" はドライブの一覧）
+            if (tab.HasOwnProp("browse") && IsObject(tab.browse) && tab.browse.root == tab.root) {
+                IniWrite(tab.browse.path, nv.IniPath, sec, "Tab" . n . "BrowsePath")
+                IniWrite(tab.browse.sel,  nv.IniPath, sec, "Tab" . n . "BrowseSel")
+            }
         }
     }
 
@@ -983,11 +992,16 @@ class NaviTab {
                     if (p != "")
                         marks[StrLower(p)] := p
 
-            this._Tabs.Push({
+            tab := {
                 root: root, filter: filt, path: pth,
                 markFilter: (mf == "1"), marks: marks,
                 history: [], future: []
-            })
+            }
+            ; 3 列の場所（書いていなければ持たない。"*" はパスに使えない文字なので「なし」の印にする）
+            bPath := IniRead(nv.IniPath, sec, "Tab" . n . "BrowsePath", "*")
+            if (bPath != "*")
+                tab.browse := { root: root, path: bPath, sel: IniRead(nv.IniPath, sec, "Tab" . n . "BrowseSel", "") }
+            this._Tabs.Push(tab)
         }
     }
 }

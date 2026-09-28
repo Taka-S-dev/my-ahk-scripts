@@ -350,7 +350,7 @@ class Navi {
         ; 一覧の作成は WinExist が通る表示後に行う
         NaviDirList.ApplyCurrent()
         if (NaviBrowse.Active) {
-            NaviBrowse.Open(NaviBrowse._RootPath())
+            NaviBrowse.OpenTabLocation()  ; 閉じたときに 3 列で開いていた場所から始める
         }
         ; GUI 表示後に選択項目を再度可視化（フィルタの非同期処理を考慮して複数回リトライ）
         this._EnsureSelectionVisibleRetries := 0
@@ -1028,9 +1028,12 @@ class Navi {
             SetTimer(() => NaviDirList.ApplyCurrent(), -1)
         } else if (NaviBrowse.Active) {
             ; ルートが変わったので 3 列もそのルートを開く（フォーカスは入力欄へ）
+            ; ただし予約してから開くまでの間に 3 列がほかの場所を開いていたら（タブの切り替えで
+            ; そのタブの場所を開いたときなど）、そちらを優先して開かない
             if (setFocus)
                 this.GuiObj["TreeFilter"].Focus()
-            SetTimer(() => NaviBrowse.Open(rootPath), -1)
+            seq := NaviBrowse._openSeq
+            SetTimer(() => (NaviBrowse._openSeq == seq) ? NaviBrowse.Open(rootPath) : 0, -1)
         } else if (setFocus) {
             tv.Focus()
         }
