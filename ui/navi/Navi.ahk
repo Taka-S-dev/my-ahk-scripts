@@ -32,6 +32,7 @@
 #Include *i Navi.KeyMenu.ahk
 #Include *i Navi.Leader.ahk
 #Include *i Navi.Picker.ahk
+#Include *i Navi.ViewSwitch.ahk
 #Include ..\..\lib\TempCopy.ahk
 
 class Navi {
@@ -112,6 +113,7 @@ class Navi {
         NaviMark.Init(this)
         NaviDirList.Init(this)
         NaviBrowse.Init(this)
+        NaviViewSwitch.Init(this)
         NaviLeader.Init(this)
     }
 
@@ -239,6 +241,7 @@ class Navi {
         NaviDirList.Build(this.GuiObj, tv)
         ; --- 3 列ブラウズ（ツリーと同じ場所に重ね、Ctrl+B で切り替え）---
         NaviBrowse.Build(this.GuiObj, tv)
+        NaviViewSwitch.Build(this.GuiObj)
 
         ; --- ルート登録用の入力欄 ---
         ; 常に出すと 2 つ目の検索欄に見えて迷うので表示しない。ルートの追加は ⚙ →「ルートを追加」の小窓で
@@ -1120,6 +1123,7 @@ class Navi {
 
 
     static _UpdateStatusBar() {
+        try NaviViewSwitch.Update()  ; 表示を切り替えるたびにここを通るので、表示切り替えのボタンも合わせる
         try {
             sb := this.GuiObj._sbRef
             ; ピン留めのチェックボックスは表示しないので、状態はここに出す

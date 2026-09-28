@@ -204,8 +204,8 @@ class NaviBrowse {
     }
 
     /**
-     * 戻る・進む・上へのボタンをパンくずの左に並べ、パンくずをその右に詰める（3 列のときだけ）
-     * それ以外の表示ではボタンを隠し、パンくずを行の左端から使う
+     * パスの行を並べる: 戻る・進む・上へのボタンをパンくずの左に（3 列のときだけ）、
+     * 表示の切り替え（NaviViewSwitch）を右端に（いつも）置き、パンくずをその間に詰める
      */
     static LayoutNavButtons() {
         g := this._navi.GuiObj
@@ -225,7 +225,8 @@ class NaviBrowse {
         }
         for name in names
             g[name].Visible := this.Active
-        bc.Move(tx + off, , tw - off)
+        right := NaviViewSwitch.Layout(tx, by, tw, bh)
+        bc.Move(tx + off, , Max(40, tw - off - right))
     }
 
     /** 戻る・進む・上へが押せるかに合わせて、アイコンを本文の色か薄い色にする */
