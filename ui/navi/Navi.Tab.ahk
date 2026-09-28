@@ -109,10 +109,10 @@ class NaviTab {
         plusBg := guiObj.Add("Text", "x+4 yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " Background" . NaviTheme.HOVER, "")
         plusBg.Visible := false
         this._TabPlusHoverBg := plusBg
-        ; + ボタン（新規タブ追加）
-        guiObj.SetFont("s11 c" . NaviTheme.TEXT_MUTED)
-        plus := guiObj.Add("Text", "xp yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " +0x301 BackgroundTrans", "+")
-        NaviTheme.SetFont(guiObj, "body")
+        ; + ボタン（新規タブ追加）。本文のフォントの "+" は行の中央より下に描かれるので、
+        ; ほかのアイコンと同じく上下中央に作られたアイコンフォントの Add（E710）を使う
+        plus := guiObj.Add("Text", "xp yp w" . this.PLUS_WIDTH . " h" . this.TAB_HEIGHT . " +0x301 BackgroundTrans", Chr(0xE710))
+        plus.SetFont("s" . NaviTheme.ICON_SIZE . " norm c" . NaviTheme.TEXT_MUTED, NaviTheme.IconFont())
         plus.OnEvent("Click", (*) => this.NewTab())
         this._TabPlusBtn := plus
         ; タブ間の区切り線（TAB_MAX-1 個）。タブ同士の 1px の隙間に置き、位置と表示は UpdateTabBar で決める
