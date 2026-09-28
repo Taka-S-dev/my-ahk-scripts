@@ -24,8 +24,18 @@ class NaviBrowse {
     static _drawHandler := ""
     static _roles := Map()          ; 一覧の hwnd → "parent" / "cur" / "preview"
     static _filling := false        ; 中央の列を作り直している間は右の列の更新を止める
+    static _mouseCond := ""         ; マウスの戻るボタンの HotIf 条件（3 列表示中の Navi だけ）
     static _parentHdr := 0          ; 左の列の見出し（クリックで 1 つ上へ）
     static _hdrHandlers := ""       ; 見出しのクリック・カーソルのメッセージハンドラー
+    ; 戻る・進む（エクスプローラーと同じ）: 3 列で開いたフォルダの履歴をタブごとに持つ（起動中だけ）
+    static _hist := Map()           ; タブ番号 → { back: [{ path, sel }], fwd: [...] }
+    static _opened := false         ; 今の画面で一度でも開いたか（最初に開いた場所は履歴に積まない）
+    static _navBtns := Map()        ; 戻る・進む・上へのボタンの hwnd → { name, tip }
+    static _navEnabled := Map()     ; ボタン名 → 押せるか
+    static _tipFor := 0             ; ツールチップを出しているボタンの hwnd
+    static _tipTimer := ""
+    static HIST_MAX  := 50          ; 戻る履歴の上限
+    static NAV_BTN_W := 24          ; 戻る・進む・上へのボタンの幅
 
     ; 中央（今いるフォルダ）を一番広くして主役にする（yazi の既定も中央が最も広い）
     static COL_LEFT := 0.20         ; 左の列の幅（全体に対する比率）
@@ -38,6 +48,7 @@ class NaviBrowse {
     static Init(naviRef) {
         this._navi := naviRef
         this.Active := (IniRead(naviRef.IniPath, "Settings", "BrowseMode", "0") == "1")
+        this._mouseCond := (*) => (this.Active && naviRef.GuiObj && WinActive("ahk_id " naviRef.GuiObj.Hwnd))
     }
 
     ; ==============================================================================
@@ -100,6 +111,32 @@ class NaviBrowse {
             OnMessage(nv.WM_NOTIFY, this._drawHandler)
         }
         this.Layout(x, y, w, h)
+
+        ; 戻る・進む・上へのボタン（エクスプローラーと同じ並び）。3 列のときだけパンくずの左に出す
+        ; 箱のあるボタンだと 1 行に 3 つ並んで重いので、アイコンだけの平らな部品にする
+        ; 0x301 = SS_CENTER | SS_NOTIFY（クリックを受ける）| SS_CENTERIMAGE（縦も中央）
+        this._navBtns := Map(), this._navEnabled := Map()
+        for spec in [["BrowseBack", 0xE72B, "戻る (Alt+←)", () => this.Back()]
+                , ["BrowseFwd", 0xE72A, "進む (Alt+→)", () => this.Forward()]
+                , ["BrowseUp", 0xE74A, "上へ (Alt+↑)", () => this.Up()]] {
+            b := gui.Add("Text", "x0 y0 w" . this.NAV_BTN_W . " h" . NaviBreadcrumb.BREADCRUMB_HEIGHT
+                . " +0x301 Hidden v" . spec[1], Chr(spec[2]))
+            b.SetFont("s" . NaviTheme.ICON_SIZE . " norm c" . NaviTheme.TEXT_SUBTLE, NaviTheme.IconFont())
+            fn := ((f, *) => f.Call()).Bind(spec[4])
+            b.OnEvent("Click", fn)
+            b.OnEvent("DoubleClick", fn)  ; 続けて押したときの 2 回目も 1 回として数える
+            this._navBtns[b.Hwnd] := { name: spec[1], tip: spec[3] }
+        }
+        NaviTheme.SetFont(gui, "body")
+        this._opened := false  ; 作り直した画面で最初に開く場所は履歴に積まない
+
+        ; マウスの戻る・進むボタンと Alt+↑ はエクスプローラーと同じ意味にする
+        ; （Alt+← / Alt+→ はツリーのルート履歴と共用なので NaviTab 側で振り分ける）
+        HotIf(this._mouseCond)
+        Hotkey("XButton1", (*) => this.Back(), "On")
+        Hotkey("XButton2", (*) => this.Forward(), "On")
+        Hotkey("!Up", (*) => this.Up(), "On")
+        HotIf()
     }
 
     /**
@@ -135,11 +172,72 @@ class NaviBrowse {
         return 0
     }
 
+    ; 押せるところ（左の列の見出し・戻る・進む・上へ）では手の形のカーソルにする。ボタンには名前とキーを出す
     static _OnHeaderCursor(hwnd) {
-        if (hwnd != this._parentHdr || !this.Active || this._cur == "")
+        if (!this.Active)
             return
+        if this._navBtns.Has(hwnd) {
+            btn := this._navBtns[hwnd]
+            if (this._tipFor != hwnd) {
+                this._tipFor := hwnd
+                ToolTip(btn.tip, , , 3)
+                if (this._tipTimer == "")
+                    this._tipTimer := () => this._HideTipWhenLeft()
+                SetTimer(this._tipTimer, 200)
+            }
+            if !(this._navEnabled.Has(btn.name) && this._navEnabled[btn.name])
+                return
+        } else if (hwnd != this._parentHdr || this._cur == "") {
+            return
+        }
         DllCall("user32\SetCursor", "ptr", DllCall("user32\LoadCursorW", "ptr", 0, "ptr", 32649, "ptr"))  ; IDC_HAND
         return true
+    }
+
+    static _HideTipWhenLeft() {
+        MouseGetPos(, , , &under, 2)
+        if (under == this._tipFor)
+            return
+        ToolTip(, , , 3)
+        this._tipFor := 0
+        SetTimer(this._tipTimer, 0)
+    }
+
+    /**
+     * 戻る・進む・上へのボタンをパンくずの左に並べ、パンくずをその右に詰める（3 列のときだけ）
+     * それ以外の表示ではボタンを隠し、パンくずを行の左端から使う
+     */
+    static LayoutNavButtons() {
+        g := this._navi.GuiObj
+        try {
+            bc := g["Breadcrumb"]
+            g["FolderTree"].GetPos(&tx, , &tw)
+            bc.GetPos(, &by, , &bh)
+        } catch {
+            return
+        }
+        names := ["BrowseBack", "BrowseFwd", "BrowseUp"]
+        off := 0
+        if (this.Active) {
+            for i, name in names
+                g[name].Move(tx + (i - 1) * this.NAV_BTN_W, by, this.NAV_BTN_W, bh)
+            off := names.Length * this.NAV_BTN_W + NaviTheme.SP_S
+        }
+        for name in names
+            g[name].Visible := this.Active
+        bc.Move(tx + off, , tw - off)
+    }
+
+    /** 戻る・進む・上へが押せるかに合わせて、アイコンを本文の色か薄い色にする */
+    static UpdateNavButtons() {
+        g := this._navi.GuiObj
+        h := this._History()
+        for name, on in Map("BrowseBack", h.back.Length > 0, "BrowseFwd", h.fwd.Length > 0, "BrowseUp", this._cur != "") {
+            if (this._navEnabled.Has(name) && this._navEnabled[name] == on)
+                continue
+            this._navEnabled[name] := on
+            try g[name].SetFont("c" . (on ? NaviTheme.TEXT : NaviTheme.TEXT_SUBTLE))
+        }
     }
 
     ; 部品の見える範囲を左上から w x h（Move と同じ単位）に切る
@@ -156,6 +254,7 @@ class NaviBrowse {
             g["FolderTree"].GetPos(&x, &y)
             this.Layout(x, y, w, h)
         }
+        this.LayoutNavButtons()
     }
 
     /** Active に合わせて 3 列の表示を切り替える（右の列は中身の種類で一覧かテキストのどちらか） */
@@ -166,7 +265,9 @@ class NaviBrowse {
         if (!this.Active) {
             g["BrowsePreview"].Visible := false
             g["BrowseText"].Visible := false
+            ToolTip(, , , 3)
         }
+        this.LayoutNavButtons()
     }
 
     ; ==============================================================================
@@ -198,6 +299,7 @@ class NaviBrowse {
         IniWrite("1", nv.IniPath, "Settings", "BrowseMode")
         nv.GuiObj["FolderTree"].Visible := false
         this.ApplyVisibility()
+        this._opened := false  ; ツリーから来た最初の場所は履歴に積まない（戻る先はこの 3 列の中だけ）
         if (sel != "" && DirExist(sel)) {
             this.Open(sel)
         } else if (sel != "" && FileExist(sel)) {
@@ -260,13 +362,22 @@ class NaviBrowse {
     /**
      * path を中央の列に開く。selectName があればその行を選ぶ（なければ前回そのフォルダで選んでいた行）
      * path が "" ならドライブの一覧
+     * record なら今いた場所を戻る履歴に積む（戻る・進む自身と、タブの切り替えでは積まない）
      */
-    static Open(path, selectName := "") {
+    static Open(path, selectName := "", record := true) {
         nv := this._navi
         if !(nv.GuiObj && WinExist(nv.GuiObj))
             return
         if (path != "" && !DirExist(path))
             path := this._RootPath()
+        if (record && this._opened && StrLower(path) != StrLower(this._cur)) {
+            h := this._History()
+            h.back.Push(this._Here())
+            if (h.back.Length > this.HIST_MAX)
+                h.back.RemoveAt(1)
+            h.fwd := []
+        }
+        this._opened := true
         this._cur := path
         if (selectName == "" && this._lastSel.Has(StrLower(path)))
             selectName := this._lastSel[StrLower(path)]
@@ -282,8 +393,47 @@ class NaviBrowse {
         this._FillCur(selectName)
         this._FillParent()
         this._UpdatePreview()
+        this.UpdateNavButtons()
         NaviBreadcrumb.Refresh()
         nv._UpdateStatusBar()
+    }
+
+    /** 戻る（Alt+← / マウスの戻るボタン / ← のボタン）: 直前にいたフォルダへ */
+    static Back() => this._Step("back", "fwd")
+
+    /** 進む（Alt+→ / マウスの進むボタン / → のボタン）: 戻る前のフォルダへ */
+    static Forward() => this._Step("fwd", "back")
+
+    static _Step(from, to) {
+        if !this.Active
+            return
+        h := this._History()
+        if (h.%from%.Length == 0)
+            return
+        target := h.%from%.Pop()
+        h.%to%.Push(this._Here())
+        this._Remember()
+        this.Open(target.path, target.sel, false)
+    }
+
+    ; 今いる場所（履歴に積む形）
+    static _Here() {
+        item := this._SelectedItem()
+        return { path: this._cur, sel: item ? item.name : "" }
+    }
+
+    ; 今のタブの戻る・進むの履歴
+    static _History() {
+        key := NaviTab._CurrentTab
+        if !this._hist.Has(key)
+            this._hist[key] := { back: [], fwd: [] }
+        return this._hist[key]
+    }
+
+    /** 履歴を消す（タブを閉じてタブ番号がずれるとき） */
+    static ForgetHistory() {
+        this._hist := Map()
+        try this.UpdateNavButtons()
     }
 
     /** 1 つ上のフォルダへ。今いたフォルダを選んだ状態にする（ドライブの一番上からはドライブの一覧へ） */

@@ -144,8 +144,9 @@ class NaviTab {
         Hotkey("^w",    (*) => this.CloseTab(),        "On")
         Hotkey("^Tab",  (*) => this.SwitchToTab(Mod(this._CurrentTab, this._TabCount) + 1), "On")
         Hotkey("^+Tab", (*) => this.SwitchToTab(Mod(this._CurrentTab - 2 + this._TabCount, this._TabCount) + 1), "On")
-        Hotkey("!Left",  (*) => this.TabNavBack(),    "On")
-        Hotkey("!Right", (*) => this.TabNavForward(), "On")
+        ; 3 列ではエクスプローラーと同じくフォルダの戻る・進む、ツリーではルート履歴の戻る・進む
+        Hotkey("!Left",  (*) => NaviBrowse.Active ? NaviBrowse.Back() : this.TabNavBack(),       "On")
+        Hotkey("!Right", (*) => NaviBrowse.Active ? NaviBrowse.Forward() : this.TabNavForward(), "On")
         Hotkey("^+h",    (*) => this.ClearTabHistory(), "On")
         ; 中クリックでタブを閉じる（ブラウザと同じ挙動）
         Hotkey("~MButton", (*) => this._OnMiddleClick(), "On")
@@ -620,7 +621,7 @@ class NaviTab {
         ; 3 列の表示中は、切り替えたタブのルートを 3 列で開き直す
         ; （上の ApplyTreeFilter は 3 列の中央の列に効いてしまうので、開き直して絞り込みも消す）
         if (NaviBrowse.Active && rootPath != "")
-            NaviBrowse.Open(rootPath)
+            NaviBrowse.Open(rootPath, "", false)  ; 前のタブの場所をこのタブの戻る履歴に積まない
     }
 
     /**
@@ -730,6 +731,7 @@ class NaviTab {
             return
         this._Tabs.RemoveAt(this._CurrentTab)
         this._TabCount--
+        NaviBrowse.ForgetHistory()  ; 3 列の戻る履歴はタブ番号で持つので、番号がずれる前に消す
         if (this._CurrentTab > this._TabCount)
             this._CurrentTab := this._TabCount
         tv  := nv.GuiObj["FolderTree"]
