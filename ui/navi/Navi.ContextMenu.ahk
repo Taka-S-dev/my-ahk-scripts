@@ -133,6 +133,8 @@ class NaviContextMenu {
         Hotkey("Enter", "Off")
         Hotkey("Space", "Off")
         Hotkey("Esc", "Off")
+        for key in navi.ACTION_MENU_KEYS  ; メニューの中のキー操作（Shift+F10 など）も横取りしない
+            Hotkey(key, "Off")
         HotIf()
 
         ; 選択アイテムの右端をメニュー表示位置に使う
@@ -183,6 +185,8 @@ class NaviContextMenu {
         Hotkey("Enter", "On")
         Hotkey("Space", "On")
         Hotkey("Esc", "On")
+        for key in navi.ACTION_MENU_KEYS
+            Hotkey(key, "On")
         HotIf()
 
         ; 選択コマンドを実行

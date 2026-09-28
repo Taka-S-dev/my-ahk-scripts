@@ -87,6 +87,7 @@ class Navi {
 
     ; --- Windows API メッセージ定数 ---
     static WM_SETCURSOR := 0x0020   ; カーソル形状変更通知
+    static ACTION_MENU_KEYS := ["^Space", "AppsKey", "+F10"]  ; どこからでもアクションメニューを開くキー
     static WM_ACTIVATE := 0x0006   ; ウィンドウアクティブ状態変更
     static WM_SETTEXT := 0x000C   ; コントロールテキスト設定（プレースホルダー等）
     static WM_NOTIFY := 0x004E   ; コモンコントロール通知（カスタムドロー等）
@@ -279,6 +280,10 @@ class Navi {
         ; ホットキー設定（Naviアクティブ時のみ）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Space", (*) => this._HandleSpace(), "On")
+        ; 入力中でも開けるアクションメニュー。入力欄の Space は文字（あいまい検索の区切り）なので、
+        ; Windows 標準のメニューキー（アプリケーションキー / Shift+F10）と、片手で押せる Ctrl+Space でも開く
+        for key in this.ACTION_MENU_KEYS
+            Hotkey(key, (*) => NaviActions.ShowActionMenu(), "On")
         Hotkey("Enter", (*) => this._HandleEnter(), "On")
         Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
         Hotkey("^p", (*) => this._TogglePin(), "On")
@@ -501,6 +506,7 @@ class Navi {
 
             【基本操作】
               Space         アクションメニューを表示
+              Ctrl+Space    アクションメニューを表示（入力中でも。アプリケーションキー / Shift+F10 でも）
               Enter         エクスプローラーで開く
               Esc           ウィンドウを閉じる
 

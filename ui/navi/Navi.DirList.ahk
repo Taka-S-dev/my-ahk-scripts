@@ -666,7 +666,8 @@ class NaviDirList {
 
     /** ステータスバー右側: 操作の案内 */
     static StatusHints() {
-        return " Ctrl+; コマンド     Shift+Tab 切替     Enter 開く     → ツリーで表示"
+        ; 入力欄の Space は検索の区切りなので、メニューのキー（Ctrl+Space）をここで示す
+        return " Ctrl+Space メニュー     Shift+Tab 切替     Enter 開く     → ツリーで表示"
     }
 
     ; ==============================================================================
