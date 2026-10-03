@@ -33,6 +33,7 @@
 #Include *i Navi.Leader.ahk
 #Include *i Navi.Picker.ahk
 #Include *i Navi.ViewSwitch.ahk
+#Include *i Navi.Help.ahk
 #Include ..\..\lib\TempCopy.ahk
 
 class Navi {
@@ -498,58 +499,10 @@ class Navi {
     /**
      * ショートカット一覧ヘルプを表示
      */
+    ; ショートカット一覧（F1）。中身は Navi.Help.ahk の SECTIONS
     static _ShowHelp() {
-        helpText := "
-        (
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                  Navi - ショートカット一覧
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-            【基本操作】
-              Ctrl+Space    アクションメニューを表示（どの表示でも、入力中でも。アプリケーションキー / Shift+F10 でも）
-              Space         同上（入力欄の外での近道。入力欄では検索語の区切り）
-              Enter         エクスプローラーで開く
-              Esc           ウィンドウを閉じる
-
-            【表示切替】
-              Ctrl+Enter    ファイル表示トグル
-              Ctrl+I        詳細リスト表示
-              Ctrl+F        フォルダフィルターにフォーカス
-              Ctrl+;        コマンド一覧（1 文字で実行）
-              Ctrl+E        ツリー ↔ 一覧
-              Ctrl+B        ツリー ↔ 3 列ブラウズ（←→ で上がる・入る）
-              Ctrl+Shift+B  今のフォルダをルートとして開く（一時的。ルートの一覧には登録しない）
-              Ctrl+H/J/K/L  ←↓↑→（Vim と同じ）
-
-            【一覧】
-              Shift+Tab     フォルダ一覧 ↔ ファイル一覧
-              文字入力      あいまい一致で絞り込み（'word は続けて一致）
-              ↑↓ PgUp/Dn   入力欄のまま選択行を移動（Ctrl+J/K も同じ）
-              Enter         フォルダはエクスプローラーで、ファイルは関連付けアプリで開く
-              → / Ctrl+L    選択行をツリーで表示
-
-            【マーク】
-              Alt+M         選択アイテムのマークをトグル（緑でハイライト）
-              Ctrl+M        マーク済みアイテムのみ表示 / 全体に戻す
-              Alt+Shift+M   全マーク解除
-
-            【タブ】
-              Ctrl+T        新規タブ（現在のルートで開く）
-              Ctrl+W        現在のタブを閉じる
-              Ctrl+Tab      次のタブへ
-              Ctrl+Shift+Tab 前のタブへ
-              Ctrl+1-5      タブ直接切り替え
-              Alt+←         タブ内でルート履歴を戻る（3 列ではフォルダを戻る）
-              Alt+→         タブ内でルート履歴を進む（3 列ではフォルダを進む）
-              Alt+↑         3 列で 1 つ上のフォルダへ
-              Ctrl+Shift+H  現在タブの履歴をクリア
-
-            【その他】
-              Ctrl+P        ピン留めトグル
-              F1            このヘルプを表示
-        )"
-
-    MsgBox(helpText, "Navi ショートカット", "Iconi 4096")
+        if (this.GuiObj && WinExist(this.GuiObj))
+            NaviHelp.Show(this.GuiObj)
     }
 
     static _ShowEditGui(parentGui) {
