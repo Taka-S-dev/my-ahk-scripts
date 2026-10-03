@@ -26,7 +26,11 @@ class NaviBrowse {
     static _filling := false        ; 中央の列を作り直している間は右の列の更新を止める
     static _mouseCond := ""         ; マウスの戻るボタンの HotIf 条件（3 列表示中の Navi だけ）
     static _parentHdr := 0          ; 左の列の見出し（クリックで 1 つ上へ）
-    static _hdrHandlers := ""       ; 見出しのクリック・カーソルのメッセージハンドラー
+    static _hdrCtrls := []          ; 見出しのラベル・区切り線・余白と中央の列の枠（3 列のときだけ出す）
+    static _hdrHandlers := ""       ; 手の形のカーソル・ボタンのツールチップのメッセージハンドラー
+    static HDR_H   := 22            ; 見出しの高さ（96 DPI 換算の px）
+    static HDR_PAD := 4             ; 見出しの区切り線と 1 行目の間
+    static FRAME   := "828790"      ; 中央の列の枠の色（Windows の入力欄の枠と同じ）
     ; 戻る・進む（エクスプローラーと同じ）: 3 列で開いたフォルダの履歴をタブごとに持つ（起動中だけ）
     static _hist := Map()           ; タブ番号 → { back: [{ path, sel }], fwd: [...] }
     static _opened := false         ; 今の画面で一度でも開いたか（最初に開いた場所は履歴に積まない）
@@ -62,23 +66,38 @@ class NaviBrowse {
         nv := this._navi
         tv.GetPos(&x, &y, &w, &h)
         ; 0x8=LVS_SHOWSELALWAYS / 0x40=LVS_SHARESIMAGELISTS（ツリーのアイコンを共有） / LV0x10000=LVS_EX_DOUBLEBUFFER
-        ; 見出しには列の役割（‹ 上の階層 / 今いるフォルダ / 中身 ›）をフォルダ名で出す
         ; 左右の列は SURFACE の面にして一段下げ、白い中央の列を主役にする
-        opt := " -Multi NoSortHdr +0x8 +0x40 +LV0x10000"
+        ; ListView の見出しは使わない（-Hdr）。見出しは一覧の上に置いたラベルで出す（下の _hdrCtrls）
+        opt := " -Multi -Hdr +0x8 +0x40 +LV0x10000"
         ; 左右の列は枠なしの面にし、スクロールバーは Layout で見える範囲の外へ切り落とす（ホイールでは動く）
         ; Tab ではツリーのときと同じく中央の列とルートのボタンだけを行き来させる（左右の列はマウスで使う）
         side := " Background" . NaviTheme.SURFACE . " -E0x200 -Tabstop"  ; -E0x200: WS_EX_CLIENTEDGE（枠）を外す
         parent  := gui.Add("ListView", "x" . x . " y" . y . " w100 h" . h . opt . side . " vBrowseParent", [""])
-        cur     := gui.Add("ListView", "x" . x . " y" . y . " w100 h" . h . opt . " vBrowseCur", [""])
+        ; 中央の列の枠は、見出しも一緒に囲む BrowseFrame で描くので、一覧自体の枠は外す
+        cur     := gui.Add("ListView", "x" . x . " y" . y . " w100 h" . h . opt . " -E0x200 vBrowseCur", [""])
         preview := gui.Add("ListView", "x" . x . " y" . y . " w100 h" . h . opt . side . " vBrowsePreview", [""])
         gui.SetFont("s" . NaviTheme.SIZE_BODY . " norm c" . NaviTheme.TEXT, NaviTheme.FONT_MONO)
         text := gui.Add("Edit", "x" . x . " y" . y . " w100 h" . h . " ReadOnly -Wrap +HScroll +VScroll -Tabstop" . side . " vBrowseText")
-        ; 中央の列の見出しだけ太字にする（フォントは見えない部品から借りる）
-        NaviTheme.SetFont(gui, "heading")
-        boldSrc := gui.Add("Text", "x0 y0 w0 h0 Hidden", "")
-        hdr := SendMessage(0x101F, 0, 0, cur)  ; LVM_GETHEADER
-        SendMessage(0x0030, SendMessage(0x0031, 0, 0, boldSrc), 1, hdr)  ; WM_SETFONT ← WM_GETFONT
+        ; 見出し: 列の役割（‹ 上の階層 / 今いるフォルダ / 中身 ›）をフォルダ名で、一覧の上のラベルに出す
+        ; ListView の見出しを使うと、スクロールバーが見出しの横まで伸び、区切り線やマウスを乗せたときの
+        ; 色も消して回ることになるので、ラベル・区切り線・余白をふつうの部品で並べる
+        ; 0x4280 = SS_ENDELLIPSIS（長い名前は … で省く）| SS_CENTERIMAGE（縦の中央）| SS_NOPREFIX（& をそのまま出す）
+        this._hdrCtrls := []
+        for role in ["Parent", "Cur", "Preview"] {
+            bg := (role == "Cur") ? NaviTheme.BG : NaviTheme.SURFACE
+            NaviTheme.SetFont(gui, (role == "Cur") ? "heading" : "body")  ; 今いるフォルダだけ太字
+            this._hdrCtrls.Push(
+                gui.Add("Text", "x0 y0 w10 h10 +0x4280" . (role == "Parent" ? " +0x100" : "")  ; 0x100 = SS_NOTIFY
+                    . " Background" . bg . " vBrowse" . role . "Hdr"),
+                gui.Add("Text", "x0 y0 w10 h1 Background" . NaviTheme.DIVIDER . " vBrowse" . role . "Line"),
+                gui.Add("Text", "x0 y0 w10 h1 Background" . bg . " vBrowse" . role . "Gap"))
+        }
+        ; 中央の列の枠: 見出しと一覧をまとめて囲む。後から作った部品は重なり順が下になるので最後に作り、
+        ; WS_CLIPSIBLINGS で上に載った見出しと一覧を塗りつぶさないようにする
+        this._hdrCtrls.Push(gui.Add("Text", "x0 y0 w10 h10 +0x4000000 Background" . this.FRAME . " vBrowseFrame"))
         NaviTheme.SetFont(gui, "body")
+        for c in this._hdrCtrls
+            c.Visible := false
         this._roles := Map()
         for role, lv in Map("parent", parent, "cur", cur, "preview", preview) {
             lv.SetImageList(nv._ILHandle, 1)
@@ -94,13 +113,13 @@ class NaviBrowse {
         cur.OnEvent("ItemSelect", (*) => this._SchedulePreview())
         cur.OnEvent("DoubleClick", (*) => this.Activate())
         parent.OnEvent("Click", (*) => this._ClickParent())
-        ; 左の列の見出し（‹ 親フォルダ名）はクリックで 1 つ上へ。見出しをボタンにするとマウスを乗せたとき
-        ; 青く光って選択中に見えるので、ボタンにはせず手の形のカーソルとクリックだけを自前で扱う
-        this._parentHdr := SendMessage(0x101F, 0, 0, parent)  ; LVM_GETHEADER
+        ; 左の列の見出し（‹ 親フォルダ名）はクリックで 1 つ上へ（手の形のカーソルで押せると分かるようにする）
+        hdrUp := (*) => (this.Active && this._cur != "") ? this.Up() : 0
+        gui["BrowseParentHdr"].OnEvent("Click", hdrUp)
+        gui["BrowseParentHdr"].OnEvent("DoubleClick", hdrUp)  ; 続けて押したときの 2 回目も 1 回として数える
+        this._parentHdr := gui["BrowseParentHdr"].Hwnd
         if (this._hdrHandlers == "") {
-            this._hdrHandlers := Map(0x0201, (w, l, m, hw) => this._OnHeaderClick(hw)   ; WM_LBUTTONDOWN
-                , 0x0203, (w, l, m, hw) => this._OnHeaderClick(hw)                    ; WM_LBUTTONDBLCLK
-                , 0x0020, (w, l, m, hw) => this._OnHeaderCursor(w))                    ; WM_SETCURSOR
+            this._hdrHandlers := Map(0x0020, (w, l, m, hw) => this._OnHeaderCursor(w))  ; WM_SETCURSOR
             for msg, fn in this._hdrHandlers
                 OnMessage(msg, fn)
         }
@@ -148,30 +167,59 @@ class NaviBrowse {
      */
     static Layout(x, y, w, h) {
         g := this._navi.GuiObj
-        wl := Round(w * this.COL_LEFT)
-        wc := Round(w * this.COL_MID)
-        wr := Max(40, w - wl - wc - 2 * this.GAP)
-        sbw := Round(SysGet(2) * 96 / A_ScreenDPI)  ; SM_CXVSCROLL（Move と同じ DPI 換算の単位）
-        sbh := Round(SysGet(3) * 96 / A_ScreenDPI)  ; SM_CYHSCROLL
-        g["BrowseParent"].Move(x, y, wl + sbw, h)
-        g["BrowseCur"].Move(x + wl + this.GAP, y, wc, h)
-        g["BrowsePreview"].Move(x + wl + wc + 2 * this.GAP, y, wr + sbw, h)
-        g["BrowseText"].Move(x + wl + wc + 2 * this.GAP, y, wr + sbw, h + sbh)
-        this._ClipTo(g["BrowseParent"], wl, h)
-        this._ClipTo(g["BrowsePreview"], wr, h)
-        this._ClipTo(g["BrowseText"], wr, h)
-        ; 左右の列は見える幅いっぱいにして、見出しの区切り線を切り落とす範囲に追い出す
-        g["BrowseParent"].ModifyCol(1, Max(40, wl))
-        g["BrowseCur"].ModifyCol(1, Max(40, wc - SysGet(2) - 4))
-        g["BrowsePreview"].ModifyCol(1, Max(40, wr))
+        ; 枠を 1px（入力欄の枠と同じ細さ）にするため、物理ピクセルで並べる（Move は DPI 換算で 2px になる）
+        s := A_ScreenDPI / 96
+        X := Round(x * s), Y := Round(y * s), W := Round(w * s), H := Round(h * s)
+        gap := Round(this.GAP * s)
+        wl := Round(W * this.COL_LEFT)
+        wc := Round(W * this.COL_MID)
+        wr := Max(Round(40 * s), W - wl - wc - 2 * gap)
+        sbw := SysGet(2), sbh := SysGet(3)  ; SM_CXVSCROLL / SM_CYHSCROLL（物理ピクセル）
+        hh := Round(this.HDR_H * s), lineH := Max(1, Round(s)), pad := Round(this.HDR_PAD * s)
+        top := hh + lineH + pad  ; 見出し・区切り線・余白の合計。一覧はこの下から
+        xc := X + wl + gap, xr := xc + wc + gap
+
+        ; 見出し（ラベル・区切り線・余白）を xs から ws の幅で、yTop から並べる
+        Header(role, xs, ws, yTop, hHdr) {
+            NaviBrowse._MovePx(g["Browse" . role . "Hdr"], xs, yTop, ws, hHdr)
+            NaviBrowse._MovePx(g["Browse" . role . "Line"], xs, Y + hh, ws, lineH)
+            NaviBrowse._MovePx(g["Browse" . role . "Gap"], xs, Y + hh + lineH, ws, pad)
+        }
+        Header("Parent", X, wl, Y, hh)
+        Header("Preview", xr, wr, Y, hh)
+        ; 中央の列は枠（1px）の内側に見出しと一覧を入れる
+        this._MovePx(g["BrowseFrame"], xc, Y, wc, H)
+        Header("Cur", xc + 1, wc - 2, Y + 1, hh - 1)
+        this._MovePx(g["BrowseCur"], xc + 1, Y + top, wc - 2, H - top - 1)
+        ; 左右の列は、スクロールバーの幅だけ広く作ってリージョンで切り、スクロールバーを見せない
+        this._MovePx(g["BrowseParent"], X, Y + top, wl + sbw, H - top)
+        this._MovePx(g["BrowsePreview"], xr, Y + top, wr + sbw, H - top)
+        this._MovePx(g["BrowseText"], xr, Y + top, wr + sbw, H - top + sbh)
+        this._ClipTo(g["BrowseParent"], wl, H - top)
+        this._ClipTo(g["BrowsePreview"], wr, H - top)
+        this._ClipTo(g["BrowseText"], wr, H - top)
+        SendMessage(0x101E, 0, wl, g["BrowseParent"])   ; LVM_SETCOLUMNWIDTH（物理ピクセル）
+        SendMessage(0x101E, 0, wr, g["BrowsePreview"])
+        this._FitCurCol()
     }
 
-    ; 左の列の見出しのクリック: 1 つ上へ（見出しの幅変更などの既定の動きはさせない）
-    static _OnHeaderClick(hwnd) {
-        if (hwnd != this._parentHdr || !this.Active)
-            return
-        this.Up()
-        return 0
+    ; 部品を物理ピクセルで置く（位置は親の左上から）
+    static _MovePx(ctrl, x, y, w, h) {
+        DllCall("SetWindowPos", "ptr", ctrl.Hwnd, "ptr", 0, "int", x, "int", y, "int", Max(0, w), "int", Max(0, h)
+            , "uint", 0x14)  ; SWP_NOZORDER | SWP_NOACTIVATE
+    }
+
+    /**
+     * 中央の列の幅を、一覧の見える幅（スクロールバーを除く）にぴったり合わせる
+     * 幅を決め打ちすると、右に空きが残るか横のスクロールバーが出る（スクロールバーの有無で見える幅が変わるため）
+     * ModifyCol は DPI 換算で拡大されるので、物理ピクセルのまま LVM_SETCOLUMNWIDTH で入れる
+     */
+    static _FitCurCol() {
+        lv := this._navi.GuiObj["BrowseCur"]
+        rc := Buffer(16, 0)
+        DllCall("GetClientRect", "ptr", lv.Hwnd, "ptr", rc)
+        if (NumGet(rc, 8, "int") > 0)
+            SendMessage(0x101E, 0, NumGet(rc, 8, "int"), lv)  ; LVM_SETCOLUMNWIDTH
     }
 
     ; 押せるところ（左の列の見出し・戻る・進む・上へ）では手の形のカーソルにする。ボタンには名前とキーを出す
@@ -243,10 +291,9 @@ class NaviBrowse {
         }
     }
 
-    ; 部品の見える範囲を左上から w x h（Move と同じ単位）に切る
+    ; 部品の見える範囲を左上から w x h（物理ピクセル）に切る
     static _ClipTo(ctrl, w, h) {
-        rgn := DllCall("gdi32\CreateRectRgn", "int", 0, "int", 0
-            , "int", Round(w * A_ScreenDPI / 96), "int", Round(h * A_ScreenDPI / 96), "ptr")
+        rgn := DllCall("gdi32\CreateRectRgn", "int", 0, "int", 0, "int", w, "int", h, "ptr")
         DllCall("user32\SetWindowRgn", "ptr", ctrl.Hwnd, "ptr", rgn, "int", true)  ; リージョンは Windows が持つ
     }
 
@@ -265,6 +312,8 @@ class NaviBrowse {
         g := this._navi.GuiObj
         g["BrowseParent"].Visible := this.Active
         g["BrowseCur"].Visible := this.Active
+        for c in this._hdrCtrls
+            c.Visible := this.Active
         if (!this.Active) {
             g["BrowsePreview"].Visible := false
             g["BrowseText"].Visible := false
@@ -706,6 +755,7 @@ class NaviBrowse {
         this._filling := true
         this._Fill(this._navi.GuiObj["BrowseCur"], shown, selectName, true
             , (terms.Length == 0) ? "空のフォルダ" : "一致するものがありません")
+        this._FitCurCol()  ; 行数でスクロールバーが出たり消えたりするので、入れるたびに合わせ直す
         this._filling := false
     }
 
@@ -741,9 +791,10 @@ class NaviBrowse {
         mid := (this._cur == "") ? "ドライブ" : this._NameOf(this._cur)
         item := this._SelectedItem()
         right := !item ? "" : item.isDir ? item.name . " ›" : item.name
-        g["BrowseParent"].ModifyCol(1, , left)
-        g["BrowseCur"].ModifyCol(1, , mid)
-        g["BrowsePreview"].ModifyCol(1, , right)
+        ; 先頭に空白を 1 つ置き、一覧の行の文字と左端をそろえる
+        g["BrowseParentHdr"].Text := " " . left
+        g["BrowseCurHdr"].Text := " " . mid
+        g["BrowsePreviewHdr"].Text := " " . right
     }
 
     /** 右の列: フォルダなら中身、ファイルなら内容またはサイズと更新日時 */
