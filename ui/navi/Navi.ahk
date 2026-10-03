@@ -1068,8 +1068,9 @@ class Navi {
             ; そのタブの場所を開いたときなど）、そちらを優先して開かない
             if (setFocus)
                 this.GuiObj["TreeFilter"].Focus()
+            ; タブの切り替えの途中なら開かない（切り替えの最後にそのタブの場所を開く。NaviTab._ApplyTabState）
             seq := NaviBrowse._openSeq
-            SetTimer(() => (NaviBrowse._openSeq == seq) ? NaviBrowse.Open(rootPath) : 0, -1)
+            SetTimer(() => (NaviBrowse._openSeq == seq && !NaviTab.Applying) ? NaviBrowse.Open(rootPath) : 0, -1)
         } else if (setFocus) {
             tv.Focus()
         }

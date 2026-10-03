@@ -32,6 +32,7 @@ class NaviTab {
     static _Tabs       := []  ; タブ配列（各要素: {root, filter, marks, markFilter, path, history, future}）
     static _CurrentTab := 1   ; アクティブタブ番号（1-based）
     static _TabCount   := 1   ; 現在開いているタブ数
+    static Applying    := false  ; タブの状態を当てている最中か（_ApplyTabState）
 
     ; --- タブバー GUI コントロール参照 ---
     static _TabBtnCtrls    := []  ; タブの名前の部品（背景の内側に余白を取って重ねる）
@@ -662,8 +663,17 @@ class NaviTab {
 
     /**
      * 状態オブジェクトを TreeView に適用する共通ヘルパー
+     * 当てている間は Applying を立てる。ツリーを作り直すと 3 列にルートを開く予約が入るが、途中で
+     * 処理が休んだ隙にそれが動くと、前のタブの場所がこのタブの戻る履歴に積まれる。3 列はこの最後で
+     * このタブの場所を開くので、その間の予約は Navi._RefreshTree の側で見送る
      */
     static _ApplyTabState(state, tv) {
+        this.Applying := true
+        try this._ApplyTabStateCore(state, tv)
+        finally this.Applying := false
+    }
+
+    static _ApplyTabStateCore(state, tv) {
         nv := this._navi
         if (state.root != "" && nv._FolderMap.Has(state.root) && state.root != nv.lastRoot) {
             nv.lastRoot := state.root
@@ -753,8 +763,12 @@ class NaviTab {
             nv.GuiObj["TreeFilter"].Value := ""
             NaviMark._MarkFilterActive := false
             rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
-            if (rootPath != "")
+            if (rootPath != "") {
                 nv._RefreshTree(tv, rootPath, false)
+                ; 3 列はこのタブのルートを開く（ツリーの作り直しの予約に任せると、前のタブの場所を戻る履歴に積む）
+                if NaviBrowse.Active
+                    NaviBrowse.OpenTabLocation(tab)
+            }
             NaviMark._MarkedPaths := Map()
             NaviMark._MarkedIdSet := Map()
         } else {
