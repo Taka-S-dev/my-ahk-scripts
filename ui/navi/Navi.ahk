@@ -287,7 +287,8 @@ class Navi {
         Hotkey("Enter", (*) => this._HandleEnter(), "On")
         Hotkey("^Enter", (*) => this.ToggleFilesUnderSelection(), "On")
         Hotkey("^p", (*) => this._TogglePin(), "On")
-        Hotkey("^d", (*) => NaviDetailList.Show(), "On")
+        ; 詳細リストは i（info）。コマンド一覧の i とそろえ、エクスプローラーの Ctrl+D（削除）とも重ねない
+        Hotkey("^i", (*) => NaviDetailList.Show(), "On")
         Hotkey("^f", (*) => this.GuiObj["TreeFilter"].Focus(), "On")
         Hotkey("^e", (*) => NaviDirList.Toggle(), "On")
         Hotkey("^b", (*) => NaviBrowse.Toggle(), "On")
@@ -505,14 +506,14 @@ class Navi {
             ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
             【基本操作】
-              Space         アクションメニューを表示
-              Ctrl+Space    アクションメニューを表示（入力中でも。アプリケーションキー / Shift+F10 でも）
+              Ctrl+Space    アクションメニューを表示（どの表示でも、入力中でも。アプリケーションキー / Shift+F10 でも）
+              Space         同上（入力欄の外での近道。入力欄では検索語の区切り）
               Enter         エクスプローラーで開く
               Esc           ウィンドウを閉じる
 
             【表示切替】
               Ctrl+Enter    ファイル表示トグル
-              Ctrl+D        詳細リスト表示
+              Ctrl+I        詳細リスト表示
               Ctrl+F        フォルダフィルターにフォーカス
               Ctrl+;        コマンド一覧（1 文字で実行）
               Ctrl+E        ツリー ↔ 一覧
@@ -1148,7 +1149,7 @@ class Navi {
                 return
             }
             sb.SetText((NaviMark._MarkFilterActive ? " ツリー（マークのみ）" : " ツリー") . pin, 1)
-            sb.SetText(" Ctrl+; コマンド     Space メニュー     Enter 開く     F1 ヘルプ", 2)
+            sb.SetText(" Ctrl+; コマンド     Ctrl+Space メニュー     Enter 開く     F1 ヘルプ", 2)
         }
     }
 

@@ -18,6 +18,8 @@ class NaviKeyMenu {
     static _afterRun := ""
 
     static COL_W     := 200  ; 1 列の幅
+    static COL_W_HINT := 280 ; 項目の横にショートカットを出すときの 1 列の幅
+    static HINT_W    := 96   ; ショートカットの欄の幅
     static TIMEOUT_S := 30   ; 何も押さなければ閉じるまでの秒数
     static WM_ACTIVATE := 0x0006
 
@@ -28,8 +30,10 @@ class NaviKeyMenu {
      * opts.owner    ... 持ち主の Gui（この中央に出し、閉じたら前面に戻す）
      * opts.title    ... 上に出す見出し（省略可。例: 対象のフォルダ名）
      * opts.columns  ... 列ごとに並べる見出しの配列 [["開く"], ["コピー", "その他"]]
-     * opts.items    ... [{ key, label, group, run: () => 処理, on: () => 真偽（省略可） }]
+     * opts.items    ... [{ key, label, group, run: () => 処理, on: () => 真偽（省略可）, hint: "Ctrl+X"（省略可） }]
      *                   on が真なら名前の前に ✓ を付ける。columns にない group は最後の列に入れる
+     *                   hint は同じ操作のショートカット。メニューの定石どおり項目の右に薄く出し、
+     *                   メニューで探した操作のキーを次から使えるようにする
      * opts.afterRun ... 項目を実行した後に呼ぶ処理（省略可）
      */
     static Show(opts) {
@@ -52,20 +56,26 @@ class NaviKeyMenu {
         this._gui := g
 
         columns := this._Columns(opts.columns)
+        hasHint := false
+        for item in this._items
+            if (item.HasOwnProp("hint") && item.hint != "")
+                hasHint := true
+        colW := hasHint ? this.COL_W_HINT : this.COL_W
+        labelW := colW - 38 - (hasHint ? this.HINT_W : 0)
         top := g.MarginY
         if (opts.HasOwnProp("title") && opts.title != "") {
             NaviTheme.SetFont(g, "heading")
-            g.Add("Text", "x" . g.MarginX . " y" . top . " w" . (columns.Length * this.COL_W - 10), opts.title)
+            g.Add("Text", "x" . g.MarginX . " y" . top . " w" . (columns.Length * colW - 10), opts.title)
                 .GetPos(, &ty, , &th)
             top := ty + th + NaviTheme.SP_S
         }
         bottom := top
         for ci, groups in columns {
-            x := g.MarginX + (ci - 1) * this.COL_W
+            x := g.MarginX + (ci - 1) * colW
             for gi, group in groups {
                 NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
                 pos := (gi == 1) ? "x" . x . " y" . top : "x" . x . " y+" . NaviTheme.SP_M
-                g.Add("Text", pos . " w" . (this.COL_W - 10), group)
+                g.Add("Text", pos . " w" . (colW - 10), group)
                 for item in this._items {
                     if (item.group != group)
                         continue
@@ -75,9 +85,15 @@ class NaviKeyMenu {
                     NaviTheme.SetFont(g, "key", NaviTheme.ACCENT)
                     k := g.Add("Text", "x" . x . " y+" . NaviTheme.SP_XS . " w22", item.key)
                     NaviTheme.SetFont(g, "body")
-                    l := g.Add("Text", "x+6 yp+1 w" . (this.COL_W - 38), (isOn ? "✓ " : "") . item.label)
+                    l := g.Add("Text", "x+6 yp+1 w" . labelW, (isOn ? "✓ " : "") . item.label)
                     k.OnEvent("Click", ((it, *) => this._Run(it)).Bind(item))
                     l.OnEvent("Click", ((it, *) => this._Run(it)).Bind(item))
+                    if (hasHint && item.HasOwnProp("hint") && item.hint != "") {
+                        NaviTheme.SetFont(g, "caption", NaviTheme.TEXT_SUBTLE)
+                        h := g.Add("Text", "x+0 yp w" . (this.HINT_W - 10) . " Right", item.hint)
+                        h.OnEvent("Click", ((it, *) => this._Run(it)).Bind(item))
+                        NaviTheme.SetFont(g, "body")
+                    }
                     l.GetPos(, &ly, , &lh)
                     bottom := Max(bottom, ly + lh)
                 }

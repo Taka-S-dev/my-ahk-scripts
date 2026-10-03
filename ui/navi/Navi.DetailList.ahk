@@ -120,7 +120,7 @@ class NaviDetailList {
         HotIfWinActive("ahk_id " dlGui.Hwnd)
         Hotkey("Space", (*) => this._ShowActionMenu(dlGui, lv, targetDir), "On")
         Hotkey("Enter", (*) => this._Execute(dlGui, lv, lv.GetNext(), targetDir, "e"), "On")
-        Hotkey("^d",    (*) => this.Close(), "On")
+        Hotkey("^i",    (*) => this.Close(), "On")  ; 開いたキー（Ctrl+I）でもう一度押すと閉じる
         Hotkey("Esc",   (*) => this.Close(), "On")
         HotIf()
 

@@ -898,7 +898,8 @@ class NaviBrowse {
 
     /** ステータスバー右側: 操作の案内 */
     static StatusHints() {
-        return " ←→ 移動     Enter 開く     Space メニュー     Ctrl+Shift+B ルートとして開く"
+        ; メニューの案内はどの表示でも Ctrl+Space にそろえる（Space は入力欄の外で使える近道）
+        return " ←→ 移動     Enter 開く     Ctrl+Space メニュー     Ctrl+Shift+B ルートとして開く"
     }
 
     /**
