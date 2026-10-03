@@ -71,8 +71,6 @@ class NaviTreeDraw {
             return NaviTheme.BGR(NaviTheme.MARK)
         if (NaviFilter._FilterMatchIdSet.Has(item))
             return NaviTheme.BGR(NaviTheme.MATCH)
-        if (NaviSearch._HighlightedIdSet.Has(item))
-            return NaviTheme.BGR(NaviTheme.FOUND)
         return ""
     }
 

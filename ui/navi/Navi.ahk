@@ -18,7 +18,7 @@
 #Requires AutoHotkey v2.0
 #Include *i Navi.Theme.ahk
 #Include *i Navi.TreeDraw.ahk
-#Include *i Navi.Search.ahk
+#Include *i Navi.Fd.ahk
 #Include *i Navi.ContextMenu.ahk
 #Include *i Navi.Action.ahk
 #Include *i Navi.Filter.ahk
@@ -39,6 +39,7 @@
 class Navi {
     ; --- クラス定数 ---
     static GUI_WIDTH := 800  ; 3 列表示でも各列に名前が収まる幅
+    static FILTER_GAP := 6   ; 入力欄の左のボタンと入力欄の間
     static STATUS_LEFT_W := 210      ; ステータスバー左側（表示と件数）の幅
     static GUI_HEIGHT_APPROX := 565
     static _savedW := 0
@@ -83,8 +84,7 @@ class Navi {
     static _ILNextIdx := 5           ; 次に追加するアイコンのインデックス（1-4 は固定枠）
     static _tvY := 0                  ; TreeView の Y 座標（リサイズ計算用）
     static _tvHwnd := 0        ; TreeView の Hwnd
-    static _SearchMode := false  ; フィルター欄の動作モード（false=フォルダフィルター / true=ファイル検索）
-    static _SearchTypeFilter := "all"  ; 検索対象種別（"all" / "dir" / "file"）
+    static _FilterKind := ""  ; ツリーの絞り込みの対象（"dir"=フォルダ / "file"=ファイル / "all"=両方）。Navi.ini に保存
 
     ; --- Windows API メッセージ定数 ---
     static WM_SETCURSOR := 0x0020   ; カーソル形状変更通知
@@ -201,29 +201,13 @@ class Navi {
         OnMessage(this.WM_SETCURSOR, NaviTab._OnSetCursor.Bind(NaviTab))
         NaviTheme.SetFont(this.GuiObj, "body")
 
-        ; --- ツリーフィルター入力欄（モードトグルボタン付き）---
+        ; --- ツリーフィルター入力欄（左のボタンで絞り込む対象を フォルダ → ファイル → 両方 と切り替える）---
+        if (this._FilterKind == "")
+            this._FilterKind := IniRead(this.IniPath, "Settings", "FilterKind", "dir")
         filterToggle := this.GuiObj.Add("Button", "xm y+" . sp . " w28 h22 -Tabstop vFilterToggle")
-        NaviTheme.SetIcon(filterToggle, NaviTheme.ICON_FOLDER)
-        filterToggle.OnEvent("Click", (*) => this._ToggleSearchMode())
+        filterToggle.OnEvent("Click", (*) => this._CycleFilterKind())
         this.GuiObj._filterToggleHwnd := filterToggle.Hwnd
-        searchTypeBtn := this.GuiObj.Add("Button", "x+3 yp w28 h22 -Tabstop vSearchTypeBtn")
-        NaviTheme.SetIcon(searchTypeBtn, NaviTheme.ICON_ALL)
-        searchTypeBtn.OnEvent("Click", (*) => this._CycleSearchType())
-        searchTypeBtn.Visible := false
-        this.GuiObj._searchTypeBtnHwnd := searchTypeBtn.Hwnd
-        ; 初期はフィルターモード: x=39, w=424(右端=TreeViewと同じ463)
-        treeFilter := this.GuiObj.Add("Edit", "x39 yp w424 vTreeFilter -Tabstop", "")
-        ; セッション中に検索モードだった場合は復元
-        if (this._SearchMode) {
-            filterToggle.Text := NaviTheme.ICON_SEARCH
-            searchTypeBtn.Visible := true
-            searchTypeBtn.Text := (this._SearchTypeFilter = "dir") ? NaviTheme.ICON_FOLDER
-                : (this._SearchTypeFilter = "file") ? NaviTheme.ICON_FILE : NaviTheme.ICON_ALL
-            treeFilter.Move(70, , 393)  ; 幅は後の _OnResize で正確に調整される
-        }
-        cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
-        try DllCall("user32\SendMessageW", "ptr", treeFilter.Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1,
-            "wstr", cue, "ptr")
+        treeFilter := this.GuiObj.Add("Edit", "x39 yp w424 vTreeFilter -Tabstop", "")  ; 位置と幅は _LayoutFilterRow で決める
         treeFilter.OnEvent("Change", (*) => NaviFilter.OnTreeFilterChange())
         treeFilter.OnEvent("Focus", (*) => (Navi._TreeFilterFocused := true))
         treeFilter.OnEvent("LoseFocus", (*) => (Navi._TreeFilterFocused := false))
@@ -461,8 +445,6 @@ class Navi {
                 this._savedW := _w_
                 this._savedH := _h_
             }
-            ; 検索ウィンドウなど付随UIも確実に閉じる
-            try NaviSearch._DestroyJumpGui()
             NaviPicker.Close(false)
             this.GuiObj.Destroy()
             this.GuiObj := ""
@@ -638,13 +620,13 @@ class Navi {
         settGui.Add("Text", "xm+20 y+8", "fd.exe の場所（空欄なら自動で探す）:")
         ; 長いパスを最初から入れると、複数行の欄にされて下の行に重なる。1 行で作ってから入れる
         fdEdit := settGui.Add("Edit", "xm+20 y+4 w316 r1 -Wrap", "")
-        fdEdit.Value := NaviSearch.ConfiguredFd()
+        fdEdit.Value := NaviFd.ConfiguredFd()
         fdBrowse := settGui.Add("Button", "x+4 yp-1 w40", "...")
         NaviTheme.SetFont(settGui, "caption")
         ; 2 行分の高さを取る（空白のない長いパスで幅が広げられないよう h も指定する）。パスは途中を … で省く
         fdStatus := settGui.Add("Text", "xm+20 y+6 w380 h32", "")
         NaviTheme.SetFont(settGui, "body")
-        auto := NaviSearch._AutoFd()  ; 打つたびに探し直さないよう、自動で見つかる fd は先に 1 回だけ探す
+        auto := NaviFd._AutoFd()  ; 打つたびに探し直さないよう、自動で見つかる fd は先に 1 回だけ探す
         ShowFdStatus(*) {
             typed := Trim(fdEdit.Value, " `t`"")
             isPath := true  ; パスを見せる行は 1 行で、長ければ途中を … で省く（0x8000 = SS_PATHELLIPSIS）
@@ -669,10 +651,10 @@ class Navi {
             picked := FileSelect(1, fdEdit.Value != "" ? fdEdit.Value : "fd.exe", "fd.exe を選ぶ", "fd (fd.exe)"),
             picked != "" ? (fdEdit.Value := picked, ShowFdStatus()) : 0))
         ShowFdStatus()
-        settGui.Add("Text", "xm y+10", "ツリーの絞り込みで探す深さ（0 = 無制限）:")
+        settGui.Add("Text", "xm y+10", "ツリーでフォルダを絞り込むときの深さ（0 = 無制限）:")
         depthEdit := settGui.Add("Edit", "x+8 yp-2 w50 Number", IniRead(this.IniPath, "Search", "FilterMaxDepth", "8"))
         NaviTheme.SetFont(settGui, "caption", NaviTheme.TEXT_MUTED)
-        settGui.Add("Text", "xm y+6", "一覧（Ctrl+E）は深さに関係なく、全部から探します")
+        settGui.Add("Text", "xm y+6", "ファイルの絞り込みと一覧（Ctrl+E）は、深さに関係なく全部から探します")
         NaviTheme.SetFont(settGui, "body")
 
         ; --- OK ボタン ---
@@ -684,7 +666,7 @@ class Navi {
             IniWrite(autoMinCb.Value, this.IniPath, "Settings", "AutoMinimizeOnAction"),
             IniWrite(fdFilterCb.Value, this.IniPath, "Search", "UseFdForFilter"),
             IniWrite(Trim(fdEdit.Value, " `t`""), this.IniPath, "Search", "FdPath"),
-            NaviSearch.ResetFd(),  ; 次に使うときに、指定した場所から探し直す
+            NaviFd.ResetFd(),  ; 次に使うときに、指定した場所から探し直す
             IniWrite(depthEdit.Value, this.IniPath, "Search", "FilterMaxDepth"),
             settGui.Destroy(),
             parentGui.Opt("-Disabled +AlwaysOnTop"),
@@ -1126,8 +1108,80 @@ class Navi {
     }
 
 
+    /**
+     * 入力欄の行を並べる: [絞り込む対象の切り替え] 入力欄
+     * 切り替えのボタンはツリーのときだけ出す（一覧はフォルダ・ファイルを Shift+Tab で、3 列は中央の列を絞る）
+     * ボタンと入力欄の間は FILTER_GAP あけ、つながった 1 つの部品に見えないようにする
+     * 入力欄の案内文も、今の表示で何を絞り込むかに合わせる
+     */
+    static _LayoutFilterRow(clientW := 0) {
+        g := this.GuiObj
+        tree := !(NaviDirList.Active || NaviBrowse.Active)
+        toggle := g["FilterToggle"]
+        toggle.Visible := tree
+        info := this._FilterKindInfo(this._FilterKind)
+        if (toggle.Text != info.icon)
+            NaviTheme.SetIcon(toggle, info.icon)
+        x := g.MarginX
+        if tree {
+            toggle.Move(x)
+            toggle.GetPos(, , &bw)
+            x += bw + this.FILTER_GAP
+        }
+        if (!clientW)
+            g.GetClientPos(, , &clientW)
+        g["TreeFilter"].Move(x, , Max(40, clientW - g.MarginX - x))
+        cue := tree ? info.cue
+            : NaviBrowse.Active ? "名前でフィルター..."
+            : (NaviDirList.Kind == "files") ? "ファイルをフィルター..." : "フォルダをフィルター..."
+        try DllCall("user32\SendMessageW", "ptr", g["TreeFilter"].Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr", cue, "ptr")
+    }
+
+    ; 絞り込む対象ごとのボタンのアイコンと入力欄の案内文、次に切り替える対象
+    static _FilterKindInfo(kind) {
+        if (kind == "file")
+            return { icon: NaviTheme.ICON_FILE, cue: "ファイルをフィルター...", next: "all" }
+        if (kind == "all")
+            return { icon: NaviTheme.ICON_ALL, cue: "フォルダとファイルをフィルター...", next: "dir" }
+        return { icon: NaviTheme.ICON_FOLDER, cue: "フォルダをフィルター...", next: "file" }
+    }
+
+    ; 左のボタン: 絞り込む対象を フォルダ → ファイル → 両方 と切り替える
+    static _CycleFilterKind() {
+        this.SetFilterKind(this._FilterKindInfo(this._FilterKind).next)
+        this.GuiObj["TreeFilter"].Focus()
+    }
+
+    /** 絞り込む対象を kind にし、入力中の文字があればその対象で絞り込み直す */
+    static SetFilterKind(kind) {
+        this._FilterKind := kind
+        IniWrite(kind, this.IniPath, "Settings", "FilterKind")
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        this._LayoutFilterRow()
+        query := this.GuiObj["TreeFilter"].Value
+        if (Trim(query) != "" && !(NaviDirList.Active || NaviBrowse.Active))
+            NaviFilter.ApplyTreeFilter(query)
+    }
+
+    /**
+     * 入力欄で kind（"file" など）を絞り込む（アクションメニューの F）
+     * 一覧・3 列のときはツリーに戻す（ファイルを含めた絞り込みはツリーの機能なので、明示した操作でだけ切り替える）
+     */
+    static FocusFilter(kind) {
+        if !(this.GuiObj && WinExist(this.GuiObj))
+            return
+        if (NaviDirList.Active)
+            NaviDirList._SetActive(false)
+        if (NaviBrowse.Active)
+            NaviBrowse.Exit(false)
+        this.SetFilterKind(kind)
+        this.GuiObj["TreeFilter"].Focus()
+    }
+
     static _UpdateStatusBar() {
         try NaviViewSwitch.Update()  ; 表示を切り替えるたびにここを通るので、表示切り替えのボタンも合わせる
+        try this._LayoutFilterRow()  ; 同じく、入力欄の左のボタン（ツリーのときだけ）と案内文を合わせる
         try {
             sb := this.GuiObj._sbRef
             ; ピン留めのチェックボックスは表示しないので、状態はここに出す
@@ -1291,7 +1345,7 @@ class Navi {
         isProfile := (SubStr(StrLower(path), -3) == ".txt") && FileExist(path)
         if (path == "" || !(DirExist(path) || isProfile)) {
             msg := g["RootMsg"]
-            msg.Opt("c" . NaviTheme.FOUND)
+            msg.Opt("c" . NaviTheme.WARN)
             msg.Value := (path == "") ? "パスを入力してください" : "フォルダが見つかりません: " . path
             return
         }
@@ -1509,11 +1563,7 @@ class Navi {
             return
         }
         if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
-            this._ToggleSearchMode()
-            return
-        }
-        if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
-            this._CycleSearchType()
+            this._CycleFilterKind()
             return
         }
         if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd) {
@@ -1532,10 +1582,8 @@ class Navi {
                     return
                 }
             }
-            ; 検索モードなら検索実行、リスト表示なら選択行を開く、フィルターモードならツリーへフォーカス移動
-            if (this._SearchMode) {
-                this._RunSearchFromFilter()
-            } else if (NaviBrowse.Active) {
+            ; 3 列・ツリーなら一覧へフォーカスを移し、リスト表示なら選択行を開く
+            if (NaviBrowse.Active) {
                 NaviBrowse.FocusList()  ; ツリーと同じく入力欄 → 一覧へ
             } else if (NaviDirList.Active) {
                 this._HandleActivate()
@@ -1546,75 +1594,6 @@ class Navi {
         }
         ; それ以外はアクティベート（ファイルなら直接開く、フォルダならExplorer）
         this._HandleActivate()
-    }
-
-    /**
-     * フィルター欄のモードをフォルダフィルター ↔ ファイル検索で切り替える
-     */
-    static _ToggleSearchMode() {
-        this._SearchMode := !this._SearchMode
-        if !(this.GuiObj && WinExist(this.GuiObj))
-            return
-        ; ファイル検索の結果はツリー上に出すので、リスト表示中ならツリーに戻す
-        if (this._SearchMode && NaviDirList.Active)
-            NaviDirList._SetActive(false)
-        if (this._SearchMode && NaviBrowse.Active)
-            NaviBrowse.Exit(false)
-        this.GuiObj["FilterToggle"].Text := this._SearchMode ? NaviTheme.ICON_SEARCH : NaviTheme.ICON_FOLDER
-        ; 検索タイプボタンの表示切替・リセット
-        this.GuiObj["SearchTypeBtn"].Visible := this._SearchMode
-        if (!this._SearchMode) {
-            this._SearchTypeFilter := "all"
-            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_ALL
-        }
-        ; TreeFilter の右端を TreeView の右端に揃える（幅 = margin + tvW - tfX）
-        _margin_ := this.GuiObj.MarginX
-        this.GuiObj["FolderTree"].GetPos(, , &_tvW_)
-        if (this._SearchMode)
-            this.GuiObj["TreeFilter"].Move(70, , _margin_ + _tvW_ - 70)
-        else
-            this.GuiObj["TreeFilter"].Move(39, , _margin_ + _tvW_ - 39)
-        cue := this._SearchMode ? "ファイルを検索... (Enter で実行)" : "フォルダをフィルター..."
-        try DllCall("user32\SendMessageW", "ptr", this.GuiObj["TreeFilter"].Hwnd,
-            "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr", cue, "ptr")
-        this.GuiObj["TreeFilter"].Value := ""
-        NaviFilter.ApplyTreeFilter("")  ; どちらのモードに切り替えても必ずツリーフィルターをリセット
-        if (!this._SearchMode)    ; フォルダフィルターに戻したら検索結果も閉じる
-            try NaviSearch.ClearHighlights(this)
-        this.GuiObj["TreeFilter"].Focus()
-    }
-
-    /**
-     * 検索モード時: フィルター欄のテキストを使ってファイル検索を実行する
-     */
-    static _RunSearchFromFilter() {
-        query := this.GuiObj["TreeFilter"].Value
-        if (query == "")
-            return
-        tv := this.GuiObj["FolderTree"]
-        selId := tv.GetSelection()
-        basePath := selId ? this._GetTVFullPath(tv, selId) : ""
-        if (basePath == "" || !DirExist(basePath))
-            basePath := this._FolderMap.Has(this.lastRoot) ? this._FolderMap[this.lastRoot] : ""
-        if (basePath == "")
-            return
-        NaviSearch.RunLocalDirect(this, basePath, query, this._SearchTypeFilter)
-    }
-
-    /**
-     * 検索対象種別を循環切替: *方 → フォルダのみ → ファイルのみ → *方...
-     */
-    static _CycleSearchType() {
-        if (this._SearchTypeFilter = "all") {
-            this._SearchTypeFilter := "dir"
-            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_FOLDER
-        } else if (this._SearchTypeFilter = "dir") {
-            this._SearchTypeFilter := "file"
-            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_FILE
-        } else {
-            this._SearchTypeFilter := "all"
-            this.GuiObj["SearchTypeBtn"].Text := NaviTheme.ICON_ALL
-        }
     }
 
     /**
@@ -1689,11 +1668,7 @@ class Navi {
         currFocus := 0
         try currFocus := DllCall("user32\GetFocus", "ptr")
         if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
-            this._ToggleSearchMode()
-            return
-        }
-        if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
-            this._CycleSearchType()
+            this._CycleFilterKind()
             return
         }
         ; ツリーフィルター欄にフォーカスがある場合はスペースを手動で送る
@@ -1716,18 +1691,12 @@ class Navi {
         }
         if (this.GuiObj.HasOwnProp("_rootBtnHwnd") && currFocus = this.GuiObj._rootBtnHwnd) {
             this.GuiObj["ProfileBtn"].Focus()
-        } else if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd) {
-            this.GuiObj["FilterToggle"].Focus()
         } else if (this.GuiObj.HasOwnProp("_treeFilterHwnd") && currFocus = this.GuiObj._treeFilterHwnd) {
             ; カーソルが先頭ならトグルボタンへ、そうでなければ通常の←（カーソル移動）
             sel := SendMessage(0x00B0, 0, 0, this.GuiObj["TreeFilter"])  ; EM_GETSEL
-            if ((sel & 0xFFFF) = 0) {
-                ; 検索モード中はSearchTypeBtnが表示されているのでそちらへ
-                if (this._SearchMode && this.GuiObj.HasOwnProp("_searchTypeBtnHwnd"))
-                    this.GuiObj["SearchTypeBtn"].Focus()
-                else
-                    this.GuiObj["FilterToggle"].Focus()
-            } else
+            if ((sel & 0xFFFF) = 0 && this.GuiObj["FilterToggle"].Visible)  ; 一覧・3 列ではボタンを出していない
+                this.GuiObj["FilterToggle"].Focus()
+            else
                 Send "{Left}"
         } else if (NaviDirList.Active && currFocus = this.GuiObj["DirList"].Hwnd) {
             this.GuiObj["TreeFilter"].Focus()
@@ -1749,13 +1718,7 @@ class Navi {
         }
         if (this.GuiObj.HasOwnProp("_profileBtnHwnd") && currFocus = this.GuiObj._profileBtnHwnd)
             this.GuiObj["RootBtn"].Focus()
-        else if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd) {
-            ; 検索モード中はSearchTypeBtnが表示されているのでそちらへ
-            if (this._SearchMode && this.GuiObj.HasOwnProp("_searchTypeBtnHwnd"))
-                this.GuiObj["SearchTypeBtn"].Focus()
-            else
-                this.GuiObj["TreeFilter"].Focus()
-        } else if (this.GuiObj.HasOwnProp("_searchTypeBtnHwnd") && currFocus = this.GuiObj._searchTypeBtnHwnd)
+        else if (this.GuiObj.HasOwnProp("_filterToggleHwnd") && currFocus = this.GuiObj._filterToggleHwnd)
             this.GuiObj["TreeFilter"].Focus()
         else if (NaviDirList.Active && currFocus = this.GuiObj["DirList"].Hwnd)
             NaviDirList.RevealInTree()
@@ -2029,9 +1992,7 @@ class Navi {
         ; 窓の幅が変わるとタブが入りきるかが変わるので、タブ幅を計算し直す
         if (NaviTab._TabBtnCtrls.Length)
             NaviTab.UpdateTabBar()
-        ; TreeFilter は左端が FilterToggle(+SearchTypeBtn) 分ずれているので x 座標を考慮した幅にする
-        this.GuiObj["TreeFilter"].GetPos(&_tfX_)
-        this.GuiObj["TreeFilter"].Move(, , w - margin - _tfX_)
+        this._LayoutFilterRow(w)
 
         ; TreeView は StatusBar の上まで高さを埋める（ステータスバーとの間は SP_S あける）
         sbH := 28  ; フォールバック値

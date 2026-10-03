@@ -590,7 +590,7 @@ class NaviTab {
             nv.GuiObj._btnSettingsCtrl,
             nv.GuiObj["PinCheck"], nv.GuiObj["AutoFilesCheck"],
             nv.GuiObj["Breadcrumb"], nv.GuiObj["FilterToggle"],
-            nv.GuiObj["SearchTypeBtn"], nv.GuiObj["TreeFilter"],
+            nv.GuiObj["TreeFilter"],
             nv.GuiObj["FolderTree"], nv.GuiObj["DirList"],
             nv.GuiObj["QuickPath"]
         ]

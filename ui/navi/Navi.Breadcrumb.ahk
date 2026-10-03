@@ -92,7 +92,8 @@ class NaviBreadcrumb {
         try {
             if !(nv.GuiObj && nv.GuiObj.Hwnd)
                 return
-            nv.GuiObj["Breadcrumb"].Value := (id = 0) ? "" : nv._GetTVFullPath(tv, id)
+            ; 「(一致なし)」などの案内の行はフォルダではないので、パスを出さない
+            nv.GuiObj["Breadcrumb"].Value := (id = 0 || id = NaviFilter.MessageNodeId) ? "" : nv._GetTVFullPath(tv, id)
         }
     }
 

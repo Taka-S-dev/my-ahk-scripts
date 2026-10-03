@@ -26,7 +26,7 @@ class NaviTheme {
     static ACCENT_SOFT := "CCE4F7"  ; 選択行の背景（フォーカスが入力欄にある間）
     static MATCH       := "0067C0"  ; フィルターに一致したフォルダの文字
     static MARK        := "0F7B0F"  ; マークしたフォルダの文字
-    static FOUND       := "BC4B09"  ; 検索で見つかった項目の文字
+    static WARN        := "BC4B09"  ; 入力の誤りを知らせる文字
 
     ; --- 文字 ---
     ; 英数字と日本語の大きさ・字間がそろい、小さくてもくっきりする Meiryo UI
@@ -44,7 +44,6 @@ class NaviTheme {
     static ICON_SIZE     := 10
     static ICON_SETTINGS := Chr(0xE713)  ; 歯車
     static ICON_FOLDER   := Chr(0xE8B7)  ; フォルダー
-    static ICON_SEARCH   := Chr(0xE721)  ; 虫めがね
     static ICON_FILE     := Chr(0xE8A5)  ; 文書
     static ICON_ALL      := Chr(0xE71D)  ; すべて
     static _iconFont     := ""

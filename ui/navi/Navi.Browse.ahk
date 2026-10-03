@@ -342,8 +342,6 @@ class NaviBrowse {
         nv := this._navi
         if !(nv.GuiObj && WinExist(nv.GuiObj))
             return
-        if (nv._SearchMode)
-            nv._ToggleSearchMode()
         sel := nv._GetSelectedPath()
         if (NaviDirList.Active)
             NaviDirList._SetActive(false)

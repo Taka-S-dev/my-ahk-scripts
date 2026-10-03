@@ -115,8 +115,6 @@ class NaviDirList {
         nv := this._navi
         if !(nv.GuiObj && WinExist(nv.GuiObj))
             return
-        if (nv._SearchMode)
-            nv._ToggleSearchMode()
         if (this.Kind != kind) {
             this.Kind := kind
             IniWrite(kind, nv.IniPath, "Settings", "DirListKind")
@@ -169,8 +167,6 @@ class NaviDirList {
         if !(nv.GuiObj && WinExist(nv.GuiObj))
             return
         ; ファイル検索モード中はフォルダフィルターに戻してから切り替える
-        if (nv._SearchMode)
-            nv._ToggleSearchMode()
         if (this.Active)
             this.RevealInTree()
         else
@@ -810,8 +806,8 @@ class NaviDirList {
         this.CancelFileIndex()
         ; ネットワークパスは fd を使わない（フォルダインデックスと同じくサーバー負荷対策）
         useFd := !NaviFilter.IsOnNetwork(rootPath)
-            && (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
-        fdPath := useFd ? NaviSearch._FindFd() : ""
+            && (IniRead(NaviFd.IniPath, "Search", "UseFdForFilter", "1") != "0")
+        fdPath := useFd ? NaviFd._FindFd() : ""
         if (fdPath != "" && this._StartFileIndexFd(rootPath, fdPath))
             return false
         this._BuildFileIndex(rootPath)
@@ -827,7 +823,7 @@ class NaviDirList {
         ; 集めすぎは件数（FILE_INDEX_MAX）と時間（FILE_INDEX_TIMEOUT_MS）の打ち切りで防ぎ、打ち切ったらステータスバーに出す
         cmd := '"' . fdPath . '" --type f --max-results ' . this.FILE_INDEX_MAX
             . ' --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
-        pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
+        pid := NaviFd._RunNoWindowToFile(cmd, tmpFile)
         if (pid = 0)
             return false
         this._FilePid := pid
@@ -866,7 +862,8 @@ class NaviDirList {
         this._FileIndex := index
         this._FileIndexedRoot := this._FileRoot
         this._FileRoot := ""
-        SetTimer(() => this.ApplyCurrent(), -1)
+        ; 索引は一覧とツリーの絞り込み（ファイル）で共用。待っている方をやり直す
+        SetTimer(() => (this.ApplyCurrent(), NaviFilter.ReapplyTree()), -1)
     }
 
     ; フォールバック（fd がない・ネットワーク上）: 上限まで同期に集める。範囲は fd と同じ（NaviFilter.WalkTree）

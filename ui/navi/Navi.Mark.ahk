@@ -128,7 +128,6 @@ class NaviMark {
         nv.FilesShown := Map()
         NaviFilter._FilterMatchIdSet := Map()
         this._MarkedIdSet := Map()
-        NaviSearch._HighlightedIdSet := Map()
 
         rootBase := RTrim(rootPath, "\")
         rootID := tv.Add(rootPath, 0, "Expand Icon1")
