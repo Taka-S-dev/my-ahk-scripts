@@ -17,8 +17,11 @@ class NaviDirList {
     static Active := false          ; true=リストビュー表示中 / false=ツリー表示中
     static Kind := "dirs"           ; "dirs"=フォルダ一覧 / "files"=ファイル一覧
     static _rows := []              ; 表示中の行番号 → 絶対パス
-    static _locs := []              ; 表示中の行番号 → 場所 { head: ルート名(+\), rest: その下のパス }
+    static _dirs := []              ; 表示中の行番号 → 親のパス（ルートから下。ルート直下は ""）
+    static _names := []             ; 表示中の行番号 → 名前（セルは空にして _DrawRow が描く）
+    static _hl := []                ; 表示中の行番号 → 一致した文字の位置 { name: Map(位置), dir: Map(位置) }
     static _matchCount := 0         ; 直近の一致件数（表示上限を超えた分も含む）
+    static _total := 0              ; 絞り込む前の件数（ステータスバーに「一致 / 全体」で出す）
     static _pending := ""           ; 再入中に届いた最新クエリ
     static _pendingSet := false
     static _running := false
@@ -49,7 +52,6 @@ class NaviDirList {
 
     static DISPLAY_CAP := 500       ; 表示する最大行数
     static DEBOUNCE_MS := 80        ; 入力から絞り込みまでの待ち時間
-    static NAME_COL_RATIO := 0.4    ; 名前列の幅（全体に対する比率）
     static PAGE_ROWS := 10          ; PgUp / PgDn で移動する行数
 
     static Init(naviRef) {
@@ -69,7 +71,7 @@ class NaviDirList {
         ; 0x8=LVS_SHOWSELALWAYS（フィルター欄にフォーカスがあっても選択行を表示）
         ; 0x40=LVS_SHARESIMAGELISTS（TreeView と共有する ImageList を破棄させない）
         lv := gui.Add("ListView", Format("x{} y{} w{} h{} vDirList -Multi NoSortHdr +0x8 +0x40 +LV0x10000", x, y, w, h),
-            ["名前", "場所"])
+            ["パス"])
         lv.Visible := false
         lv.SetImageList(nv._ILHandle, 1)
         nv._ApplyExplorerTheme(lv)
@@ -223,8 +225,8 @@ class NaviDirList {
     }
 
     /**
-     * WM_NOTIFY → NM_CUSTOMDRAW（列ごとに描画を受け取る）
-     * - 「場所」の列は補足情報なので TEXT_MUTED で名前より一段控えめにする
+     * WM_NOTIFY → NM_CUSTOMDRAW
+     * - 行はルートから下のパスを 1 行で描く（_DrawRow）
      * - 入力欄にフォーカスがある間も選択行を薄い青で見せる
      *   （テーマのままだとフォーカスのないリストの選択行はほぼ見えない灰色になる）
      * 他の WM_NOTIFY ハンドラーと共存するため、このリスト以外の通知には "" を返す
@@ -244,57 +246,129 @@ class NaviDirList {
             subItem := NumGet(l, x64 ? 88 : 56, "int")  ; NMLVCUSTOMDRAW.iSubItem
             NumPut("uint", NaviTheme.BGR(NaviTheme.TEXT), l, x64 ? 80 : 48)  ; clrText
             NaviTheme.PaintSoftSelection(l, this._lvHwnd)
-            ; 「場所」のセルは文字を空にしてあり、背景・選択色だけ既定で描かせて文字は後で描く
-            return (subItem = 1) ? 0x12 : 0x2  ; CDRF_NOTIFYPOSTPAINT | CDRF_NEWFONT / CDRF_NEWFONT
+            ; セルは文字を空にしてあり、背景・選択色・アイコンだけ既定で描かせて文字は後で描く
+            ; （一致した文字だけ色を変えるため。メッセージの行は文字が入っているのでそのまま）
+            return 0x12  ; CDRF_NOTIFYPOSTPAINT | CDRF_NEWFONT
         }
         if (stage = 0x30002) {    ; CDDS_SUBITEM | CDDS_ITEMPOSTPAINT
-            if (NumGet(l, x64 ? 88 : 56, "int") = 1)
-                this._DrawLocation(l)
+            this._DrawRow(l)
             return 0
         }
         return 0
     }
 
     /**
-     * 「場所」のセルを 2 段の色で描く: ルート名の部分は TEXT_SUBTLE、その下のパスは TEXT_MUTED
-     * どの行も同じルート名で始まるので、そこを一段薄くして行ごとに違う部分を読みやすくする
+     * 行を描く。位置は既定の描き方と同じ（ラベルの枠の左端から SM_CXEDGE）
      */
-    static _DrawLocation(l) {
+    static _DrawRow(l) {
         x64 := (A_PtrSize = 8)
         row := NumGet(l, x64 ? 56 : 36, "uptr") + 1
-        if (row < 1 || row > this._locs.Length)
+        if (row < 1 || row > this._names.Length)
             return
-        loc := this._locs[row]
-        hdc := NumGet(l, x64 ? 32 : 16, "ptr")
         rect := Buffer(16, 0)
-        NumPut("int", 2, rect, 0)  ; left = LVIR_LABEL
-        NumPut("int", 1, rect, 4)  ; top = iSubItem
-        if !SendMessage(0x1038, row - 1, rect.Ptr, this._lvHwnd)  ; LVM_GETSUBITEMRECT
+        NumPut("int", 2, rect, 0)  ; LVIR_LABEL
+        if !SendMessage(0x100E, row - 1, rect.Ptr, this._lvHwnd)  ; LVM_GETITEMRECT
             return
-        pad := Round(6 * A_ScreenDPI / 96)  ; 既定の文字の左余白に合わせる
-        left := NumGet(rect, 0, "int") + pad
-        right := NumGet(rect, 8, "int") - pad
-        if (right <= left)
-            return
+        hdc := NumGet(l, x64 ? 32 : 16, "ptr")
+        left := NumGet(rect, 0, "int") + SysGet(45)  ; SM_CXEDGE
+        right := NumGet(rect, 8, "int") - SysGet(45)
         oldFont := DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", SendMessage(0x0031, 0, 0, this._lvHwnd), "ptr")  ; WM_GETFONT
         DllCall("gdi32\SetBkMode", "ptr", hdc, "int", 1)  ; TRANSPARENT
-        flags := 0x20 | 0x4 | 0x800 | 0x8000  ; DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS
-        ; ルート名（とそれに続く \）
-        size := Buffer(8, 0)
-        DllCall("gdi32\GetTextExtentPoint32W", "ptr", hdc, "wstr", loc.head, "int", StrLen(loc.head), "ptr", size)
-        NumPut("int", left, rect, 0), NumPut("int", right, rect, 8)
-        DllCall("gdi32\SetTextColor", "ptr", hdc, "uint", NaviTheme.BGR(NaviTheme.TEXT_SUBTLE))
-        DllCall("user32\DrawTextW", "ptr", hdc, "wstr", loc.head, "int", -1, "ptr", rect, "uint", flags)
-        ; その下のパス
-        restLeft := left + NumGet(size, 0, "int")
-        if (loc.rest != "" && restLeft < right) {
-            NumPut("int", restLeft, rect, 0)
-            DllCall("gdi32\SetTextColor", "ptr", hdc, "uint", NaviTheme.BGR(NaviTheme.TEXT_MUTED))
-            DllCall("user32\DrawTextW", "ptr", hdc, "wstr", loc.rest, "int", -1, "ptr", rect, "uint", flags)
-        }
+        top := NumGet(rect, 4, "int"), bottom := NumGet(rect, 12, "int")
+        this._DrawPath(hdc, left, right, top, bottom, this._dirs[row], this._names[row], this._hl[row])
         DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", oldFont)
     }
 
+    /**
+     * ルートから下のパスを 1 行で描く（fzf と同じく、親子が 1 本でつながって読める）
+     * 親のパス（と区切りの \）は TEXT_MUTED、名前は TEXT。絞り込みの語に一致した文字は ACCENT にして、
+     * なぜ一覧に出たのかを見せる。見えている文字がそのまま絞り込みの対象と同じになる
+     * 入りきらないときは名前を残し、親のパスの頭を … にする（右端で切ると名前が見えなくなるため）
+     */
+    static _DrawPath(hdc, left, right, top, bottom, dir, name, hl) {
+        Ext(s) {
+            size := Buffer(8, 0)
+            DllCall("gdi32\GetTextExtentPoint32W", "ptr", hdc, "wstr", s, "int", StrLen(s), "ptr", size)
+            return NumGet(size, 0, "int")
+        }
+        if (dir == "") {
+            this._DrawRuns(hdc, left, right, top, bottom, name, NaviTheme.TEXT, hl.name)
+            return
+        }
+        avail := right - left
+        tail := "\" . name
+        shown := dir, skip := 0, prefix := ""
+        if (Ext(dir . tail) > avail) {
+            ; 親のパスの頭から削り、… を付けて収まるところを探す（収まらなければ名前だけ）
+            prefix := "…"
+            while (skip < StrLen(dir) && Ext(prefix . SubStr(dir, skip + 1) . tail) > avail)
+                skip++
+            shown := SubStr(dir, skip + 1)
+        }
+        if (shown == "") {
+            this._DrawRuns(hdc, left, right, top, bottom, name, NaviTheme.TEXT, hl.name)
+            return
+        }
+        dirHl := Map()
+        for pos in hl.dir
+            if (pos > skip)
+                dirHl[pos - skip] := true
+        x := left
+        if (prefix != "")
+            x := this._DrawRuns(hdc, x, right, top, bottom, prefix, NaviTheme.TEXT_MUTED, Map())
+        x := this._DrawRuns(hdc, x, right, top, bottom, shown . "\", NaviTheme.TEXT_MUTED, dirHl)
+        this._DrawRuns(hdc, x, right, top, bottom, name, NaviTheme.TEXT, hl.name)
+    }
+
+    /**
+     * text を left から右へ描く。hl にある位置（1 始まり）の文字は ACCENT、それ以外は color
+     * 入りきらないときは末尾を … にする。描き終えた右端の x を返す
+     */
+    static _DrawRuns(hdc, left, right, top, bottom, text, color, hl) {
+        Ext(s) {
+            size := Buffer(8, 0)
+            DllCall("gdi32\GetTextExtentPoint32W", "ptr", hdc, "wstr", s, "int", StrLen(s), "ptr", size)
+            return NumGet(size, 0, "int")
+        }
+        Draw(s, x, c) {
+            r := Buffer(16, 0)
+            NumPut("int", x, r, 0), NumPut("int", top, r, 4), NumPut("int", right, r, 8), NumPut("int", bottom, r, 12)
+            DllCall("gdi32\SetTextColor", "ptr", hdc, "uint", NaviTheme.BGR(c))
+            DllCall("user32\DrawTextW", "ptr", hdc, "wstr", s, "int", -1, "ptr", r, "uint", 0x20 | 0x4 | 0x800 | 0x100)  ; SINGLELINE | VCENTER | NOPREFIX | NOCLIP
+            return x + Ext(s)
+        }
+        ; 同じ色の続きをまとめて描く（1 文字ずつ描くより字間が自然になる）
+        runs := []
+        i := 1, n := StrLen(text)
+        while (i <= n) {
+            on := hl.Has(i), j := i
+            while (j < n && hl.Has(j + 1) == on)
+                j++
+            runs.Push({ s: SubStr(text, i, j - i + 1), on: on })
+            i := j + 1
+        }
+        ell := "…"
+        limit := (left + Ext(text) > right) ? right - Ext(ell) : right
+        x := left
+        for seg in runs {
+            c := seg.on ? NaviTheme.ACCENT : color
+            if (x + Ext(seg.s) <= limit) {
+                x := Draw(seg.s, x, c)
+                continue
+            }
+            ; 入りきらない: 入る所まで描いて … を付ける
+            fit := ""
+            for ch in StrSplit(seg.s) {
+                if (x + Ext(fit . ch) > limit)
+                    break
+                fit .= ch
+            }
+            if (fit != "")
+                x := Draw(fit, x, c)
+            return Draw(ell, x, color)
+        }
+        return x
+    }
 
     ; ウィンドウリサイズ時に TreeView と同じ位置・大きさへ合わせる
     static OnResize(w, h) {
@@ -309,9 +383,7 @@ class NaviDirList {
         lv := this._navi.GuiObj["DirList"]
         ; 縦スクロールバー分を引いて横スクロールバーが出ないようにする
         inner := Max(100, w - SysGet(2) - 4)  ; SM_CXVSCROLL
-        nameW := Round(inner * this.NAME_COL_RATIO)
-        lv.ModifyCol(1, nameW)
-        lv.ModifyCol(2, inner - nameW)
+        lv.ModifyCol(1, inner)
     }
 
     ; ==============================================================================
@@ -463,6 +535,7 @@ class NaviDirList {
         this._cacheQuery := query
         this._cacheRels := matched
         this._matchCount := matched.Length
+        this._total := index.Length
 
         if (matched.Length == 0) {
             this._ShowMessage("(一致なし)")
@@ -472,14 +545,17 @@ class NaviDirList {
         lv.Opt("-Redraw")
         lv.Delete()
         this._rows := []
-        this._locs := []
+        this._dirs := []
+        this._names := []
+        this._hl := []
         for rel in top {
             SplitPath(rel, &name, &dir)
-            ; 場所はすべてルート名から始まるパスにそろえる（ルート直下も空欄にならない）
-            ; セルの文字は _DrawLocation が 2 段の色で描くので、一覧には空で入れる
-            lv.Add(isFiles ? nv._GetFileIconStr(name) : "Icon1", name, "")
+            ; セルの文字は _DrawRow が一致した文字に色を付けて描くので、一覧には空で入れる
+            lv.Add(isFiles ? nv._GetFileIconStr(name) : "Icon1", "", "")
             this._rows.Push(rootBase . "\" . rel)
-            this._locs.Push({ head: nv.RootLabel(nv.lastRoot) . ((dir != "") ? "\" : ""), rest: dir })
+            this._names.Push(name)
+            this._dirs.Push(dir)
+            this._hl.Push(this._MatchSpans(rel, name, dir, terms))
         }
         lv.Modify(1, "Select Focus Vis")
         lv.Opt("+Redraw")
@@ -577,7 +653,9 @@ class NaviDirList {
         lv.Delete()
         lv.Add(, msg)
         this._rows := []
-        this._locs := []
+        this._dirs := []
+        this._names := []
+        this._hl := []
         this._matchCount := 0
         nv._UpdateStatusBar()
     }
@@ -613,13 +691,15 @@ class NaviDirList {
             lit := exact ? SubStr(raw, 2) : raw
             if (lit == "")
                 continue
-            re := "i)"
+            ; re: あいまい一致の判定用 / cap: 同じ一致で各文字の位置も取る用（文字ごとにグループにする）
+            re := "i)", cap := "i)"
             for i, ch in StrSplit(lit) {
                 if (i > 1)
-                    re .= ".*?"
-                re .= InStr("\.*?+[](){}|^$", ch) ? "\" . ch : ch
+                    re .= ".*?", cap .= ".*?"
+                esc := InStr("\.*?+[](){}|^$", ch) ? "\" . ch : ch
+                re .= esc, cap .= "(" . esc . ")"
             }
-            terms.Push({ lit: lit, exact: exact, re: re })
+            terms.Push({ lit: lit, exact: exact, re: re, cap: cap })
         }
         return terms
     }
@@ -629,9 +709,10 @@ class NaviDirList {
      * 語ごとに次の段で評価し、上の段ほど高い（段どうしの値の範囲は重ならない）
      * name はフォルダ名またはファイル名
      *   名前に続けて含む     500〜700（先頭一致と、名前の余りが少ないほど高い）
+     *   パスに続けて含む     450
      *   名前にあいまい一致   300〜400（文字の間が詰まっているほど高い）
-     *   パスに続けて含む     200
      *   パスにあいまい一致   100〜199
+     * パス全体を 1 行で見せるので、パスのどこかに続けて当たっている行を、名前に飛び飛びに当たった行より上にする
      */
     static _Score(rel, name, terms) {
         total := 0
@@ -639,10 +720,10 @@ class NaviDirList {
             litLen := StrLen(t.lit)
             if (p := InStr(name, t.lit)) {
                 s := 500 + Max(0, 100 - (StrLen(name) - litLen)) + (p == 1 ? 100 : 0)
+            } else if (InStr(rel, t.lit)) {
+                s := 450
             } else if (!t.exact && RegExMatch(name, t.re, &m)) {
                 s := 300 + Max(0, 100 - 3 * (m.Len - litLen))
-            } else if (InStr(rel, t.lit)) {
-                s := 200
             } else if (!t.exact && RegExMatch(rel, t.re, &m)) {
                 s := 100 + Max(0, 99 - (m.Len - litLen))
             } else {
@@ -653,16 +734,54 @@ class NaviDirList {
         return total
     }
 
+    /**
+     * 行の名前と親のパスのどの文字が語に一致したか（_Score と同じ順で、点数に使った一致の位置）
+     * 返り値 { name: Map(名前の中の位置), dir: Map(親のパスの中の位置) }
+     */
+    static _MatchSpans(rel, name, dir, terms) {
+        hl := { name: Map(), dir: Map() }
+        nameOff := (dir != "") ? StrLen(dir) + 1 : 0  ; rel の中で名前が始まる手前の文字数
+        Mark(pos) {
+            if (pos > nameOff)
+                hl.name[pos - nameOff] := true
+            else if (pos <= StrLen(dir))
+                hl.dir[pos] := true
+        }
+        for t in terms {
+            litLen := StrLen(t.lit)
+            if (p := InStr(name, t.lit)) {
+                loop litLen
+                    hl.name[p + A_Index - 1] := true
+            } else if (p := InStr(rel, t.lit)) {
+                loop litLen
+                    Mark(p + A_Index - 1)
+            } else if (!t.exact && RegExMatch(name, t.cap, &m)) {
+                loop m.Count
+                    hl.name[m.Pos[A_Index]] := true
+            } else if (!t.exact && RegExMatch(rel, t.cap, &m)) {
+                loop m.Count
+                    Mark(m.Pos[A_Index])
+            }
+        }
+        return hl
+    }
+
     /** ステータスバー左側: 今の一覧と件数 */
     static StatusText() {
         kind := (this.Kind == "files") ? " ファイル一覧" : " フォルダ一覧"
-        count := (this._matchCount > this.DISPLAY_CAP)
-            ? this._matchCount . " 件（上位 " . this.DISPLAY_CAP . "）"
-            : this._matchCount . " 件"
+        ; 絞り込み中は「一致 / 全体」にして、絞り込みがどれだけ効いているかを見せる
+        count := (this._matchCount < this._total)
+            ? this._Num(this._matchCount) . " / " . this._Num(this._total) . " 件"
+            : this._Num(this._matchCount) . " 件"
+        if (this._matchCount > this.DISPLAY_CAP)
+            count .= "（上位 " . this.DISPLAY_CAP . "）"  ; ステータスバーの左の欄に収まる長さにする
         if (this.Kind == "files" && this._FileIndexTruncated)
             count .= " ※打ち切り"
         return kind . "   " . count
     }
+
+    ; 3 桁ごとにカンマを入れる
+    static _Num(n) => RegExReplace(n, "\G\d+?(?=(\d{3})+$)", "$0,")
 
     /** ステータスバー右側: 操作の案内 */
     static StatusHints() {
