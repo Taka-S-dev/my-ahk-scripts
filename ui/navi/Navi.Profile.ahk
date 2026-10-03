@@ -17,6 +17,13 @@ class NaviProfile {
     ; --- InputBox サイズ（プロファイル名入力ダイアログ共通） ---
     static _INPUTBOX_SIZE := "w260 h100"
 
+    ; 編集の窓の持ち物にした InputBox を、その窓の上の中央に出す（前面固定の窓の裏に隠れない）
+    static _InputBoxOver(editGui, prompt, title, default := "") {
+        editGui.Opt("+OwnDialogs")
+        this._navi.CenterNextDialogOver(editGui)
+        return InputBox(prompt, title, this._INPUTBOX_SIZE, default)
+    }
+
     ; --- ProfileBtn の表示文字数上限（ボタン幅 w95 に合わせた値） ---
     static _PROFILE_BTN_MAX_LEN := 10
 
@@ -212,9 +219,7 @@ class NaviProfile {
     ; 空の新規プロファイルを作成（LV もクリアして編集状態にする）
     static NewProfileDialogFromEdit(editGui) {
         nv := this._navi
-        editGui.Opt("-AlwaysOnTop")
-        result := InputBox("新しいプロファイル名を入力してください:", "新規プロファイル", this._INPUTBOX_SIZE)
-        editGui.Opt("+AlwaysOnTop")
+        result := this._InputBoxOver(editGui, "新しいプロファイル名を入力してください:", "新規プロファイル")
         if (result.Result != "OK" || Trim(result.Value) == "")
             return
         name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
@@ -225,9 +230,7 @@ class NaviProfile {
             DirCreate(dir)
         outPath := dir . "\" . name . ".txt"
         if (FileExist(outPath)) {
-            editGui.Opt("-AlwaysOnTop")
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            editGui.Opt("+AlwaysOnTop")
+            nv.MsgBoxOver(editGui, "同名のプロファイルが既に存在します。", "エラー", "Icon!")
             return
         }
         FileAppend("", outPath, "UTF-8")  ; 空ファイル作成
@@ -241,9 +244,7 @@ class NaviProfile {
     ; 現在の LV 内容をコピーして新規プロファイルを作成
     static DupProfileDialogFromEdit(editGui, lv) {
         nv := this._navi
-        editGui.Opt("-AlwaysOnTop")
-        result := InputBox("複製後のプロファイル名を入力してください:", "プロファイルを複製", this._INPUTBOX_SIZE)
-        editGui.Opt("+AlwaysOnTop")
+        result := this._InputBoxOver(editGui, "複製後のプロファイル名を入力してください:", "プロファイルを複製")
         if (result.Result != "OK" || Trim(result.Value) == "")
             return
         name := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
@@ -254,9 +255,7 @@ class NaviProfile {
             DirCreate(dir)
         outPath := dir . "\" . name . ".txt"
         if (FileExist(outPath)) {
-            editGui.Opt("-AlwaysOnTop")
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            editGui.Opt("+AlwaysOnTop")
+            nv.MsgBoxOver(editGui, "同名のプロファイルが既に存在します。", "エラー", "Icon!")
             return
         }
         this.WriteProfileFile(lv, outPath)
@@ -276,9 +275,7 @@ class NaviProfile {
         path := this._GetProfilesDir() . "\" . name . ".txt"
         if (!FileExist(path))
             return
-        editGui.Opt("-AlwaysOnTop")
-        ans := MsgBox("「" . name . "」を削除しますか？", "プロファイル削除", "YesNo Icon!")
-        editGui.Opt("+AlwaysOnTop")
+        ans := nv.MsgBoxOver(editGui, "「" . name . "」を削除しますか？", "プロファイル削除", "YesNo Icon!")
         if (ans != "Yes")
             return
         lastProfile := IniRead(nv.IniPath, "Settings", "LastProfile", "")
@@ -300,9 +297,7 @@ class NaviProfile {
         oldPath := this._GetProfilesDir() . "\" . name . ".txt"
         if (!FileExist(oldPath))
             return
-        editGui.Opt("-AlwaysOnTop")
-        result := InputBox("新しい名前を入力してください:", "名前変更", this._INPUTBOX_SIZE, name)
-        editGui.Opt("+AlwaysOnTop")
+        result := this._InputBoxOver(editGui, "新しい名前を入力してください:", "名前変更", name)
         if (result.Result != "OK" || Trim(result.Value) == "" || Trim(result.Value) = name)
             return
         newName := Trim(RegExReplace(result.Value, '[\\/:*?"<>|]', "_"))
@@ -310,9 +305,7 @@ class NaviProfile {
             return
         newPath := this._GetProfilesDir() . "\" . newName . ".txt"
         if (FileExist(newPath)) {
-            editGui.Opt("-AlwaysOnTop")
-            MsgBox("同名のプロファイルが既に存在します。", "エラー", "Icon!")
-            editGui.Opt("+AlwaysOnTop")
+            nv.MsgBoxOver(editGui, "同名のプロファイルが既に存在します。", "エラー", "Icon!")
             return
         }
         FileMove(oldPath, newPath)

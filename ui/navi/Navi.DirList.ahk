@@ -643,9 +643,10 @@ class NaviDirList {
         if (this._asking)
             return -1
         this._asking := true
-        ans := MsgBox(rootPath . "`n`nはネットワーク上のフォルダです。絞り込みや一覧のために配下の" . what
+        ans := this._navi.MsgBoxOver(this._navi.GuiObj
+            , rootPath . "`n`nはネットワーク上のフォルダです。絞り込みや一覧のために配下の" . what
             . "をすべて読むため、サーバーに負荷がかかり、時間もかかります。`n`n読みますか？"
-            , "Navi", "YesNo Icon! Default2 Owner" . this._navi.GuiObj.Hwnd)
+            , "Navi", "YesNo Icon! Default2")
         this._asking := false
         if (ans != "Yes")
             return 0

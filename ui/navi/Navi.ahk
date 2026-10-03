@@ -437,6 +437,60 @@ class Navi {
         this.GuiObj := ""
     }
 
+    /**
+     * owner（Gui か hwnd）の持ち物にした MsgBox を、owner の上の中央に出す
+     * MsgBox は所有者を付けても画面の中央に出るので、出た直後に owner の中央へ動かす（CenterNextDialogOver）
+     * 所有者付きなので、前面固定の窓の裏に隠れず、答えるまで owner は操作できない
+     */
+    static MsgBoxOver(owner, text, title, opts := "") {
+        hwnd := IsObject(owner) ? owner.Hwnd : owner
+        this.CenterNextDialogOver(hwnd)
+        return MsgBox(text, title, Trim(opts . " Owner" . hwnd))
+    }
+
+    /**
+     * 次に owner の持ち物として出る小窓（MsgBox・InputBox・FileSelect など）を、owner の上の中央に動かす
+     * 小窓は呼び出し元を止めるので、先にタイマーを仕掛けて、出たところを捕まえる。owner のモニターからははみ出させない
+     * InputBox など所有者を引数で渡せないものは、呼ぶ前に owner.Opt("+OwnDialogs") で owner の持ち物にしておく
+     */
+    static CenterNextDialogOver(owner) {
+        ownerHwnd := IsObject(owner) ? owner.Hwnd : owner
+        if !(ownerHwnd && WinExist("ahk_id " . ownerHwnd))
+            return
+        pid := ProcessExist()
+        OwnedBy(h) => DllCall("GetWindow", "ptr", h, "uint", 4, "ptr") == ownerHwnd  ; GW_OWNER
+        before := Map()
+        for h in WinGetList("ahk_pid " . pid)
+            before[h] := true
+        tries := 0
+        Mover() {
+            if (++tries > 200) {  ; 2 秒たっても出なければあきらめる
+                SetTimer(Mover, 0)
+                return
+            }
+            for h in WinGetList("ahk_pid " . pid) {
+                if (before.Has(h) || !OwnedBy(h))
+                    continue
+                SetTimer(Mover, 0)
+                o := Buffer(16), d := Buffer(16), mi := Buffer(40, 0)
+                DllCall("GetWindowRect", "ptr", ownerHwnd, "ptr", o)
+                DllCall("GetWindowRect", "ptr", h, "ptr", d)
+                dw := NumGet(d, 8, "int") - NumGet(d, 0, "int"), dh := NumGet(d, 12, "int") - NumGet(d, 4, "int")
+                x := (NumGet(o, 0, "int") + NumGet(o, 8, "int") - dw) // 2
+                y := (NumGet(o, 4, "int") + NumGet(o, 12, "int") - dh) // 2
+                ; owner のいるモニターの作業領域に収める
+                NumPut("uint", 40, mi, 0)
+                if DllCall("GetMonitorInfo", "ptr", DllCall("MonitorFromWindow", "ptr", ownerHwnd, "uint", 2, "ptr"), "ptr", mi) {
+                    x := Max(NumGet(mi, 20, "int"), Min(x, NumGet(mi, 28, "int") - dw))
+                    y := Max(NumGet(mi, 24, "int"), Min(y, NumGet(mi, 32, "int") - dh))
+                }
+                DllCall("SetWindowPos", "ptr", h, "ptr", 0, "int", x, "int", y, "int", 0, "int", 0, "uint", 0x15)  ; NOSIZE|NOZORDER|NOACTIVATE
+                return
+            }
+        }
+        SetTimer(Mover, 10)
+    }
+
     static _DestroyGui() {
         this._CleanupState()
         if (this.GuiObj && WinExist(this.GuiObj)) {
@@ -806,11 +860,10 @@ class Navi {
             selected.Push(r)
         }
         if (selected.Length > 0) {
-            editGui.Opt("+OwnDialogs")
             msg := (selected.Length = 1)
                 ? "選択した項目を削除しますか？"
                 : selected.Length . " 件の項目を削除しますか？"
-            if (MsgBox(msg, "削除確認", "YesNo Icon? 4096") == "Yes") {
+            if (this.MsgBoxOver(editGui, msg, "削除確認", "YesNo Icon?") == "Yes") {
                 ; 下から削除してインデックスずれを防ぐ
                 for i, _ in selected {
                     lv.Delete(selected[selected.Length - i + 1])
