@@ -626,13 +626,49 @@ class Navi {
         autoMinCb := settGui.Add("CheckBox", "xm y+8", "アクション実行後に自動最小化する（ピン留めON時は無効）")
         autoMinCb.Value := (IniRead(this.IniPath, "Settings", "AutoMinimizeOnAction", "0") == "1") ? 1 : 0
 
-        ; --- フォルダフィルター ---
+        ; --- 検索（ツリーの絞り込み・一覧） ---
         settGui.Add("Text", "xm y+14 w400 0x10")
         NaviTheme.SetFont(settGui, "heading")
-        settGui.Add("Text", "xm y+10", "フォルダフィルター")
+        settGui.Add("Text", "xm y+10", "検索（ツリーの絞り込み・一覧）")
         NaviTheme.SetFont(settGui, "body")
-        fdFilterCb := settGui.Add("CheckBox", "xm y+8", "高速化する（fd.exe が必要）")
+        fdFilterCb := settGui.Add("CheckBox", "xm y+8", "fd で高速化する")
         fdFilterCb.Value := (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") != "0") ? 1 : 0
+        ; fd.exe の場所（空欄なら自動: bin → PATH → winget）と、実際に使う fd の状態
+        ; チェックが入っていても fd がなければ速くならないので、どの fd を使うか・ないなら入れ方を見せる
+        settGui.Add("Text", "xm+20 y+8", "fd.exe の場所（空欄なら自動で探す）:")
+        ; 長いパスを最初から入れると、複数行の欄にされて下の行に重なる。1 行で作ってから入れる
+        fdEdit := settGui.Add("Edit", "xm+20 y+4 w316 r1 -Wrap", "")
+        fdEdit.Value := NaviSearch.ConfiguredFd()
+        fdBrowse := settGui.Add("Button", "x+4 yp-1 w40", "...")
+        NaviTheme.SetFont(settGui, "caption")
+        ; 2 行分の高さを取る（空白のない長いパスで幅が広げられないよう h も指定する）。パスは途中を … で省く
+        fdStatus := settGui.Add("Text", "xm+20 y+6 w380 h32", "")
+        NaviTheme.SetFont(settGui, "body")
+        auto := NaviSearch._AutoFd()  ; 打つたびに探し直さないよう、自動で見つかる fd は先に 1 回だけ探す
+        ShowFdStatus(*) {
+            typed := Trim(fdEdit.Value, " `t`"")
+            isPath := true  ; パスを見せる行は 1 行で、長ければ途中を … で省く（0x8000 = SS_PATHELLIPSIS）
+            if (typed != "" && FileExist(typed)) {
+                msg := "使用中: " . typed, color := NaviTheme.TEXT_MUTED
+            } else if (typed != "") {
+                msg := "指定した場所に fd.exe がありません" . (auto != "" ? "。自動で見つけた fd を使います" : "")
+                color := NaviTheme.ACCENT, isPath := false
+            } else if (auto != "") {
+                msg := "使用中（自動）: " . auto, color := NaviTheme.TEXT_MUTED
+            } else {
+                msg := "fd が見つかりません。winget install sharkdp.fd で入れるか、fd.exe をスクリプトと同じフォルダの "
+                    . "bin に置く・上で場所を指定すると、一覧と絞り込みが速くなります"
+                color := NaviTheme.ACCENT, isPath := false
+            }
+            fdStatus.Opt((isPath ? "+" : "-") . "0x8000")
+            fdStatus.SetFont("c" . color)
+            fdStatus.Text := msg
+        }
+        fdEdit.OnEvent("Change", ShowFdStatus)
+        fdBrowse.OnEvent("Click", (*) => (
+            picked := FileSelect(1, fdEdit.Value != "" ? fdEdit.Value : "fd.exe", "fd.exe を選ぶ", "fd (fd.exe)"),
+            picked != "" ? (fdEdit.Value := picked, ShowFdStatus()) : 0))
+        ShowFdStatus()
         settGui.Add("Text", "xm y+10", "ツリーの絞り込みで探す深さ（0 = 無制限）:")
         depthEdit := settGui.Add("Edit", "x+8 yp-2 w50 Number", IniRead(this.IniPath, "Search", "FilterMaxDepth", "8"))
         NaviTheme.SetFont(settGui, "caption", NaviTheme.TEXT_MUTED)
@@ -647,6 +683,8 @@ class Navi {
             IniWrite(this.ExplorerPath, this.IniPath, "Settings", "ExplorerPath"),
             IniWrite(autoMinCb.Value, this.IniPath, "Settings", "AutoMinimizeOnAction"),
             IniWrite(fdFilterCb.Value, this.IniPath, "Search", "UseFdForFilter"),
+            IniWrite(Trim(fdEdit.Value, " `t`""), this.IniPath, "Search", "FdPath"),
+            NaviSearch.ResetFd(),  ; 次に使うときに、指定した場所から探し直す
             IniWrite(depthEdit.Value, this.IniPath, "Search", "FilterMaxDepth"),
             settGui.Destroy(),
             parentGui.Opt("-Disabled +AlwaysOnTop"),

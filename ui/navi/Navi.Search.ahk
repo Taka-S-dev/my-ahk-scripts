@@ -329,35 +329,69 @@ class NaviSearch {
         return false
     }
 
-    ; fd.exe のパスを返す（見つからなければ ""）。結果はキャッシュ
+    /**
+     * fd.exe のパスを返す（見つからなければ ""）。結果はキャッシュ（設定を変えたら ResetFd で捨てる）
+     * 探す順: 設定で指定したパス（[Search] FdPath）→ 自動（_AutoFd）
+     * 指定したパスに fd.exe がなければ、自動で探した方を使う（設定の誤りで遅くならないように）
+     */
     static _FindFd() {
         if (this.FdPath != "")
             return (this.FdPath = "NOT_FOUND") ? "" : this.FdPath
+        path := this.ConfiguredFd()
+        if (path == "" || !FileExist(path))
+            path := this._AutoFd()
+        this.FdPath := (path != "") ? path : "NOT_FOUND"
+        return path
+    }
 
-        ; 1) SearchPath API で PATH から検索（cmd.exe を起動しないためフラッシュなし）
+    ; 設定で指定した fd.exe のパス（空欄なら ""）
+    static ConfiguredFd() => Trim(IniRead(this.IniPath, "Search", "FdPath", ""), " `t`"")
+
+    ; 設定を変えたときに、覚えている fd の場所を捨てる
+    static ResetFd() {
+        this.FdPath := ""
+    }
+
+    /**
+     * 自動で fd.exe を探す（キャッシュしない）
+     * 1) スクリプトの隣の bin\fd.exe（置くだけで使える。持ち運び・winget が使えない PC 向け。git では無視）
+     * 2) PATH  3) winget の入れ先
+     */
+    static _AutoFd() {
+        bundled := A_ScriptDir . "\bin\fd.exe"
+        if FileExist(bundled)
+            return bundled
+
+        ; SearchPath API で PATH から検索（cmd.exe を起動しないためフラッシュなし）
         buf := Buffer(2048, 0)   ; 1024 wide chars
         len := DllCall("SearchPath",
             "ptr",  0, "str", "fd.exe", "ptr", 0,
             "uint", 1024, "ptr", buf, "ptr", 0, "uint")
         if (len > 0) {
             path := StrGet(buf)
-            if (FileExist(path)) {
-                this.FdPath := path
+            if FileExist(path)
                 return path
-            }
         }
 
-        ; 2) WinGet パッケージフォルダをスキャン
+        ; WinGet パッケージフォルダをスキャン
         wingetBase := EnvGet("LOCALAPPDATA") . "\Microsoft\WinGet\Packages"
         if DirExist(wingetBase) {
-            loop files, wingetBase . "\sharkdp.fd_*\*\fd.exe", "R" {
-                this.FdPath := A_LoopFileFullPath
+            loop files, wingetBase . "\sharkdp.fd_*\*\fd.exe", "R"
                 return A_LoopFileFullPath
-            }
         }
-
-        this.FdPath := "NOT_FOUND"
         return ""
+    }
+
+    /**
+     * 一覧・絞り込みのために rootPath の下を集めるとき、遅い方（AutoHotkey でたどる）になる理由
+     * fd で速く集められるなら ""。ネットワーク上はわざと fd を使わない（別に確認を出す）ので ""
+     */
+    static SlowWalkReason(rootPath) {
+        if NaviFilter.IsOnNetwork(rootPath)
+            return ""
+        if (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") == "0")
+            return "高速化がオフのため"
+        return (this._FindFd() == "") ? "fd がないため" : ""
     }
 
     ; fd バックエンドで検索を開始（Run + 一時ファイルで非表示・UTF-8対応）

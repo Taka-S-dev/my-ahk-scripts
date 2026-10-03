@@ -68,18 +68,56 @@ class NaviFilter {
     ; フォルダインデックス構築
     ; ==============================================================================
 
-    ; フォールバック: 同期 loop files でインデックスを構築する
+    ; フォールバック（fd がない・ネットワーク上）: 同期でたどってインデックスを構築する
     static _BuildFolderIndex(rootPath) {
         this._FolderIndex := []
         this._IndexedRoot := ""
+        this._FolderIndex := this.WalkTree(rootPath, "D")
+        this._IndexedRoot := rootPath
+    }
+
+    /**
+     * fd を使わずに rootPath の下をたどり、フォルダ（kind = "D"）かファイル（"F"）のフルパスを返す
+     * fd の既定と同じ範囲にそろえる（fd があるかどうかで一覧の中身が変わらないように）:
+     * - . で始まるもの・隠し属性のものは、フォルダなら中身ごと除く（.git や AppData の中身を集めない）
+     * - シンボリックリンク・ジャンクションのフォルダは出さず、先にもたどらない（fd の --type d と同じ。
+     *   同じ場所を二重に数えたり、ぐるぐる回ったりしない）
+     * cap > 0 ならその件数で打ち切る
+     */
+    static WalkTree(rootPath, kind, cap := 0) {
+        out := []
+        ; 組み込みの再帰（R）でたどる（フォルダごとに loop を回すより速い）。フォルダは中身より先に来るので、
+        ; 除いたフォルダ・中に入らないフォルダを覚えておき、その下にあるものは親を見て飛ばす
+        skipUnder := Map()  ; この下は集めないフォルダのパス
+        skipUnder.CaseSense := false
         try {
-            loop files, rootPath . "\*", "DR" {
-                if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H"))
+            loop files, RTrim(rootPath, "\") . "\*", "FDR" {
+                isDir := InStr(A_LoopFileAttrib, "D")
+                if skipUnder.Has(A_LoopFileDir) {
+                    if isDir
+                        skipUnder[A_LoopFilePath] := true
                     continue
-                this._FolderIndex.Push(A_LoopFilePath)
+                }
+                if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H")) {
+                    if isDir
+                        skipUnder[A_LoopFilePath] := true
+                    continue
+                }
+                if isDir {
+                    if InStr(A_LoopFileAttrib, "L") {  ; L = リパースポイント（リンク）。fd の --type d と同じく、出さず中にも入らない
+                        skipUnder[A_LoopFilePath] := true
+                        continue
+                    }
+                    if (kind == "D")
+                        out.Push(A_LoopFilePath)
+                } else if (kind == "F") {
+                    out.Push(A_LoopFilePath)
+                }
+                if (cap > 0 && out.Length >= cap)
+                    return out
             }
         }
-        this._IndexedRoot := rootPath
+        return out
     }
 
     /**

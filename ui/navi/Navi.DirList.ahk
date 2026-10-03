@@ -509,6 +509,8 @@ class NaviDirList {
         if (!built && !this._ConfirmNetwork(rootPath))
             return
         if (isFiles) {
+            if (!built)
+                this._ShowSlowNotice(rootPath, "ファイル")
             if !this._EnsureFileIndex(rootPath) {
                 this._ShowMessage("ファイルを集めています…")
                 return
@@ -516,6 +518,7 @@ class NaviDirList {
             index := this._FileIndex
         } else {
             if (NaviFilter._IndexedRoot != rootPath) {
+                this._ShowSlowNotice(rootPath, "フォルダ")
                 onReady := () => SetTimer(() => this.ApplyCurrent(), -1)
                 if !NaviFilter._EnsureIndex(rootPath, onReady) {
                     this._ShowMessage("フォルダを集めています…")
@@ -866,23 +869,10 @@ class NaviDirList {
         SetTimer(() => this.ApplyCurrent(), -1)
     }
 
-    ; フォールバック: loop files で上限まで同期に集める
+    ; フォールバック（fd がない・ネットワーク上）: 上限まで同期に集める。範囲は fd と同じ（NaviFilter.WalkTree）
     static _BuildFileIndex(rootPath) {
-        index := []
-        this._FileIndexTruncated := false
-        prefixLen := StrLen(RTrim(rootPath, "\")) + 1
-        try {
-            loop files, rootPath . "\*", "FR" {
-                ; fd と同じく隠し属性と、. で始まるフォルダ・ファイル（.git, .venv など）の中は外す
-                if (InStr(A_LoopFileAttrib, "H") || InStr(SubStr(A_LoopFilePath, prefixLen), "\."))
-                    continue
-                index.Push(A_LoopFilePath)
-                if (index.Length >= this.FILE_INDEX_MAX) {
-                    this._FileIndexTruncated := true
-                    break
-                }
-            }
-        }
+        index := NaviFilter.WalkTree(rootPath, "F", this.FILE_INDEX_MAX)
+        this._FileIndexTruncated := (index.Length >= this.FILE_INDEX_MAX)
         this._FileIndex := index
         this._FileIndexedRoot := rootPath
     }
