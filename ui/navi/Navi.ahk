@@ -1145,12 +1145,20 @@ class Navi {
         m.Add("ルートを編集...", (*) => this._ShowEditGui(this.GuiObj))
         m.Add()
         m.Add("設定...", (*) => this._ShowSettingsGui(this.GuiObj))
-        ; ⚙ の真下に出す。Esc はメニューを閉じるのに使うので、Navi を閉じるホットキーを一時的に止める
-        this.GuiObj["SettingsBtn"].GetPos(&bx, &by, &bw, &bh)
+        ; ⚙ の真下に、右端をそろえて出す（⚙ は窓の右端にあるので、左端そろえだと窓からはみ出す）
+        ; 位置は画面の物理ピクセルで渡す（GetPos は DPI 換算の単位なので、高 DPI では半分の位置になる）
+        ; Esc はメニューを閉じるのに使うので、Navi を閉じるホットキーを一時的に止める
+        btn := this.GuiObj["SettingsBtn"]
+        rect := Buffer(16, 0)
+        DllCall("user32\GetWindowRect", "ptr", btn.Hwnd, "ptr", rect)
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Esc", "Off")
         HotIf()
-        m.Show(bx + bw, by + bh)
+        ; Menu.Show は右端そろえができないので TrackPopupMenuEx を使う。項目の実行は AHK の窓（A_ScriptHwnd）が受ける
+        DllCall("user32\SetForegroundWindow", "ptr", A_ScriptHwnd)
+        DllCall("user32\TrackPopupMenuEx", "ptr", m.Handle, "uint", 0x8  ; TPM_RIGHTALIGN | TPM_TOPALIGN
+            , "int", NumGet(rect, 8, "int"), "int", NumGet(rect, 12, "int"), "ptr", A_ScriptHwnd, "ptr", 0)
+        DllCall("user32\PostMessageW", "ptr", A_ScriptHwnd, "uint", 0, "ptr", 0, "ptr", 0)  ; WM_NULL（メニューが確実に閉じるように）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Esc", "On")
         HotIf()
