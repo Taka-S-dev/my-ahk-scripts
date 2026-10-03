@@ -820,9 +820,9 @@ class NaviDirList {
         tmpFile := A_Temp . "\navi_files_" . A_TickCount . ".txt"
         ; 末尾 \ をエスケープ（C ランタイムの \" 解析対策）
         safeRoot := (SubStr(rootPath, -1) = "\") ? rootPath . "\" : rootPath
-        maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
-        depthOpt := (maxDepth > 0) ? " --max-depth " . maxDepth : ""
-        cmd := '"' . fdPath . '" --type f' . depthOpt . ' --max-results ' . this.FILE_INDEX_MAX
+        ; 深さは制限しない（ツリーの絞り込みの深さとは別。深い所のファイルを見落とさないため）
+        ; 集めすぎは件数（FILE_INDEX_MAX）と時間（FILE_INDEX_TIMEOUT_MS）の打ち切りで防ぎ、打ち切ったらステータスバーに出す
+        cmd := '"' . fdPath . '" --type f --max-results ' . this.FILE_INDEX_MAX
             . ' --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
         pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
         if (pid = 0)

@@ -680,8 +680,11 @@ class Navi {
         NaviTheme.SetFont(settGui, "body")
         fdFilterCb := settGui.Add("CheckBox", "xm y+8", "高速化する（fd.exe が必要）")
         fdFilterCb.Value := (IniRead(this.IniPath, "Search", "UseFdForFilter", "1") != "0") ? 1 : 0
-        settGui.Add("Text", "xm y+10", "最大階層深度（0 = 無制限）:")
+        settGui.Add("Text", "xm y+10", "ツリーの絞り込みで探す深さ（0 = 無制限）:")
         depthEdit := settGui.Add("Edit", "x+8 yp-2 w50 Number", IniRead(this.IniPath, "Search", "FilterMaxDepth", "8"))
+        NaviTheme.SetFont(settGui, "caption", NaviTheme.TEXT_MUTED)
+        settGui.Add("Text", "xm y+6", "一覧（Ctrl+E）は深さに関係なく、全部から探します")
+        NaviTheme.SetFont(settGui, "body")
 
         ; --- OK ボタン ---
         settGui.Add("Text", "xm y+14 w400 0x10")

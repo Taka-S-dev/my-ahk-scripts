@@ -98,9 +98,9 @@ class NaviFilter {
         tmpFile  := A_Temp . "\navi_fidx_" . A_TickCount . ".txt"
         ; 末尾 \ をエスケープ（C ランタイムの \" 解析対策）
         safeRoot := (SubStr(rootPath, -1) = "\") ? rootPath . "\" : rootPath
-        maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
-        depthOpt := (maxDepth > 0) ? " --max-depth " . maxDepth : ""
-        cmd := '"' . fdPath . '" --type d' . depthOpt . ' --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
+        ; 深さは制限せずに集める（一覧は全部から探す。ツリーの絞り込みの深さは ApplyTreeFilter で絞る）
+        ; 集めすぎは FD_INDEX_TIMEOUT_MS の打ち切りで防ぐ
+        cmd := '"' . fdPath . '" --type d --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
         pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
         if (pid = 0)
             return false
@@ -472,7 +472,15 @@ class NaviFilter {
             ; 例: "myapp src" → パスに "myapp" を含み、かつフォルダ名に "src" を含む
             lastTermIdx := terms.Length
             results := []
+            ; ツリーの絞り込みは設定の深さまで（ルート直下が 1。0 は無制限）。索引は一覧と共用なので深さはここで絞る
+            maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
+            rootLen := StrLen(RTrim(rootPath, "\"))
             for fullPath in this._FolderIndex {
+                if (maxDepth > 0) {
+                    StrReplace(SubStr(fullPath, rootLen + 2), "\", , , &depth)
+                    if (depth + 1 > maxDepth)
+                        continue
+                }
                 SplitPath(fullPath, &fname)
                 matched := true
                 for tIdx, orGroup in terms {
