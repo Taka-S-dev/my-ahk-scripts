@@ -45,6 +45,7 @@ class NaviFilter {
 
     ; --- カスタムドロー ---
     static _FilterMatchIdSet := Map()  ; マッチノードID集合
+    static _netDenied := Map()         ; ツリーの絞り込みで「読まない」と答えたネットワーク上のルート（小文字のパス）
     static MessageNodeId := 0         ; 「(一致なし)」など案内の行のノード（フォルダではない）
 
     static Init(naviRef) {
@@ -510,6 +511,13 @@ class NaviFilter {
             ; 絞り込む対象（入力欄の左のボタン）: フォルダ / ファイル / 両方
             kind := nv._FilterKind
             wantDirs := (kind != "file"), wantFiles := (kind != "dir")
+            ; ネットワーク上のルートは、配下を全部読みに行く前に確かめる（一覧と同じ。サーバーの負荷対策）
+            needDirs := wantDirs && this._IndexedRoot != rootPath
+            needFiles := wantFiles && NaviDirList._FileIndexedRoot != rootPath
+                && !(NaviDirList._FilePid != 0 && NaviDirList._FileRoot == rootPath)
+            if ((needDirs || needFiles) && !this._ConfirmNetwork(tv, rootPath
+                , (needDirs && needFiles) ? "フォルダとファイル" : needDirs ? "フォルダ" : "ファイル"))
+                return
             ; キャッシュが古ければ再構築
             if (wantDirs && this._IndexedRoot != rootPath) {
                 ; fd 完了後コールバック: フィルタを再スケジュール
@@ -522,10 +530,6 @@ class NaviFilter {
             }
             ; ファイルの索引は一覧（NaviDirList）と共用。集め終わったら ReapplyTree でここをやり直す
             if (wantFiles && NaviDirList._FileIndexedRoot != rootPath) {
-                building := (NaviDirList._FilePid != 0 && NaviDirList._FileRoot == rootPath)
-                ; まだ集めていないネットワーク上のルートは、配下を全部読みに行く前に確かめる（一覧と同じ）
-                if (!building && !NaviDirList._ConfirmNetwork(rootPath))
-                    return
                 if !NaviDirList._EnsureFileIndex(rootPath) {
                     this._ShowTreeMessage(tv, "ファイルを集めています…")
                     return
@@ -725,6 +729,27 @@ class NaviFilter {
                 return true
         }
         return false
+    }
+
+    /**
+     * ツリーの絞り込みで、ネットワーク上のルートの配下（what）を読んでよいか確かめる
+     * 打つたびに絞り込み直すので、「いいえ」は Navi を閉じるまで覚え、そのルートでは聞き直さずに絞り込まない
+     */
+    static _ConfirmNetwork(tv, rootPath, what) {
+        key := StrLower(rootPath)
+        if (NaviDirList._netAllowed.Has(key) || !this.IsOnNetwork(rootPath))  ; 一覧で「はい」と答えていれば読む
+            return true
+        if this._netDenied.Has(key) {
+            this._ShowTreeMessage(tv, "ネットワーク上のフォルダなので絞り込みません（Navi を開き直すと、もう一度確かめます）")
+            return false
+        }
+        this._ShowTreeMessage(tv, "ネットワーク上のフォルダです")
+        ans := NaviDirList.AskNetwork(rootPath, what)
+        if (ans == 0) {
+            this._netDenied[key] := true
+            this._ShowTreeMessage(tv, "ネットワーク上のフォルダなので絞り込みません（Navi を開き直すと、もう一度確かめます）")
+        }
+        return (ans == 1)
     }
 
     ; ツリーを空にして、案内の行を 1 つだけ出す（アイコンなし。パスの行には出さない: MessageNodeId）

@@ -623,17 +623,9 @@ class NaviDirList {
         if (this._asking)  ; 確認中に届いた入力による作り直しは、答えが出るまで止めておく
             return false
         nv := this._navi
-        this._asking := true
         this._ShowMessage("ネットワーク上のフォルダです")
-        what := (this.Kind == "files") ? "ファイル" : "フォルダ"
-        ans := MsgBox(rootPath . "`n`nはネットワーク上のフォルダです。一覧を作るには配下の" . what
-            . "をすべて読むため、サーバーに負荷がかかり、時間もかかります。`n`n一覧を作りますか？"
-            , "Navi", "YesNo Icon! Default2 Owner" . nv.GuiObj.Hwnd)
-        this._asking := false
-        if (ans == "Yes") {
-            this._netAllowed[StrLower(rootPath)] := true
+        if (this.AskNetwork(rootPath, (this.Kind == "files") ? "ファイル" : "フォルダ") == 1)
             return true
-        }
         if (this.Active && nv.GuiObj && WinExist(nv.GuiObj)) {
             this._SetActive(false)
             nv.GuiObj["FolderTree"].Focus()
@@ -641,9 +633,44 @@ class NaviDirList {
         return false
     }
 
-    /** ネットワーク上のルートを読んでよいという答えを忘れる（Navi を閉じたとき） */
+    /**
+     * ネットワーク上のルートの配下（what: "フォルダ" など）を全部読んでよいか聞く。一覧とツリーの絞り込みで共用
+     * 1 = 読んでよい（Navi を閉じるまで覚える。ネットワーク上でなければ聞かずに 1）/ 0 = いいえ / -1 = ほかで確認中
+     */
+    static AskNetwork(rootPath, what) {
+        if (this._netAllowed.Has(StrLower(rootPath)) || !NaviFilter.IsOnNetwork(rootPath))
+            return 1
+        if (this._asking)
+            return -1
+        this._asking := true
+        ans := MsgBox(rootPath . "`n`nはネットワーク上のフォルダです。絞り込みや一覧のために配下の" . what
+            . "をすべて読むため、サーバーに負荷がかかり、時間もかかります。`n`n読みますか？"
+            , "Navi", "YesNo Icon! Default2 Owner" . this._navi.GuiObj.Hwnd)
+        this._asking := false
+        if (ans != "Yes")
+            return 0
+        this._netAllowed[StrLower(rootPath)] := true
+        return 1
+    }
+
+    /** ネットワーク上のルートを読んでよいか・読まないかの答えを忘れる（Navi を閉じたとき） */
     static ForgetNetworkAnswers() {
         this._netAllowed := Map()
+        NaviFilter._netDenied := Map()
+    }
+
+    /**
+     * fd を使わずに集めるとき（数秒止まる）は、止まる前に理由と待てばよいことを一覧に出しておく
+     * fd で集めるときは裏で集めるので何も出さない（_ApplyCore が「集めています…」を出す）
+     */
+    static _ShowSlowNotice(rootPath, what) {
+        reason := NaviFd.SlowWalkReason(rootPath)
+        if (reason == "")
+            return
+        this._ShowMessage(what . "を集めています（" . reason . "、少し時間がかかります）")
+        ; この後は集め終わるまで止まるので、今のうちに描かせる
+        DllCall("user32\UpdateWindow", "ptr", this._lvHwnd)
+        try DllCall("user32\UpdateWindow", "ptr", this._navi.GuiObj._sbRef.Hwnd)
     }
 
     static _ShowMessage(msg) {
