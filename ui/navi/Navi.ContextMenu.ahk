@@ -133,20 +133,32 @@ class NaviContextMenu {
         Hotkey("Enter", "Off")
         Hotkey("Space", "Off")
         Hotkey("Esc", "Off")
+        for key in navi.ACTION_MENU_KEYS  ; メニューの中のキー操作（Shift+F10 など）も横取りしない
+            Hotkey(key, "Off")
         HotIf()
 
         ; 選択アイテムの右端をメニュー表示位置に使う
-        tv := navi.GuiObj["FolderTree"]
-        selId := tv.GetSelection()
-        rect := Buffer(16, 0)
-        NumPut("uptr", selId, rect, 0)
-        DllCall("user32\SendMessageW", "ptr", tv.Hwnd, "uint", 0x1104, "uptr", 1, "ptr", rect)
-        pt := Buffer(8, 0)
-        NumPut("int", NumGet(rect, 8, "Int"), pt, 0)  ; right edge of item label
-        NumPut("int", NumGet(rect, 4, "Int"), pt, 4)  ; top of item
-        DllCall("user32\ClientToScreen", "ptr", tv.Hwnd, "ptr", pt)
-        mx := NumGet(pt, 0, "Int")
-        my := NumGet(pt, 4, "Int")
+        if (NaviBrowse.Active) {
+            CoordMode("Mouse", "Screen")
+            MouseGetPos(&mx, &my)
+        } else if (NaviDirList.Active) {
+            if !NaviDirList.GetMenuPoint(&mx, &my) {
+                CoordMode("Mouse", "Screen")
+                MouseGetPos(&mx, &my)
+            }
+        } else {
+            tv := navi.GuiObj["FolderTree"]
+            selId := tv.GetSelection()
+            rect := Buffer(16, 0)
+            NumPut("uptr", selId, rect, 0)
+            DllCall("user32\SendMessageW", "ptr", tv.Hwnd, "uint", 0x1104, "uptr", 1, "ptr", rect)
+            pt := Buffer(8, 0)
+            NumPut("int", NumGet(rect, 8, "Int"), pt, 0)  ; right edge of item label
+            NumPut("int", NumGet(rect, 4, "Int"), pt, 4)  ; top of item
+            DllCall("user32\ClientToScreen", "ptr", tv.Hwnd, "ptr", pt)
+            mx := NumGet(pt, 0, "Int")
+            my := NumGet(pt, 4, "Int")
+        }
         DllCall("user32\SetForegroundWindow", "ptr", hwnd)
         cmd := DllCall("user32\TrackPopupMenu", "ptr", hMenu,
             "uint", 0x0100, "int", mx, "int", my, "int", 0, "ptr", hwnd, "ptr", 0, "int")
@@ -173,6 +185,8 @@ class NaviContextMenu {
         Hotkey("Enter", "On")
         Hotkey("Space", "On")
         Hotkey("Esc", "On")
+        for key in navi.ACTION_MENU_KEYS
+            Hotkey(key, "On")
         HotIf()
 
         ; 選択コマンドを実行

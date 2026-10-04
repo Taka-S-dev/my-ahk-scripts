@@ -45,33 +45,81 @@ class NaviFilter {
 
     ; --- カスタムドロー ---
     static _FilterMatchIdSet := Map()  ; マッチノードID集合
-    static _FilterTvHwnd     := 0      ; カスタムドロー対象 TreeView の Hwnd
-    static _FilterDrawHandler := ""    ; WM_NOTIFY ハンドラー参照
-    static FILTER_MATCH_COLOR := 0x00CC5500  ; フィルタマッチ着色色 BGR: RGB(0,85,204)=青
+    static _netDenied := Map()         ; ツリーの絞り込みで「読まない」と答えたネットワーク上のルート（小文字のパス）
+    static MessageNodeId := 0         ; 「(一致なし)」など案内の行のノード（フォルダではない）
 
     static Init(naviRef) {
         this._navi := naviRef
     }
 
-    ; UNC パス（\\server\share）かどうかを返す
-    static _IsNetworkPath(path) => (SubStr(path, 1, 2) == "\\")
+    ; ネットワーク上のフォルダか（UNC パス \\server\share か、ネットワークドライブに割り当てたドライブ文字）
+    ; 配下を再帰的に読む処理（先読み・fd・変更監視）は、サーバー負荷を避けるためこれが真なら止める
+    static IsOnNetwork(path) {
+        if (SubStr(path, 1, 2) == "\\")
+            return true
+        if !RegExMatch(path, "^[A-Za-z]:")
+            return false
+        try {
+            return DriveGetType(SubStr(path, 1, 2) . "\") == "Network"
+        } catch {
+            return false  ; 存在しないドライブ
+        }
+    }
 
     ; ==============================================================================
     ; フォルダインデックス構築
     ; ==============================================================================
 
-    ; フォールバック: 同期 loop files でインデックスを構築する
+    ; フォールバック（fd がない・ネットワーク上）: 同期でたどってインデックスを構築する
     static _BuildFolderIndex(rootPath) {
         this._FolderIndex := []
         this._IndexedRoot := ""
+        this._FolderIndex := this.WalkTree(rootPath, "D")
+        this._IndexedRoot := rootPath
+    }
+
+    /**
+     * fd を使わずに rootPath の下をたどり、フォルダ（kind = "D"）かファイル（"F"）のフルパスを返す
+     * fd の既定と同じ範囲にそろえる（fd があるかどうかで一覧の中身が変わらないように）:
+     * - . で始まるもの・隠し属性のものは、フォルダなら中身ごと除く（.git や AppData の中身を集めない）
+     * - シンボリックリンク・ジャンクションのフォルダは出さず、先にもたどらない（fd の --type d と同じ。
+     *   同じ場所を二重に数えたり、ぐるぐる回ったりしない）
+     * cap > 0 ならその件数で打ち切る
+     */
+    static WalkTree(rootPath, kind, cap := 0) {
+        out := []
+        ; 組み込みの再帰（R）でたどる（フォルダごとに loop を回すより速い）。フォルダは中身より先に来るので、
+        ; 除いたフォルダ・中に入らないフォルダを覚えておき、その下にあるものは親を見て飛ばす
+        skipUnder := Map()  ; この下は集めないフォルダのパス
+        skipUnder.CaseSense := false
         try {
-            loop files, rootPath . "\*", "DR" {
-                if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H"))
+            loop files, RTrim(rootPath, "\") . "\*", "FDR" {
+                isDir := InStr(A_LoopFileAttrib, "D")
+                if skipUnder.Has(A_LoopFileDir) {
+                    if isDir
+                        skipUnder[A_LoopFilePath] := true
                     continue
-                this._FolderIndex.Push(A_LoopFilePath)
+                }
+                if (SubStr(A_LoopFileName, 1, 1) == "." || InStr(A_LoopFileAttrib, "H")) {
+                    if isDir
+                        skipUnder[A_LoopFilePath] := true
+                    continue
+                }
+                if isDir {
+                    if InStr(A_LoopFileAttrib, "L") {  ; L = リパースポイント（リンク）。fd の --type d と同じく、出さず中にも入らない
+                        skipUnder[A_LoopFilePath] := true
+                        continue
+                    }
+                    if (kind == "D")
+                        out.Push(A_LoopFilePath)
+                } else if (kind == "F") {
+                    out.Push(A_LoopFilePath)
+                }
+                if (cap > 0 && out.Length >= cap)
+                    return out
             }
         }
-        this._IndexedRoot := rootPath
+        return out
     }
 
     /**
@@ -90,10 +138,10 @@ class NaviFilter {
         tmpFile  := A_Temp . "\navi_fidx_" . A_TickCount . ".txt"
         ; 末尾 \ をエスケープ（C ランタイムの \" 解析対策）
         safeRoot := (SubStr(rootPath, -1) = "\") ? rootPath . "\" : rootPath
-        maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
-        depthOpt := (maxDepth > 0) ? " --max-depth " . maxDepth : ""
-        cmd := '"' . fdPath . '" --type d' . depthOpt . ' --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
-        pid := NaviSearch._RunNoWindowToFile(cmd, tmpFile)
+        ; 深さは制限せずに集める（一覧は全部から探す。ツリーの絞り込みの深さは ApplyTreeFilter で絞る）
+        ; 集めすぎは FD_INDEX_TIMEOUT_MS の打ち切りで防ぐ
+        cmd := '"' . fdPath . '" --type d --no-ignore-vcs --color never --absolute-path . "' . safeRoot . '"'
+        pid := NaviFd._RunNoWindowToFile(cmd, tmpFile)
         if (pid = 0)
             return false
         this._FdIndexPid    := pid
@@ -207,9 +255,9 @@ class NaviFilter {
             return false
         }
         ; ネットワークパスは fd を使用しない（サーバー負荷対策）
-        useFd  := !this._IsNetworkPath(rootPath)
-               && (IniRead(NaviSearch.IniPath, "Search", "UseFdForFilter", "1") != "0")
-        fdPath := useFd ? NaviSearch._FindFd() : ""
+        useFd  := !this.IsOnNetwork(rootPath)
+               && (IniRead(NaviFd.IniPath, "Search", "UseFdForFilter", "1") != "0")
+        fdPath := useFd ? NaviFd._FindFd() : ""
         if (fdPath != "" && this._StartFolderIndexFd(rootPath, fdPath)) {
             this._OnIndexReadyCb := onReady
             return false
@@ -225,7 +273,7 @@ class NaviFilter {
      */
     static PrefetchFolderIndex(rootPath) {
         ; ネットワークパスは自動インデックス構築をスキップ（サーバー負荷対策）
-        if (this._IsNetworkPath(rootPath))
+        if (this.IsOnNetwork(rootPath))
             return
         if (this._IndexedRoot == rootPath || (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath))
             return
@@ -262,7 +310,7 @@ class NaviFilter {
 
     ; ==============================================================================
     ; ディレクトリ変更監視（FindFirstChangeNotification + SetTimer ポーリング）
-    ; ネットワークパス非対応のため _IsNetworkPath チェックで除外する
+    ; ネットワークパス非対応のため IsOnNetwork で除外する
     ; ==============================================================================
 
     /**
@@ -272,7 +320,7 @@ class NaviFilter {
      */
     static _StartDirWatch(rootPath) {
         this._StopDirWatch()
-        if (this._IsNetworkPath(rootPath))
+        if (this.IsOnNetwork(rootPath))
             return
         ; ディレクトリハンドルを開く（FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED）
         hDir := DllCall("CreateFileW"
@@ -392,14 +440,13 @@ class NaviFilter {
      */
     static OnTreeFilterChange() {
         nv := this._navi
-        if (nv._SearchMode)
-            return
         if (this._treeFilterCallback != "")
             SetTimer(this._treeFilterCallback, 0)
         query := nv.GuiObj["TreeFilter"].Value
         cb := () => this.ApplyTreeFilter(query)
         this._treeFilterCallback := cb
-        SetTimer(cb, -300)  ; 300ms デバウンス
+        ; ツリー再構築は重いので 300ms 待つ。リストは軽いので打鍵に追従させる
+        SetTimer(cb, (NaviDirList.Active || NaviBrowse.Active) ? -NaviDirList.DEBOUNCE_MS : -300)
     }
 
     /**
@@ -409,6 +456,16 @@ class NaviFilter {
     static ApplyTreeFilter(query) {
         nv := this._navi
         this._treeFilterCallback := ""
+        ; 3 列表示中は中央の列を絞り込む
+        if (NaviBrowse.Active) {
+            NaviBrowse.ApplyFilter(query)
+            return
+        }
+        ; リスト表示中はツリーではなくリストを絞り込む
+        if (NaviDirList.Active) {
+            NaviDirList.Apply(query)
+            return
+        }
         this._FilterCancelled    := false
         ; 再入防止: 実行中なら最新クエリを保留して即リターン
         if (this._FilterRunning) {
@@ -434,13 +491,35 @@ class NaviFilter {
                 return
             }
             ; スペース区切り=AND、"|"区切り=OR でターム分割
+            ; 先頭の ' は一覧（あいまい一致）で「続けて並んだものだけ」の印。ツリーはもともと続けて並んだものだけに
+            ; 一致するので、外して同じ意味にする（同じ入力欄で、表示によって書き方の意味が変わらないように）
             terms := []
             for t in StrSplit(query, " ") {
-                if (Trim(t) != "")
-                    terms.Push(StrSplit(Trim(t), "|"))  ; 各要素は OR 候補の配列
+                alts := []
+                for alt in StrSplit(Trim(t), "|") {
+                    alt := LTrim(alt, "'")
+                    if (alt != "")
+                        alts.Push(alt)
+                }
+                if (alts.Length > 0)
+                    terms.Push(alts)  ; 各要素は OR 候補の配列
             }
+            if (terms.Length == 0) {  ; ' だけなど、探す文字がない
+                this._ShowTreeMessage(tv, "(一致なし)")
+                return
+            }
+            ; 絞り込む対象（入力欄の左のボタン）: フォルダ / ファイル / 両方
+            kind := nv._FilterKind
+            wantDirs := (kind != "file"), wantFiles := (kind != "dir")
+            ; ネットワーク上のルートは、配下を全部読みに行く前に確かめる（一覧と同じ。サーバーの負荷対策）
+            needDirs := wantDirs && this._IndexedRoot != rootPath
+            needFiles := wantFiles && NaviDirList._FileIndexedRoot != rootPath
+                && !(NaviDirList._FilePid != 0 && NaviDirList._FileRoot == rootPath)
+            if ((needDirs || needFiles) && !this._ConfirmNetwork(tv, rootPath
+                , (needDirs && needFiles) ? "フォルダとファイル" : needDirs ? "フォルダ" : "ファイル"))
+                return
             ; キャッシュが古ければ再構築
-            if (this._IndexedRoot != rootPath) {
+            if (wantDirs && this._IndexedRoot != rootPath) {
                 ; fd 完了後コールバック: フィルタを再スケジュール
                 onReady := () => SetTimer(() => this.ApplyTreeFilter(query), -1)
                 if !this._EnsureIndex(rootPath, onReady) {
@@ -449,38 +528,40 @@ class NaviFilter {
                     return
                 }
             }
-            ; キャッシュからメモリ内検索（最後のタームはフォルダ名に、それ以前はパス全体にマッチ）
-            ; 例: "myapp src" → パスに "myapp" を含み、かつフォルダ名に "src" を含む
-            lastTermIdx := terms.Length
-            results := []
-            for fullPath in this._FolderIndex {
-                SplitPath(fullPath, &fname)
-                matched := true
-                for tIdx, orGroup in terms {
-                    target      := (tIdx = lastTermIdx) ? fname : fullPath
-                    groupMatched := false
-                    for alt in orGroup {
-                        if (alt != "" && InStr(target, alt, false)) {
-                            groupMatched := true
-                            break
-                        }
-                    }
-                    if !groupMatched {
-                        matched := false
-                        break
-                    }
+            ; ファイルの索引は一覧（NaviDirList）と共用。集め終わったら ReapplyTree でここをやり直す
+            if (wantFiles && NaviDirList._FileIndexedRoot != rootPath) {
+                if !NaviDirList._EnsureFileIndex(rootPath) {
+                    this._ShowTreeMessage(tv, "ファイルを集めています…")
+                    return
                 }
-                if matched
-                    results.Push(fullPath)
+            }
+            ; キャッシュからメモリ内検索（最後のタームは名前に、それ以前はパス全体にマッチ）
+            ; 例: "myapp src" → パスに "myapp" を含み、かつ名前に "src" を含む
+            ; ツリーの絞り込みは設定の深さまで（ルート直下が 1。0 は無制限）。索引は一覧と共用なので深さはここで絞る
+            maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
+            rootLen := StrLen(RTrim(rootPath, "\"))
+            results := []  ; [{ path, isFile }]。フォルダを先に並べる（ツリーでもフォルダがファイルより上に来るように）
+            for spec in [[wantDirs, this._FolderIndex, false], [wantFiles, NaviDirList._FileIndex, true]] {
+                if !spec[1]
+                    continue
+                for fullPath in spec[2] {
+                    ; 深さはフォルダだけに効かせる（ファイルは深い所にあるものほど探したいので、全部から探す）
+                    if (maxDepth > 0 && !spec[3]) {
+                        StrReplace(SubStr(fullPath, rootLen + 2), "\", , , &depth)
+                        if (depth + 1 > maxDepth)
+                            continue
+                    }
+                    if this._TermsMatch(fullPath, terms)
+                        results.Push({ path: fullPath, isFile: spec[3] })
+                }
             }
             ; ツリー再構築
             tv.Delete()
             nv.FilesShown          := Map()
             this._FilterMatchIdSet := Map()
             NaviMark._MarkFilterActive := false
-            NaviSearch._HighlightedIdSet := Map()
             if (results.Length == 0) {
-                tv.Add("(一致なし)", 0)
+                this._ShowTreeMessage(tv, "(一致なし)")
                 return
             }
             ; 結果件数が多すぎると tv.Add ループが GUI を長時間ブロックするためキャップする
@@ -491,13 +572,15 @@ class NaviFilter {
             rootBase := RTrim(rootPath, "\")
             rootID   := tv.Add(rootPath, 0, "Expand Icon1")
             if (tooMany)
-                tv.Add("… 上位 " . filterResultCap . " 件を表示（キーワードを追加して絞り込んでください）", rootID)
+                tv.Add("… 上位 " . filterResultCap . " 件を表示（キーワードを足すか、一覧 Ctrl+E で探してください）", rootID)
             addedPaths := Map()
             addedPaths[StrLower(rootBase)] := rootID
             firstMatchID := 0
-            for idx, fullPath in results {
+            fileMatchIds := Map()  ; 一致したファイルのノード（中身を読みに行かない）
+            for idx, res in results {
                 if (this._FilterCancelled)
                     return
+                fullPath := res.path
                 rel   := SubStr(fullPath, StrLen(rootBase) + 2)
                 parts := StrSplit(rel, "\")
                 parentID    := rootID
@@ -521,10 +604,18 @@ class NaviFilter {
                         ; 先頭マッチに Select を付け、ノードIDを記録（末尾で可視化に使用）
                         if (isMatch && firstMatchID == 0)
                             opts .= " Select"
-                        nodeID := tv.Add(part, parentID, opts . " Icon1")
+                        isFileNode := isMatch && res.isFile
+                        nodeID := tv.Add(part, parentID, opts . " " . (isFileNode ? nv._GetFileIconStr(part) : "Icon1"))
                         if (isMatch && firstMatchID == 0)
                             firstMatchID := nodeID
-                        if (isMatch) {
+                        if (isFileNode) {
+                            this._FilterMatchIdSet[nodeID] := true
+                            fileMatchIds[nodeID] := true
+                            ; 親フォルダに「ファイルを表示済み」として登録し、展開したときに同じファイルを重ねて足さない
+                            if !nv.FilesShown.Has(parentID)
+                                nv.FilesShown[parentID] := []
+                            nv.FilesShown[parentID].Push(nodeID)
+                        } else if (isMatch) {
                             this._FilterMatchIdSet[nodeID] := true
                             tv.Add("...loading...", nodeID)  ; ノード作成直後に追加して展開ボタンを即表示
                         }
@@ -541,6 +632,8 @@ class NaviFilter {
             for matchID, _ in this._FilterMatchIdSet {
                 if (this._FilterCancelled)
                     return
+                if fileMatchIds.Has(matchID)
+                    continue
                 ; "...loading..." プレースホルダーを削除してから実子をロード
                 placeholder := tv.GetChild(matchID)
                 if (placeholder != 0 && tv.GetText(placeholder) == "...loading...")
@@ -559,7 +652,8 @@ class NaviFilter {
             }
             this.EnsureFilterDraw(tv)
             ; ファイル表示モードがONならフィルタ結果の各フォルダにもファイルを表示
-            if (nv.GuiObj["AutoFilesCheck"].Value) {
+            ; （ファイルも絞り込んでいるときは、一致したファイルだけを見せたいので足さない）
+            if (nv.GuiObj["AutoFilesCheck"].Value && !wantFiles) {
                 fileMax := 200
                 try fileMax := Integer(IniRead(nv.IniPath, "Settings", "FileMax", "200"))
                 rootKey     := StrLower(rootBase)
@@ -567,7 +661,8 @@ class NaviFilter {
                 for folderKey, nodeID in addedPaths {
                     if (this._FilterCancelled)
                         return
-                    if (folderKey == rootKey)
+                    ; 一致したフォルダは _LoadFilterSub の時点でファイルを表示済みなので、重ねて足さない
+                    if (folderKey == rootKey || nv.FilesShown.Has(nodeID))
                         continue
                     shown := []
                     count := 0
@@ -609,46 +704,79 @@ class NaviFilter {
         }
     }
 
+    /**
+     * fullPath が terms（スペース区切り = AND、| 区切り = OR）に一致するか
+     * 最後のタームは名前に、それ以前はパス全体に、続けて含まれるかで見る（ツリーはあいまい一致にしない。
+     * 関係の薄いフォルダまで大量に開いて見づらくなるため。あいまい一致は一覧 Ctrl+E の役目）
+     */
+    static _TermsMatch(fullPath, terms) {
+        ; 名前に含まれるならパスにも含まれるので、まずパス全体で振り落とす（20 万件を毎回 SplitPath すると遅い）
+        for orGroup in terms {
+            groupMatched := false
+            for alt in orGroup {
+                if (alt != "" && InStr(fullPath, alt, false)) {
+                    groupMatched := true
+                    break
+                }
+            }
+            if !groupMatched
+                return false
+        }
+        ; 残ったものだけ、最後のタームが名前に含まれるかを見る
+        SplitPath(fullPath, &name)
+        for alt in terms[terms.Length] {
+            if (alt != "" && InStr(name, alt, false))
+                return true
+        }
+        return false
+    }
+
+    /**
+     * ツリーの絞り込みで、ネットワーク上のルートの配下（what）を読んでよいか確かめる
+     * 打つたびに絞り込み直すので、「いいえ」は Navi を閉じるまで覚え、そのルートでは聞き直さずに絞り込まない
+     */
+    static _ConfirmNetwork(tv, rootPath, what) {
+        key := StrLower(rootPath)
+        if (NaviDirList._netAllowed.Has(key) || !this.IsOnNetwork(rootPath))  ; 一覧で「はい」と答えていれば読む
+            return true
+        if this._netDenied.Has(key) {
+            this._ShowTreeMessage(tv, "ネットワーク上のフォルダなので絞り込みません（Navi を開き直すと、もう一度確かめます）")
+            return false
+        }
+        this._ShowTreeMessage(tv, "ネットワーク上のフォルダです")
+        ans := NaviDirList.AskNetwork(rootPath, what)
+        if (ans == 0) {
+            this._netDenied[key] := true
+            this._ShowTreeMessage(tv, "ネットワーク上のフォルダなので絞り込みません（Navi を開き直すと、もう一度確かめます）")
+        }
+        return (ans == 1)
+    }
+
+    ; ツリーを空にして、案内の行を 1 つだけ出す（アイコンなし。パスの行には出さない: MessageNodeId）
+    static _ShowTreeMessage(tv, msg) {
+        tv.Delete()
+        this._navi.FilesShown := Map()
+        this._FilterMatchIdSet := Map()
+        this.MessageNodeId := tv.Add(msg, 0, "Icon9999")  ; 画像リストにない番号でアイコンを出さない（TreeView は Icon0 だと 1 番目の絵になる）
+    }
+
+    /** ファイルの索引ができたとき: ツリーでファイルを絞り込んでいる最中なら、その文字でやり直す */
+    static ReapplyTree() {
+        nv := this._navi
+        if !(nv.GuiObj && WinExist(nv.GuiObj)) || NaviDirList.Active || NaviBrowse.Active || nv._FilterKind == "dir"
+            return
+        query := nv.GuiObj["TreeFilter"].Value
+        if (Trim(query) != "")
+            this.ApplyTreeFilter(query)
+    }
+
     ; ==============================================================================
     ; カスタムドロー（フィルタマッチ着色）
     ; ==============================================================================
 
-    ; フィルタマッチ着色カスタムドロー登録（初回のみ）
+    ; 着色は NaviTreeDraw がまとめて行う（一致したノードは _FilterMatchIdSet を参照）
     static EnsureFilterDraw(tv) {
-        this._FilterTvHwnd := tv.Hwnd
-        if (this._FilterDrawHandler != "")
-            return
-        handler := (w, l, m, h) => NaviFilter._OnFilterNotify(w, l, m, h)
-        OnMessage(NaviFilter._navi.WM_NOTIFY, handler)
-        this._FilterDrawHandler := handler
-    }
-
-    ; WM_NOTIFY → NM_CUSTOMDRAW ハンドラー（フィルタマッチノードの着色）
-    ; NaviSearch の検索ハイライトハンドラーと共存: マッチ無しは "" を返し次のハンドラーへ委譲
-    static _OnFilterNotify(wParam, lParam, msg, hwnd) {
-        if (NumGet(lParam, 0, "ptr") != NaviFilter._FilterTvHwnd)
-            return
-        if (NumGet(lParam, A_PtrSize * 2, "int") != -12)  ; NM_CUSTOMDRAW
-            return
-        stageOff := (A_PtrSize = 8) ? 24 : 12
-        stage    := NumGet(lParam, stageOff, "uint")
-        if (stage = 0x1) {  ; CDDS_PREPAINT
-            return (NaviFilter._FilterMatchIdSet.Count > 0 || NaviMark._MarkedIdSet.Count > 0) ? 0x20 : ""
-        }
-        if (stage = 0x10001) {  ; CDDS_ITEMPREPAINT
-            specOff := (A_PtrSize = 8) ? 56 : 36
-            itemId  := NumGet(lParam, specOff, "ptr")
-            clrOff  := (A_PtrSize = 8) ? 80 : 48
-            ; マーク色はフィルタマッチ色より優先
-            if (NaviMark._MarkedIdSet.Has(itemId)) {
-                NumPut("uint", NaviMark.MARK_COLOR, lParam, clrOff)
-                return 0
-            }
-            if (NaviFilter._FilterMatchIdSet.Has(itemId)) {
-                NumPut("uint", NaviFilter.FILTER_MATCH_COLOR, lParam, clrOff)
-                return 0
-            }
-        }
+        NaviTreeDraw.Attach(tv)
     }
 
     /**

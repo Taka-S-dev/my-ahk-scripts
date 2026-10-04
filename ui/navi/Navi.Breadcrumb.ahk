@@ -14,7 +14,6 @@ class NaviBreadcrumb {
     static _lastSelectedId := 0   ; 前回の選択ノード ID（変更検知用）
 
     ; --- 定数 ---
-    static BREADCRUMB_COLOR    := "505050"  ; パンくずテキスト色（グレー）
     static BREADCRUMB_HEIGHT   := 20        ; パンくずコントロールの高さ（px）
     static BREADCRUMB_WATCH_MS := 100       ; 選択監視タイマー間隔（ms）
 
@@ -52,6 +51,13 @@ class NaviBreadcrumb {
                 this.StopWatcher()
                 return
             }
+            if (NaviBrowse.Active || NaviDirList.Active) {
+                path := NaviBrowse.Active ? NaviBrowse.SelectedPath() : NaviDirList.SelectedPath()
+                if (path != nv.GuiObj["Breadcrumb"].Value)
+                    nv.GuiObj["Breadcrumb"].Value := path
+                this._lastSelectedId := -1  ; ツリーへ戻ったときに必ず更新させる
+                return
+            }
             tv := nv.GuiObj["FolderTree"]
             id := tv.GetSelection()
             if (id != this._lastSelectedId) {
@@ -69,6 +75,11 @@ class NaviBreadcrumb {
         try {
             if !(nv.GuiObj && nv.GuiObj.Hwnd && WinExist("ahk_id " nv.GuiObj.Hwnd))
                 return
+            if (NaviBrowse.Active || NaviDirList.Active) {
+                nv.GuiObj["Breadcrumb"].Value := NaviBrowse.Active ? NaviBrowse.SelectedPath() : NaviDirList.SelectedPath()
+                this._lastSelectedId := -1
+                return
+            }
             tv := nv.GuiObj["FolderTree"]
             id := tv.GetSelection()
             this._lastSelectedId := id
@@ -81,7 +92,8 @@ class NaviBreadcrumb {
         try {
             if !(nv.GuiObj && nv.GuiObj.Hwnd)
                 return
-            nv.GuiObj["Breadcrumb"].Value := (id = 0) ? "" : nv._GetTVFullPath(tv, id)
+            ; 「(一致なし)」などの案内の行はフォルダではないので、パスを出さない
+            nv.GuiObj["Breadcrumb"].Value := (id = 0 || id = NaviFilter.MessageNodeId) ? "" : nv._GetTVFullPath(tv, id)
         }
     }
 
@@ -106,6 +118,13 @@ class NaviBreadcrumb {
      */
     static _OnClick() {
         nv := this._navi
+        ; 3 列では上の階層へ上がるメニューにする。一覧は階層を持たないので使わない
+        if (NaviBrowse.Active) {
+            NaviBrowse.ShowAncestorMenu()
+            return
+        }
+        if (NaviDirList.Active)
+            return
         tv := nv.GuiObj["FolderTree"]
         id := tv.GetSelection()
         if (id = 0)

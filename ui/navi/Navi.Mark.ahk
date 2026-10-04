@@ -19,7 +19,6 @@ class NaviMark {
     static _LastTreeRootPath := ""    ; 前回の _RefreshTree ルートパス（マーク初期化判定用）
 
     ; --- 定数 ---
-    static MARK_COLOR := 0x0000AA00  ; マーク着色色 BGR: 緑
 
     static Init(naviRef) {
         this._navi := naviRef
@@ -44,7 +43,8 @@ class NaviMark {
     /** 選択ノードのマーク状態をトグルする（Alt+M） */
     static _ToggleMark() {
         nv := this._navi
-        if !(nv.GuiObj && WinExist(nv.GuiObj))
+        ; マークはツリーのノードに付けるので、リスト表示中は扱わない
+        if !(nv.GuiObj && WinExist(nv.GuiObj)) || NaviDirList.Active || NaviBrowse.Active
             return
         tv := nv.GuiObj["FolderTree"]
         selId := tv.GetSelection()
@@ -89,7 +89,7 @@ class NaviMark {
     /** マークフィルタービューのオン/オフをトグルする（Ctrl+M） */
     static _ToggleMarkFilter() {
         nv := this._navi
-        if (this._MarkedPaths.Count == 0 || !(nv.GuiObj && WinExist(nv.GuiObj)))
+        if (this._MarkedPaths.Count == 0 || !(nv.GuiObj && WinExist(nv.GuiObj)) || NaviDirList.Active || NaviBrowse.Active)
             return
         tv := nv.GuiObj["FolderTree"]
         rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
@@ -128,7 +128,6 @@ class NaviMark {
         nv.FilesShown := Map()
         NaviFilter._FilterMatchIdSet := Map()
         this._MarkedIdSet := Map()
-        NaviSearch._HighlightedIdSet := Map()
 
         rootBase := RTrim(rootPath, "\")
         rootID := tv.Add(rootPath, 0, "Expand Icon1")
