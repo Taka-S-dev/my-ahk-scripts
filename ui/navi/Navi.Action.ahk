@@ -151,7 +151,7 @@ class NaviActions {
                 A_Clipboard := name, ToolTip("Name Copied: " . name),
                 SetTimer(() => ToolTip(), -nv.TOOLTIP_COPY_DURATION)) },
         { key: "f", group: "その他", label: "&F: Filter Files", fn: (path, nv) => nv.FocusFilter("file") },
-        { key: "r", group: "その他", label: "&R: Right-Click Menu", fn: (path, nv) => NaviContextMenu.Show(path, nv) },
+        { key: "r", group: "その他", label: "&R: Right-Click Menu", fn: (path, nv) => NaviContextMenu.Show(path, nv, true) },
     ]
 
     static _InitDefaultActions() {

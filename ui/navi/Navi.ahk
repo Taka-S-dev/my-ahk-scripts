@@ -89,6 +89,8 @@ class Navi {
     ; --- Windows API メッセージ定数 ---
     static WM_SETCURSOR := 0x0020   ; カーソル形状変更通知
     static ACTION_MENU_KEYS := ["^Space", "AppsKey", "+F10"]  ; どこからでもアクションメニューを開くキー
+    static _menuKeyHook := 0  ; メニューの中で Ctrl+H/J/K/L を矢印にするフック（WH_MSGFILTER）
+    static _shownMenu := ""   ; 最後に出したメニュー。選んだ項目の処理が呼ばれるまで捨てない（ShowMenu）
     static WM_ACTIVATE := 0x0006   ; ウィンドウアクティブ状態変更
     static WM_SETTEXT := 0x000C   ; コントロールテキスト設定（プレースホルダー等）
     static WM_NOTIFY := 0x004E   ; コモンコントロール通知（カスタムドロー等）
@@ -262,7 +264,7 @@ class Navi {
         tv.OnEvent("DoubleClick", (obj, id, *) => this._HandleActivate())
         this.GuiObj.OnEvent("Close", (*) => this._OnXClose())
 
-        ; ホットキー設定（Naviアクティブ時のみ）
+        ; ホットキー設定（Naviアクティブ時のみ。メニューを出している間は前面が Navi でなくなるので止まる: ShowMenu）
         HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
         Hotkey("Space", (*) => this._HandleSpace(), "On")
         ; 入力中でも開けるアクションメニュー。入力欄の Space は文字（あいまい検索の区切り）なので、
@@ -298,6 +300,13 @@ class Navi {
         Hotkey("!+m", (*) => NaviMark._ClearAllMarks(), "On")
         NaviTab.RegisterHotkeys()
         HotIf()
+        ; メニューの中でも Ctrl+H/J/K/L を ←↓↑→ にする（Navi のほかの場所と同じ）
+        ; メニューを出している間は AHK のホットキーの処理が走らないので、
+        ; メニューに届くキーそのものを入れ替える。フックはこのスレッドのメニューだけに効き、Navi を開いている間だけ働く
+        if !this._menuKeyHook
+            this._menuKeyHook := DllCall("user32\SetWindowsHookExW", "int", -1  ; WH_MSGFILTER
+                , "ptr", CallbackCreate((code, wParam, lParam) => this._MenuKeyFilter(code, wParam, lParam), "F", 3)
+                , "ptr", 0, "uint", DllCall("kernel32\GetCurrentThreadId", "uint"), "ptr")
 
         ; パンくず更新用タイマー開始
         NaviBreadcrumb.StartWatcher()
@@ -1293,21 +1302,55 @@ class Navi {
         m.Add("設定...", (*) => this._ShowSettingsGui(this.GuiObj))
         ; ⚙ の真下に、右端をそろえて出す（⚙ は窓の右端にあるので、左端そろえだと窓からはみ出す）
         ; 位置は画面の物理ピクセルで渡す（GetPos は DPI 換算の単位なので、高 DPI では半分の位置になる）
-        ; Esc はメニューを閉じるのに使うので、Navi を閉じるホットキーを一時的に止める
         btn := this.GuiObj["SettingsBtn"]
         rect := Buffer(16, 0)
         DllCall("user32\GetWindowRect", "ptr", btn.Hwnd, "ptr", rect)
-        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("Esc", "Off")
-        HotIf()
-        ; Menu.Show は右端そろえができないので TrackPopupMenuEx を使う。項目の実行は AHK の窓（A_ScriptHwnd）が受ける
+        this.ShowMenu(m, NumGet(rect, 8, "int"), NumGet(rect, 12, "int"), 0x8)  ; TPM_RIGHTALIGN
+    }
+
+    /**
+     * Navi のメニュー（右クリック・⚙・パンくず・戻るの一覧・タブ）を出す
+     * 出している間は Navi ではなく AHK の窓（A_ScriptHwnd）を前面にする。Navi が前面のままだと、
+     * ↑↓←→・Enter・Esc などを Navi のホットキーがメニューより先に取り、メニューの中をキーで動けない
+     * 選んだ項目は、Navi を前面に戻してから実行する（項目が開く窓が、戻した Navi の後ろに隠れないように）
+     * menu: Menu か HMENU。x, y を省くとマウスの位置。flags: TPM_RIGHTALIGN など
+     * runChoice: false なら項目は実行せず、選んだ ID を返すだけ（シェルの右クリックメニューは自分で実行する）
+     */
+    static ShowMenu(menu, x := "", y := "", flags := 0, runChoice := true) {
+        hMenu := IsObject(menu) ? menu.Handle : menu
+        ; 項目の処理は、この関数が終わったあとに AHK が呼ぶ。それまでに Menu が捨てられると、
+        ; 選んだ ID に当たる項目が見つからず何も起きないので、次のメニューを出すまで持っておく
+        this._shownMenu := menu
+        if (x == "" || y == "") {
+            CoordMode("Mouse", "Screen")
+            MouseGetPos(&x, &y)
+        }
         DllCall("user32\SetForegroundWindow", "ptr", A_ScriptHwnd)
-        DllCall("user32\TrackPopupMenuEx", "ptr", m.Handle, "uint", 0x8  ; TPM_RIGHTALIGN | TPM_TOPALIGN
-            , "int", NumGet(rect, 8, "int"), "int", NumGet(rect, 12, "int"), "ptr", A_ScriptHwnd, "ptr", 0)
+        ; TPM_RETURNCMD: 選んだ項目の ID を返してもらう（その場では実行しない）
+        cmd := DllCall("user32\TrackPopupMenuEx", "ptr", hMenu, "uint", flags | 0x100
+            , "int", x, "int", y, "ptr", A_ScriptHwnd, "ptr", 0, "uint")
         DllCall("user32\PostMessageW", "ptr", A_ScriptHwnd, "uint", 0, "ptr", 0, "ptr", 0)  ; WM_NULL（メニューが確実に閉じるように）
-        HotIfWinActive("ahk_id " this.GuiObj.Hwnd)
-        Hotkey("Esc", "On")
-        HotIf()
+        ; ほかのアプリをクリックしてメニューを閉じたときは、そのアプリから前面を取り返さない
+        fg := DllCall("user32\GetForegroundWindow", "ptr")
+        if ((cmd || fg == A_ScriptHwnd || fg == 0) && this.GuiObj && WinExist("ahk_id " this.GuiObj.Hwnd))
+            WinActivate("ahk_id " this.GuiObj.Hwnd)
+        if (cmd && runChoice)
+            DllCall("user32\PostMessageW", "ptr", A_ScriptHwnd, "uint", 0x0111, "ptr", cmd, "ptr", 0)  ; WM_COMMAND: AHK がその項目の処理を呼ぶ
+        return cmd
+    }
+
+    ; メニューに届いた Ctrl+H/J/K/L を矢印キーに置き換える（MSGF_MENU の WM_KEYDOWN だけ）
+    static _MenuKeyFilter(code, wParam, lParam) {
+        static ARROWS := Map(0x48, 0x25, 0x4A, 0x28, 0x4B, 0x26, 0x4C, 0x27)  ; H/J/K/L → ←↓↑→
+        if (code == 2 && this.GuiObj  ; MSGF_MENU
+            && NumGet(lParam, A_PtrSize, "uint") == 0x0100  ; MSG.message = WM_KEYDOWN
+            && ARROWS.Has(vk := NumGet(lParam, A_PtrSize * 2, "uptr") & 0xFF)
+            && GetKeyState("Ctrl") && !GetKeyState("Alt") && !GetKeyState("Shift")) {
+            ; Ctrl+J などは捨てて、代わりに矢印キーをメニューに送る
+            DllCall("user32\PostMessageW", "ptr", NumGet(lParam, 0, "ptr"), "uint", 0x0100, "ptr", ARROWS[vk], "ptr", 0)
+            return 1
+        }
+        return DllCall("user32\CallNextHookEx", "ptr", 0, "int", code, "ptr", wParam, "ptr", lParam, "ptr")
     }
 
     /**
