@@ -124,19 +124,10 @@ class NaviContextMenu {
         if pCtxMenu2 {
             NaviContextMenu._ctxMenu2Ptr  := pCtxMenu2
             NaviContextMenu._ctxVtable2   := NumGet(pCtxMenu2, 0, "ptr")
-            NaviContextMenu._ctxMenuHwnd  := hwnd
+            NaviContextMenu._ctxMenuHwnd  := A_ScriptHwnd  ; メニューの持ち主（Navi.ShowMenu）
             NaviContextMenu._ctxMenu2Cb   := ObjBindMethod(NaviContextMenu, "_OnInitMenuPopup")
             OnMessage(NaviContextMenu.WM_INITMENUPOPUP, NaviContextMenu._ctxMenu2Cb)
         }
-
-        ; AHK の低レベルフックがメニューよりキーを先取りするため、表示中は一時無効化
-        HotIfWinActive("ahk_id " hwnd)
-        Hotkey("Enter", "Off")
-        Hotkey("Space", "Off")
-        Hotkey("Esc", "Off")
-        for key in navi.ACTION_MENU_KEYS  ; メニューの中のキー操作（Shift+F10 など）も横取りしない
-            Hotkey(key, "Off")
-        HotIf()
 
         ; 出す位置は Windows の右クリックメニューと同じ: マウスで開いたらカーソルの位置、
         ; キーボードで開いたら選んでいる行の右端（カーソルは行と関係ない場所にあることが多い）
@@ -144,14 +135,13 @@ class NaviContextMenu {
         MouseGetPos(&mx, &my)
         if fromKeyboard
             NaviContextMenu._SelectedItemPoint(navi, &mx, &my)
-        DllCall("user32\SetForegroundWindow", "ptr", hwnd)
         ; キーボードで開いたときは先頭の項目を選んだ状態にする（Explorer の Shift+F10 と同じ）
         ; 何も選ばれていないと、Enter を押しても何も起きず、キーだけでは操作できないように見える
-        ; メニューは開いた直後にスレッドのキュー（持ち主の窓あて）から ↓ を読む
+        ; メニューは開いた直後にスレッドのキューから ↓ を読む
         if fromKeyboard
-            DllCall("user32\PostMessageW", "ptr", hwnd, "uint", 0x0100, "ptr", 0x28, "ptr", 0)  ; WM_KEYDOWN VK_DOWN
-        cmd := DllCall("user32\TrackPopupMenu", "ptr", hMenu,
-            "uint", 0x0100, "int", mx, "int", my, "int", 0, "ptr", hwnd, "ptr", 0, "int")
+            DllCall("user32\PostMessageW", "ptr", A_ScriptHwnd, "uint", 0x0100, "ptr", 0x28, "ptr", 0)  ; WM_KEYDOWN VK_DOWN
+        ; 選んだ項目はここで実行する（「送る」などは Shell の InvokeCommand で動かす）
+        cmd := navi.ShowMenu(hMenu, mx, my, 0, false)
 
         ; 選択項目の表示テキストを取得（DestroyMenu前に）
         menuItemText := ""
@@ -169,15 +159,6 @@ class NaviContextMenu {
             NaviContextMenu._ctxMenu2Ptr := 0
             NaviContextMenu._ctxMenu2Cb  := ""
         }
-
-        ; ホットキー復元
-        HotIfWinActive("ahk_id " hwnd)
-        Hotkey("Enter", "On")
-        Hotkey("Space", "On")
-        Hotkey("Esc", "On")
-        for key in navi.ACTION_MENU_KEYS
-            Hotkey(key, "On")
-        HotIf()
 
         ; 選択コマンドを実行
         if cmd > 0 {

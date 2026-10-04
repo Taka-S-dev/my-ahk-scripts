@@ -553,14 +553,7 @@ class NaviBrowse {
                 m.Disable(label)
             }
         }
-        ; メニューの Esc を Navi を閉じるホットキーに取られないよう、表示中は止める
-        HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
-        Hotkey("Esc", "Off")
-        HotIf()
-        m.Show()
-        HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
-        Hotkey("Esc", "On")
-        HotIf()
+        nv.ShowMenu(m)
     }
 
     /** 選んでいるフォルダに入る（ファイルなら何もしない） */

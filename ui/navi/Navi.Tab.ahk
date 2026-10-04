@@ -249,7 +249,7 @@ class NaviTab {
         }
         if (this._TabCount <= 1)
             m.Disable("閉じる")
-        m.Show()
+        this._navi.ShowMenu(m)
     }
 
     /**

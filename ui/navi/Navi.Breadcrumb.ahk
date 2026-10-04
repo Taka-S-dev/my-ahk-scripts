@@ -144,14 +144,7 @@ class NaviBreadcrumb {
                 indent .= "    "
             bcMenu.Add(indent . part.name, ((pid, *) => this._JumpToItem(pid)).Bind(partID))
         }
-        ; Esc ホットキーを一時無効化（メニューの Esc 閉じを AHK が横取りするため）
-        HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
-        Hotkey("Esc", "Off")
-        HotIf()
-        bcMenu.Show()
-        HotIfWinActive("ahk_id " nv.GuiObj.Hwnd)
-        Hotkey("Esc", "On")
-        HotIf()
+        nv.ShowMenu(bcMenu)
     }
 
     /** 指定ノードを選択・展開してフォーカスを移す */
