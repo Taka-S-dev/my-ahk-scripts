@@ -166,7 +166,6 @@ class NaviDirList {
         nv := this._navi
         if !(nv.GuiObj && WinExist(nv.GuiObj))
             return
-        ; ファイル検索モード中はフォルダフィルターに戻してから切り替える
         if (this.Active)
             this.RevealInTree()
         else
