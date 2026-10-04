@@ -429,27 +429,6 @@ class NaviDirList {
         return this._rows[idx + 1]
     }
 
-    /**
-     * 選択行の名前欄の右上をスクリーン座標で返す（コンテキストメニューの表示位置）
-     * 選択がなければ false
-     */
-    static GetMenuPoint(&x, &y) {
-        lv := this._navi.GuiObj["DirList"]
-        row := lv.GetNext(0)
-        if (row == 0)
-            return false
-        rect := Buffer(16, 0)
-        NumPut("int", 2, rect, 0)  ; LVIR_LABEL
-        if !SendMessage(0x100E, row - 1, rect.Ptr, lv)  ; LVM_GETITEMRECT
-            return false
-        pt := Buffer(8, 0)
-        NumPut("int", NumGet(rect, 8, "int"), "int", NumGet(rect, 4, "int"), pt, 0)
-        DllCall("user32\ClientToScreen", "ptr", lv.Hwnd, "ptr", pt)
-        x := NumGet(pt, 0, "int")
-        y := NumGet(pt, 4, "int")
-        return true
-    }
-
     ; ==============================================================================
     ; 絞り込み
     ; ==============================================================================

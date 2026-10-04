@@ -61,7 +61,8 @@ class NaviContextMenu {
     ; -----------------------------------------------------------------------
     ; Windows Shell IContextMenu を呼び出して Explorer と同じ右クリックメニューを表示
     ; -----------------------------------------------------------------------
-    static Show(fullPath, navi) {
+    ; fromKeyboard: アクションメニュー（R）など、キーで開いたとき true
+    static Show(fullPath, navi, fromKeyboard := false) {
         if !(navi.GuiObj && WinExist(navi.GuiObj))
             return
         hwnd := navi.GuiObj.Hwnd
@@ -137,29 +138,18 @@ class NaviContextMenu {
             Hotkey(key, "Off")
         HotIf()
 
-        ; 選択アイテムの右端をメニュー表示位置に使う
-        if (NaviBrowse.Active) {
-            CoordMode("Mouse", "Screen")
-            MouseGetPos(&mx, &my)
-        } else if (NaviDirList.Active) {
-            if !NaviDirList.GetMenuPoint(&mx, &my) {
-                CoordMode("Mouse", "Screen")
-                MouseGetPos(&mx, &my)
-            }
-        } else {
-            tv := navi.GuiObj["FolderTree"]
-            selId := tv.GetSelection()
-            rect := Buffer(16, 0)
-            NumPut("uptr", selId, rect, 0)
-            DllCall("user32\SendMessageW", "ptr", tv.Hwnd, "uint", 0x1104, "uptr", 1, "ptr", rect)
-            pt := Buffer(8, 0)
-            NumPut("int", NumGet(rect, 8, "Int"), pt, 0)  ; right edge of item label
-            NumPut("int", NumGet(rect, 4, "Int"), pt, 4)  ; top of item
-            DllCall("user32\ClientToScreen", "ptr", tv.Hwnd, "ptr", pt)
-            mx := NumGet(pt, 0, "Int")
-            my := NumGet(pt, 4, "Int")
-        }
+        ; 出す位置は Windows の右クリックメニューと同じ: マウスで開いたらカーソルの位置、
+        ; キーボードで開いたら選んでいる行の右端（カーソルは行と関係ない場所にあることが多い）
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+        if fromKeyboard
+            NaviContextMenu._SelectedItemPoint(navi, &mx, &my)
         DllCall("user32\SetForegroundWindow", "ptr", hwnd)
+        ; キーボードで開いたときは先頭の項目を選んだ状態にする（Explorer の Shift+F10 と同じ）
+        ; 何も選ばれていないと、Enter を押しても何も起きず、キーだけでは操作できないように見える
+        ; メニューは開いた直後にスレッドのキュー（持ち主の窓あて）から ↓ を読む
+        if fromKeyboard
+            DllCall("user32\PostMessageW", "ptr", hwnd, "uint", 0x0100, "ptr", 0x28, "ptr", 0)  ; WM_KEYDOWN VK_DOWN
         cmd := DllCall("user32\TrackPopupMenu", "ptr", hMenu,
             "uint", 0x0100, "int", mx, "int", my, "int", 0, "ptr", hwnd, "ptr", 0, "int")
 
@@ -215,6 +205,31 @@ class NaviContextMenu {
             else
                 navi._DestroyGui()
         }
+    }
+
+    ; 今の表示で選んでいる行の右端（画面の座標）。取れなければ x, y を変えずに false
+    static _SelectedItemPoint(navi, &x, &y) {
+        pt := Buffer(8, 0)
+        if (NaviBrowse.Active || NaviDirList.Active) {
+            lv := navi.GuiObj[NaviBrowse.Active ? "BrowseCur" : "DirList"]
+            row := lv.GetNext(0)
+            rect := Buffer(16, 0)
+            NumPut("int", 2, rect, 0)  ; LVIR_LABEL
+            if (!row || !SendMessage(0x100E, row - 1, rect.Ptr, lv))  ; LVM_GETITEMRECT
+                return false
+            ctl := lv
+        } else {
+            ctl := navi.GuiObj["FolderTree"]
+            selId := ctl.GetSelection()
+            rect := Buffer(16, 0)
+            NumPut("uptr", selId, rect, 0)
+            if (!selId || !DllCall("user32\SendMessageW", "ptr", ctl.Hwnd, "uint", 0x1104, "uptr", 1, "ptr", rect))  ; TVM_GETITEMRECT（ラベルだけ）
+                return false
+        }
+        NumPut("int", NumGet(rect, 8, "int"), "int", NumGet(rect, 4, "int"), pt, 0)  ; 右端・上端
+        DllCall("user32\ClientToScreen", "ptr", ctl.Hwnd, "ptr", pt)
+        x := NumGet(pt, 0, "int"), y := NumGet(pt, 4, "int")
+        return true
     }
 
     ; -----------------------------------------------------------------------
