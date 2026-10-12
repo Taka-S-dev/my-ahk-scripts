@@ -801,12 +801,17 @@ class NaviDirList {
      *   名前にあいまい一致   300〜400（文字の間が詰まっているほど高い）
      *   パスにあいまい一致   100〜199
      * パス全体を 1 行で見せるので、パスのどこかに続けて当たっている行を、名前に飛び飛びに当たった行より上にする
+     * 上のフォルダにもう同じ語がある行（一致したフォルダの中身）は、名前に含んでいても「パスに続けて含む」扱いにする。
+     * 「openssl」で openssl-1.1.1q\include\openssl より openssl-1.1.1q 自身を上に出すため（中身は短い順に後に続く）
      */
     static _Score(rel, name, terms) {
         total := 0
+        dir := SubStr(rel, 1, StrLen(rel) - StrLen(name))
         for t in terms {
             litLen := StrLen(t.lit)
-            if (p := InStr(name, t.lit)) {
+            if (InStr(name, t.lit) && InStr(dir, t.lit)) {
+                s := 450
+            } else if (p := InStr(name, t.lit)) {
                 s := 500 + Max(0, 100 - (StrLen(name) - litLen)) + (p == 1 ? 100 : 0)
             } else if (InStr(rel, t.lit)) {
                 s := 450
