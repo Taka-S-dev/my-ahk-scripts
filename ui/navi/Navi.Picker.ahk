@@ -127,8 +127,12 @@ class NaviPicker {
         this._lvHwnd := 0
         if (g && WinExist(g))
             try g.Destroy()
-        if (backToOwner && nv && nv.GuiObj && WinExist(nv.GuiObj))
-            WinActivate("ahk_id " . nv.GuiObj.Hwnd)
+        ; Navi が見えているときだけ戻す（隠れた窓は WinActivate("ahk_id ...") で見つからず TargetError になり、
+        ; 閉じた Gui は Hwnd を読むだけでエラーになる）
+        hwnd := 0
+        try hwnd := nv.GuiObj.Hwnd
+        if (backToOwner && hwnd && DllCall("user32\IsWindowVisible", "ptr", hwnd))
+            WinActivate("ahk_id " . hwnd)
     }
 
     ; 入力に合わせて候補を絞り込む。keep に名前を渡すとその行を選んでおく（なければ先頭）

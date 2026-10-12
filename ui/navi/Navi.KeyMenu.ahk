@@ -201,8 +201,13 @@ class NaviKeyMenu {
             this._gui := ""
             try g.Destroy()
             owner := this._owner
-            if (backToOwner && owner && WinExist(owner))
-                WinActivate("ahk_id " . owner.Hwnd)
+            ; 持ち主が見えているときだけ戻す。隠れた窓（一覧を開いたまま Explorer Switcher が隠れたときなど）は
+            ; WinExist(Gui) では見つかるが WinActivate("ahk_id ...") では見つからず TargetError になり、
+            ; 閉じた Gui は Hwnd を読むだけでエラーになる
+            hwnd := 0
+            try hwnd := owner.Hwnd
+            if (backToOwner && hwnd && DllCall("user32\IsWindowVisible", "ptr", hwnd))
+                WinActivate("ahk_id " . hwnd)
         }
     }
 }
