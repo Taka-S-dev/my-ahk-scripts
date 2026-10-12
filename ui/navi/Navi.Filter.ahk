@@ -80,6 +80,7 @@ class NaviFilter {
         this._FolderIndex := this.WalkTree(rootPath, "D")
         this._IndexedRoot := rootPath
         this._IndexStale := false
+        NaviFd.DropIndexFile("dirs")  ; fd の出力がないので、fzf には渡せない
     }
 
     /**
@@ -195,7 +196,7 @@ class NaviFilter {
         this._FolderIndex := this._FdPartial
         this._FdPartial := []
         this._FdReadPos := 0
-        try FileDelete(this._FdIndexFile)
+        NaviFd.KeepIndexFile("dirs", this._FdIndexFile)  ; 件数が多い一覧の絞り込みで fzf に渡す
         this._FdIndexFile := ""
         timedOut := this._FdIndexTimedOut
         this._FdIndexTimedOut := false
@@ -336,11 +337,15 @@ class NaviFilter {
     static KeepForReopen() {
         root := this._IndexedRoot
         index := this._FolderIndex
+        indexFile := NaviFd.TakeIndexFile("dirs")
         this.ResetForNewRoot()
         if (root != "" && !this.IsOnNetwork(root)) {
             this._IndexedRoot := root
             this._FolderIndex := index
             this._IndexStale := true
+            NaviFd.KeepIndexFile("dirs", indexFile)
+        } else if (indexFile != "") {
+            try FileDelete(indexFile)
         }
     }
 
@@ -357,6 +362,7 @@ class NaviFilter {
         this._IndexedRoot      := ""
         this._FolderIndex      := []
         this._IndexStale       := false
+        NaviFd.DropIndexFile("dirs")
     }
 
     /**
@@ -481,6 +487,7 @@ class NaviFilter {
             return
         this._IndexedRoot := ""
         this._FolderIndex := []
+        NaviFd.DropIndexFile("dirs")
         nv := this._navi
         try {
             if (nv.GuiObj && WinExist(nv.GuiObj)) {

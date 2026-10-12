@@ -35,6 +35,9 @@ class NaviDirList {
     static _lastInputMs := 0        ; 最後に打って一覧を作り直した時刻
     static _idleApplyCb := ""       ; 打ち終わるのを待って作り直すタイマー
     static IDLE_MS := 400           ; 打つのが止まってから、打っていない作り直しをするまでの時間
+    static _job := ""               ; 進めている絞り込み（_RankStep）。新しく絞り込むと差し替わり、古いものは捨てる
+    static SLICE_MS := 30           ; 絞り込みを 1 回に進める時間。合間に入力と描画を通す
+    static FZF_MIN_ITEMS := 20000   ; この件数以上の一覧は、fzf があれば fzf で絞り込む（AutoHotkey より数倍速い）
     static _netAllowed := Map()     ; 一覧を作ってよいと答えたネットワーク上のルート（Navi を閉じるまで覚える）
     static _asking := false         ; 確認ダイアログを出している間
 
@@ -565,27 +568,166 @@ class NaviDirList {
         this._collected := index.Length
         this._progressCount := partial ? index.Length : 0
         rootBase := RTrim(rootPath, "\")
-        terms := this._ParseQuery(query)
-        rels := this._Candidates(rootBase, query, index)
+        ; 件数が多ければ fzf に任せる（集め終わった一覧だけ。途中の一覧は増えていくので AutoHotkey で絞る）
+        if (!partial && Trim(query) != "" && index.Length >= this.FZF_MIN_ITEMS
+            && (fzf := NaviFd.FindFzf()) != ""
+            && this._StartFzf(fzf, query, rootBase, index, isFiles, keepSelection))
+            return
+        ; 一致を探して並べるのは数十万件になるとスクリプトを止めるので、少しずつ進める（_RankStep）
+        ; 次の文字を打つと新しい絞り込みに差し替わり、古いものは途中で捨てる
+        src := this._Source(rootBase, query, index)
+        job := { query: query, rootBase: rootBase, index: index, partial: partial, isFiles: isFiles
+            , keepSelection: keepSelection, terms: this._ParseQuery(query)
+            , src: src.arr, prefix: src.prefix, n: src.arr.Length, i: 1
+            , matched: [], buckets: Map(), busy: false }
+        this._job := job
+        ; 少ない件数ならここで終わる。終わらなければ残りはタイマーで続ける（Apply をすぐ返し、次の入力を受けられるように）
+        if !this._RankStep(job)
+            SetTimer(() => this._RankRest(job), -1)
+    }
 
-        matched := []
-        ; 件数が多いと並べ替えの間スクリプトが止まるので、先に「絞り込み中…」を描いておく
-        if (rels.Length >= nv.BUSY_ITEMS)
-            nv.SetBusy("rank", "絞り込み中…", true)
-        top := this._Rank(rels, terms, matched)
-        nv.ClearBusy("rank")
-        ; 途中の結果はこのあと増えるので、次の絞り込みに使い回さない
-        this._cacheIndex := partial ? "" : index
-        this._cacheRoot := rootBase
-        this._cacheQuery := query
-        this._cacheRels := matched
-        this._matchCount := matched.Length
-        this._total := index.Length
+    ; 絞り込みの残りを、SLICE_MS ごとに入力と描画を通しながら最後まで進める
+    ; 合間（Sleep(-1)）に次の文字が打たれると _job が差し替わるので、そこでやめる
+    static _RankRest(job) {
+        if (job !== this._job)
+            return
+        if !job.busy {  ; 1 回で終わらなかったときだけ「動いている」表示を出す（すぐ終わる絞り込みでちらつかないように）
+            job.busy := true
+            try this._navi.SetBusy("rank", "絞り込み中…")
+        }
+        loop {
+            Sleep(-1)
+            if (job !== this._job)
+                return
+            if this._RankStep(job)
+                return
+        }
+    }
 
-        if (matched.Length == 0) {
-            this._ShowMessage(partial ? "(まだ一致なし。集めています…)" : "(一致なし)")
+    /**
+     * 絞り込みを SLICE_MS だけ進める。終わったら一覧に出して true（新しい絞り込みに差し替わっていたら捨てて true）
+     */
+    static _RankStep(job) {
+        if (job !== this._job)
+            return true
+        nv := this._navi
+        ; スコア → パス長の 2 段のバケツに振り分ける
+        ; （数万件をまとめて Sort() にかけると並べ替え用の文字列作りだけで数百 ms かかるため、
+        ;   表示する上位の分だけを後で並べる: _TopRels）
+        arr := job.src, n := job.n, i := job.i, pre := job.prefix
+        terms := job.terms, buckets := job.buckets, matched := job.matched
+        deadline := A_TickCount + this.SLICE_MS
+        while (i <= n) {
+            rel := pre ? SubStr(arr[i], pre) : arr[i]
+            i++
+            if (rel != "") {
+                SplitPath(rel, &name)
+                score := this._Score(rel, name, terms)
+                if (score >= 0) {
+                    matched.Push(rel)
+                    byLen := buckets.Has(score) ? buckets[score] : (buckets[score] := Map())
+                    len := StrLen(rel)
+                    (byLen.Has(len) ? byLen[len] : (byLen[len] := [])).Push(rel)
+                }
+            }
+            ; 256 件ごとに、時間切れか、次の打鍵で新しい絞り込みに差し替わったかを見る
+            if (!Mod(i, 256) && (A_TickCount >= deadline || job !== this._job))
+                break
+        }
+        job.i := i
+        if (i <= n)
+            return false
+        this._job := ""
+        try nv.ClearBusy("rank")
+        try this._ShowRanked(job)
+        return true
+    }
+
+    /**
+     * fzf で絞り込む（fzf --filter: 渡した一覧から一致したものを良い順に全部出す）。走らせたら true
+     * 終わるのを _FzfPoll で待つ。次の文字を打つと _job が差し替わり、古い fzf はそこで止める
+     * 語の書き方は fzf と同じ（空白で AND、'abc で続けて並んだものだけ）。大文字小文字は区別しない
+     */
+    static _StartFzf(fzf, query, rootBase, index, isFiles, keepSelection) {
+        ; 渡すのは fd の出力（フルパス）。ルートの部分は照合しない（--nth でルートより下の段だけを見る）
+        input := NaviFd.IndexFile(isFiles ? "files" : "dirs")
+        if (input == "" || !FileExist(input))
+            return false
+        StrReplace(rootBase, "\", , , &rootDepth)
+        out := A_Temp . "\navi_fzf_out_" . A_TickCount . ".txt"
+        cmd := '"' . fzf . '" --filter "' . StrReplace(query, '"', '\"') . '" -i --scheme=path'
+            . ' --delimiter=\\ --nth=' . (rootDepth + 2) . '..'
+        pid := NaviFd._RunNoWindowToFile(cmd, out, input)
+        if !pid
+            return false
+        job := { fzf: true, pid: pid, out: out, query: query, rootBase: rootBase, index: index, partial: false
+            , isFiles: isFiles, keepSelection: keepSelection, terms: this._ParseQuery(query), busy: false }
+        this._job := job
+        SetTimer(() => this._FzfPoll(job), -15)
+        return true
+    }
+
+    static _FzfPoll(job) {
+        if (job !== this._job) {  ; 新しい絞り込みに差し替わった
+            try ProcessClose(job.pid)
+            try FileDelete(job.out)
             return
         }
+        if ProcessExist(job.pid) {
+            if !job.busy {  ; すぐ終わらなかったときだけ「動いている」表示を出す
+                job.busy := true
+                try this._navi.SetBusy("rank", "絞り込み中…")
+            }
+            SetTimer(() => this._FzfPoll(job), -15)
+            return
+        }
+        this._job := ""
+        try this._navi.ClearBusy("rank")
+        raw := ""
+        try raw := FileRead(job.out, "UTF-8")
+        try FileDelete(job.out)
+        StrReplace(raw, "`n", , , &count)  ; 一致した件数（1 行 1 件）
+        top := []
+        pos := 1
+        pre := StrLen(job.rootBase) + 2
+        while (top.Length < this.DISPLAY_CAP && (nl := InStr(raw, "`n", , pos))) {
+            ; フルパスをルートからの相対パスにする（フォルダは末尾の \ も外す）
+            rel := RTrim(SubStr(raw, pos + pre - 1, nl - pos - pre + 1), "`r\")
+            pos := nl + 1
+            if (rel != "")
+                top.Push(rel)
+        }
+        try this._ShowRanked(job, top, count)
+    }
+
+    /**
+     * 絞り込みが終わったら一覧に出す
+     * top を渡したとき（fzf）はそれを上から出す。渡さないとき（AutoHotkey）は job のバケツから上位を取り出す
+     */
+    static _ShowRanked(job, top := "", matchCount := 0) {
+        nv := this._navi
+        if !(this.Active && nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        query := job.query, rootBase := job.rootBase, terms := job.terms, isFiles := job.isFiles
+        if (top == "") {
+            top := this._TopRels(job.buckets)
+            matchCount := job.matched.Length
+            ; 途中の結果はこのあと増えるので、次の絞り込みに使い回さない
+            this._cacheIndex := job.partial ? "" : job.index
+            this._cacheRoot := rootBase
+            this._cacheQuery := query
+            this._cacheRels := job.matched
+        } else {
+            this._cacheIndex := ""  ; fzf の結果は上位しか持たないので、次の絞り込みに使い回さない
+        }
+        this._matchCount := matchCount
+        this._total := job.index.Length
+
+        if (matchCount == 0) {
+            this._ShowMessage(job.partial ? "(まだ一致なし。集めています…)" : "(一致なし)")
+            return
+        }
+        keepSelection := job.keepSelection
         lv := nv.GuiObj["DirList"]
         ; 打っていないのに作り直すとき（集めている途中・集め終わったとき）は、自分で選んだ行を保つ
         ; （先頭のままなら先頭のまま。行が入れ替わって、選んだつもりと別の行を開かないように）
@@ -619,28 +761,6 @@ class NaviDirList {
         lv.Modify(selRow, "Select Focus Vis")
         lv.Opt("+Redraw")
         nv._UpdateStatusBar()
-    }
-
-    /**
-     * rels を terms で絞り込み、表示する上位の相対パスを返す
-     * 一致したものはすべて matched に積む（次の絞り込みの候補に使う）
-     */
-    static _Rank(rels, terms, matched) {
-        ; スコア → パス長の 2 段のバケツに振り分ける
-        ; （数万件をまとめて Sort() にかけると並べ替え用の文字列作りだけで数百 ms かかるため、
-        ;   表示する上位の分だけを後で並べる）
-        buckets := Map()  ; score → Map(パス長 → [rel, ...])
-        for rel in rels {
-            SplitPath(rel, &name)
-            score := this._Score(rel, name, terms)
-            if (score < 0)
-                continue
-            matched.Push(rel)
-            byLen := buckets.Has(score) ? buckets[score] : (buckets[score] := Map())
-            len := StrLen(rel)
-            (byLen.Has(len) ? byLen[len] : (byLen[len] := [])).Push(rel)
-        }
-        return this._TopRels(buckets)
     }
 
     /**
@@ -737,6 +857,10 @@ class NaviDirList {
     static _ShowMessage(msg) {
         nv := this._navi
         lv := nv.GuiObj["DirList"]
+        if (this._job != "") {  ; 進めている絞り込みは捨てる（終わってもこのメッセージを上書きしないように）
+            this._job := ""
+            try nv.ClearBusy("rank")
+        }
         lv.Delete()
         lv.Add(, msg)
         this._partial := false
@@ -749,23 +873,16 @@ class NaviDirList {
     }
 
     /**
-     * 絞り込みの対象にするルートからの相対パス一覧
+     * 絞り込みの対象 { arr, prefix }。prefix > 0 なら arr はフルパスで、SubStr(パス, prefix) がルートからの相対パス
      * 前回と同じインデックス・ルートで、前回のクエリを後ろに伸ばしただけなら
-     * 一致は前回の一致の中にしかないので、そこから絞り込む
+     * 一致は前回の一致（相対パス）の中にしかないので、そこから絞り込む
      */
-    static _Candidates(rootBase, query, index) {
+    static _Source(rootBase, query, index) {
         if (this._cacheIndex != "" && this._cacheIndex == index
             && this._cacheRoot = rootBase && this._cacheQuery != ""
             && SubStr(query, 1, StrLen(this._cacheQuery)) = this._cacheQuery)
-            return this._cacheRels
-        rels := []
-        prefixLen := StrLen(rootBase) + 2
-        for fullPath in index {
-            rel := SubStr(fullPath, prefixLen)
-            if (rel != "")
-                rels.Push(rel)
-        }
-        return rels
+            return { arr: this._cacheRels, prefix: 0 }
+        return { arr: index, prefix: StrLen(rootBase) + 2 }
     }
 
     /**
@@ -961,7 +1078,7 @@ class NaviDirList {
         this._FilePartial := []
         this._FileReadPos := 0
         try this._navi.ClearBusy("files")
-        try FileDelete(this._FileTmp)
+        NaviFd.KeepIndexFile("files", this._FileTmp)  ; 件数が多い一覧の絞り込みで fzf に渡す
         this._FileTmp := ""
         if (index.Length >= this.FILE_INDEX_MAX)
             this._FileIndexTruncated := true
@@ -974,6 +1091,7 @@ class NaviDirList {
 
     ; フォールバック（fd がない・ネットワーク上）: 上限まで同期に集める。範囲は fd と同じ（NaviFilter.WalkTree）
     static _BuildFileIndex(rootPath) {
+        NaviFd.DropIndexFile("files")  ; fd の出力がないので、fzf には渡せない
         index := NaviFilter.WalkTree(rootPath, "F", this.FILE_INDEX_MAX)
         this._FileIndexTruncated := (index.Length >= this.FILE_INDEX_MAX)
         this._FileIndex := index
@@ -998,5 +1116,6 @@ class NaviDirList {
         this._FilePartial := []
         this._FileReadPos := 0
         try this._navi.ClearBusy("files")
+        NaviFd.DropIndexFile("files")
     }
 }
