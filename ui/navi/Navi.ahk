@@ -89,6 +89,14 @@ class Navi {
     ; --- Windows API メッセージ定数 ---
     static WM_SETCURSOR := 0x0020   ; カーソル形状変更通知
     static ACTION_MENU_KEYS := ["^Space", "AppsKey", "+F10"]  ; どこからでもアクションメニューを開くキー
+    static _busy := Map()      ; 動いている処理（キー → ステータスバーに出す文。SetBusy）
+    static BUSY_ITEMS := 20000  ; この件数以上を絞り込むときは、先に「絞り込み中…」を出す
+    static _busyFrame := 0
+    static _busyCb := ""
+    static SPINNER := ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    static SPIN_W := 22         ; 入力欄の左端の虫めがね・スピナーの幅（96 DPI 換算）
+    static SPIN_SIZE := 13      ; スピナーの文字の大きさ。本文より大きくして目に入るようにする
+    static _spinState := ""     ; 入力欄の左端に今出しているもの（"idle" = 虫めがね / "busy" = スピナー）
     static _menuKeyHook := 0  ; メニューの中で Ctrl+H/J/K/L を矢印にするフック（WH_MSGFILTER）
     static _shownMenu := ""   ; 最後に出したメニュー。選んだ項目の処理が呼ばれるまで捨てない（ShowMenu）
     static WM_ACTIVATE := 0x0006   ; ウィンドウアクティブ状態変更
@@ -209,7 +217,8 @@ class Navi {
         filterToggle := this.GuiObj.Add("Button", "xm y+" . sp . " w28 h22 -Tabstop vFilterToggle")
         filterToggle.OnEvent("Click", (*) => this._CycleFilterKind())
         this.GuiObj._filterToggleHwnd := filterToggle.Hwnd
-        treeFilter := this.GuiObj.Add("Edit", "x39 yp w424 vTreeFilter -Tabstop", "")  ; 位置と幅は _LayoutFilterRow で決める
+        ; 位置と幅は _LayoutFilterRow で決める。左端に重ねる虫めがね・スピナーを塗りつぶさないよう WS_CLIPSIBLINGS を付ける
+        treeFilter := this.GuiObj.Add("Edit", "x39 yp w424 vTreeFilter -Tabstop +0x4000000", "")
         treeFilter.OnEvent("Change", (*) => NaviFilter.OnTreeFilterChange())
         treeFilter.OnEvent("Focus", (*) => (Navi._TreeFilterFocused := true))
         treeFilter.OnEvent("LoseFocus", (*) => (Navi._TreeFilterFocused := false))
@@ -244,6 +253,12 @@ class Navi {
         sb := this.GuiObj.Add("StatusBar")
         sb.SetParts(this.STATUS_LEFT_W)
         this.GuiObj._sbRef := sb
+        ; 入力欄の左端の虫めがね。集めている・絞り込んでいる間（SetBusy）だけスピナーに変わる（検索欄でよくある形）
+        ; 打っている文字の頭のすぐ隣なので目に入り、どの表示（ツリー・一覧・3 列）でも同じ場所に出る
+        ; 位置は _PlaceFilterSpin で入力欄に合わせる。ほかの部品を作り終えてから作る
+        ; （途中で作ると、続けて y+ で並べる部品がこれを基準にしてずれる）
+        this.GuiObj.Add("Text", "x0 y0 w" . this.SPIN_W . " h16 Center +0x200 vFilterSpin Background" . NaviTheme.BG, "")
+        this._spinState := ""
         this._UpdateStatusBar()
 
         ; リサイズ計算用に TreeView・RootBtn の位置を記録
@@ -521,11 +536,14 @@ class Navi {
         NaviTab.SaveTabsToIni()
         ; パンくず監視タイマーを停止
         NaviBreadcrumb.StopWatcher()
-        ; フィルタータイマー・ディレクトリ監視・インデックスをリセット
-        ; _IndexedRoot を残すと次回起動時に _EnsureIndex が「有効」と誤判定し
-        ; _StartDirWatch が呼ばれないまま古いインデックスを使い続ける
+        ; フィルタータイマー・ディレクトリ監視を止める。集めたフォルダの一覧は残し、次に開いたときすぐ使う
+        ; （閉じている間の増減は監視していないので、次に開いたときに裏で集め直す: NaviFilter.KeepForReopen）
         NaviFilter.CancelDebounce()
-        NaviFilter.ResetForNewRoot()
+        NaviFilter.KeepForReopen()
+        if (this._busyCb != "")
+            SetTimer(this._busyCb, 0)
+        this._busyCb := ""
+        this._busy := Map()
         NaviDirList.CancelFileIndex()
         ; 集めた一覧は閉じると捨てるので、ネットワーク上のルートを読んでよいという答えも忘れる
         ; （次に開いて一覧を出すときは読み直しになるので、そのたびに確認する）
@@ -1194,10 +1212,45 @@ class Navi {
         if (!clientW)
             g.GetClientPos(, , &clientW)
         g["TreeFilter"].Move(x, , Max(40, clientW - g.MarginX - x))
+        this._PlaceFilterSpin()
         cue := tree ? info.cue
             : NaviBrowse.Active ? "名前でフィルター..."
             : (NaviDirList.Kind == "files") ? "ファイルをフィルター..." : "フォルダをフィルター..."
         try DllCall("user32\SendMessageW", "ptr", g["TreeFilter"].Hwnd, "uint", this.EM_SETCUEBANNER, "ptr", 1, "wstr", cue, "ptr")
+    }
+
+    /**
+     * 虫めがね・スピナーを入力欄の左端の内側に置き、入力欄の左に同じ幅の余白を空ける（打つ文字はその右から始まる）
+     * 動いていない間も余白は空けたままにする（出たり消えたりするたびに文字が左右にずれると打ちにくい）
+     * 入力欄より後に作ったので重なり順が下になる。一番上に上げておく
+     */
+    static _PlaceFilterSpin() {
+        g := this.GuiObj
+        ed := g["TreeFilter"], spin := g["FilterSpin"]
+        ed.GetPos(&ex, &ey, &ew, &eh)
+        inset := 2
+        spin.Move(ex + inset, ey + inset, this.SPIN_W, eh - inset * 2)
+        DllCall("user32\SetWindowPos", "ptr", spin.Hwnd, "ptr", 0, "int", 0, "int", 0, "int", 0, "int", 0
+            , "uint", 0x13)  ; HWND_TOP, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        margin := Round((this.SPIN_W + inset) * A_ScreenDPI / 96)
+        SendMessage(0xD3, 0x1, margin, ed)  ; EM_SETMARGINS, EC_LEFTMARGIN
+        this._UpdateFilterSpin()
+    }
+
+    ; 入力欄の左端を今の状態に合わせる（動いている処理があればスピナーを回し、なければ薄い虫めがね）
+    static _UpdateFilterSpin(paint := false) {
+        spin := this.GuiObj["FilterSpin"]
+        state := (this._busy.Count > 0) ? "busy" : "idle"
+        if (state != this._spinState) {  ; 字体の切り替えは状態が変わったときだけ（毎回やるとちらつく）
+            this._spinState := state
+            if (state == "busy")
+                spin.SetFont("s" . this.SPIN_SIZE . " norm c" . NaviTheme.ACCENT, NaviTheme.FONT)
+            else
+                spin.SetFont("s" . NaviTheme.ICON_SIZE . " norm c" . NaviTheme.TEXT_SUBTLE, NaviTheme.IconFont())
+        }
+        spin.Text := (state == "busy") ? this.SPINNER[Mod(this._busyFrame, this.SPINNER.Length) + 1] : Chr(0xE721)  ; 虫めがね
+        if paint
+            DllCall("user32\UpdateWindow", "ptr", spin.Hwnd)
     }
 
     ; 絞り込む対象ごとのボタンのアイコンと入力欄の案内文、次に切り替える対象
@@ -1247,20 +1300,72 @@ class Navi {
         try this._LayoutFilterRow()  ; 同じく、入力欄の左のボタン（ツリーのときだけ）と案内文を合わせる
         try {
             sb := this.GuiObj._sbRef
-            ; ピン留めのチェックボックスは表示しないので、状態はここに出す
-            pin := this.GuiObj["PinCheck"].Value ? "   📌 ピン留め中" : ""
-            if (NaviBrowse.Active) {
-                sb.SetText(NaviBrowse.StatusText() . pin, 1)
-                sb.SetText(NaviBrowse.StatusHints(), 2)
-                return
-            }
-            if (NaviDirList.Active) {
-                sb.SetText(NaviDirList.StatusText() . pin, 1)
-                sb.SetText(NaviDirList.StatusHints(), 2)
-                return
-            }
-            sb.SetText((NaviMark._MarkFilterActive ? " ツリー（マークのみ）" : " ツリー") . pin, 1)
-            sb.SetText(" Ctrl+; コマンド     Ctrl+Space メニュー     Enter 開く     F1 ヘルプ", 2)
+            sb.SetText(this._StatusLeft(), 1)
+            sb.SetText(NaviBrowse.Active ? NaviBrowse.StatusHints() : NaviDirList.Active ? NaviDirList.StatusHints()
+                : " Ctrl+; コマンド     Ctrl+Space メニュー     Enter 開く     F1 ヘルプ", 2)
+        }
+    }
+
+    /**
+     * ステータスバーの左: 今の表示と件数
+     * 集めている・絞り込んでいる間（SetBusy）は、何を待っているかを出す（回るスピナーは入力欄の左端）
+     * 一覧を集めている途中の結果から出しているときは、一覧の件数（「集めています… N 件」）のまま
+     */
+    static _StatusLeft() {
+        ; ピン留めのチェックボックスは表示しないので、状態はここに出す
+        pin := this.GuiObj["PinCheck"].Value ? "   📌 ピン留め中" : ""
+        text := NaviBrowse.Active ? NaviBrowse.StatusText() : NaviDirList.Active ? NaviDirList.StatusText()
+            : (NaviMark._MarkFilterActive ? " ツリー（マークのみ）" : " ツリー")
+        if (this._busy.Count == 0 || (NaviDirList.Active && NaviDirList._partial))
+            return text . pin
+        for key, busyText in this._busy
+            last := busyText  ; 後から始めた処理を出す
+        return " " . last . pin
+    }
+
+    /**
+     * 処理が動いていることを、入力欄の左端のスピナーとステータスバーの文で知らせる（key ごとに始めて、ClearBusy で終える）
+     * 裏で動く処理（fd で集めている間）はスピナーが回る。スクリプトを止める処理（並べ替え・ツリーの絞り込み）は、
+     * 止まっている間は描き直せないので、始める前に paint で 1 回描いておく（回らないが、動いていると分かる）
+     */
+    static SetBusy(key, text, paint := false) {
+        this._busy[key] := text
+        if (this._busyCb == "") {
+            this._busyCb := () => this._BusyTick()
+            SetTimer(this._busyCb, 100)
+        }
+        try {
+            sb := this.GuiObj._sbRef
+            sb.SetText(this._StatusLeft(), 1)
+            this._UpdateFilterSpin(paint)
+            if paint
+                DllCall("user32\UpdateWindow", "ptr", sb.Hwnd)
+        }
+    }
+
+    static ClearBusy(key) {
+        if !this._busy.Has(key)
+            return
+        this._busy.Delete(key)
+        if (this._busy.Count == 0 && this._busyCb != "") {
+            SetTimer(this._busyCb, 0)
+            this._busyCb := ""
+        }
+        try {
+            this.GuiObj._sbRef.SetText(this._StatusLeft(), 1)
+            this._UpdateFilterSpin()
+        }
+    }
+
+    static _BusyTick() {
+        this._busyFrame++
+        try {
+            this._UpdateFilterSpin()
+        } catch {
+            ; 画面を閉じた後: 止める
+            SetTimer(this._busyCb, 0)
+            this._busyCb := ""
+            this._busy := Map()
         }
     }
 

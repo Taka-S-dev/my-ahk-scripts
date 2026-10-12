@@ -127,4 +127,36 @@ class NaviFd {
         DllCall("CloseHandle", "ptr", NumGet(pi, A_PtrSize,   "ptr"))
         return NumGet(pi, A_PtrSize * 2, "uint")   ; dwProcessId
     }
+
+    /**
+     * fd が書き出している途中のファイルから、前回読んだ所（pos。バイト位置）より後の行を返し、pos を進める
+     * fd は見つけた順に書き出すので、終わるのを待たずに途中までの結果を使える
+     * 書きかけの最後の行は次に回す（UTF-8 の文字の途中で切らないよう、改行のバイトで区切る）。toEnd なら最後まで読む
+     */
+    static ReadNewLines(path, &pos, toEnd := false) {
+        lines := []
+        try f := FileOpen(path, "r")
+        catch
+            return lines
+        size := f.Length
+        if (size > pos) {
+            f.Pos := pos
+            buf := Buffer(size - pos)
+            got := f.RawRead(buf)
+            cut := got
+            if !toEnd {
+                while (cut > 0 && NumGet(buf, cut - 1, "uchar") != 10)
+                    cut--
+            }
+            if (cut > 0) {
+                pos += cut
+                for line in StrSplit(StrGet(buf, cut, "UTF-8"), "`n", "`r") {
+                    if (line != "")
+                        lines.Push(line)
+                }
+            }
+        }
+        f.Close()
+        return lines
+    }
 }

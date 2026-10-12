@@ -29,6 +29,12 @@ class NaviDirList {
     static _lvHwnd := 0
     static _drawHandler := ""       ; 選択行を塗る WM_NOTIFY ハンドラー
     static _listCond := ""          ; Shift+Tab ホットキーの HotIf 条件
+    static _partial := false        ; 今の一覧が、集めている途中の結果から作ったものか
+    static _collected := 0          ; 集めている途中なら、ここまでに見つかった件数
+    static _progressCount := 0      ; 途中の結果で一覧を出したときの件数（0 = まだ出していない）
+    static _lastInputMs := 0        ; 最後に打って一覧を作り直した時刻
+    static _idleApplyCb := ""       ; 打ち終わるのを待って作り直すタイマー
+    static IDLE_MS := 400           ; 打つのが止まってから、打っていない作り直しをするまでの時間
     static _netAllowed := Map()     ; 一覧を作ってよいと答えたネットワーク上のルート（Navi を閉じるまで覚える）
     static _asking := false         ; 確認ダイアログを出している間
 
@@ -41,6 +47,8 @@ class NaviDirList {
     static _FileRoot := ""
     static _FileStartMs := 0
     static _FilePollCb := ""
+    static _FilePartial := []       ; fd が集めている途中のファイル（_FileRoot の分。一覧はこれで先に出す）
+    static _FileReadPos := 0        ; fd の出力ファイルをどこまで読んだか（バイト）
     static FILE_INDEX_MAX := 200000        ; 集めるファイルの上限
     static FILE_INDEX_TIMEOUT_MS := 20000  ; fd を打ち切るまでの時間
 
@@ -437,7 +445,7 @@ class NaviDirList {
      * query で一覧を作り直す
      * 再入防止: 実行中に届いたクエリは保留し、終わってから最新のものだけ処理する
      */
-    static Apply(query) {
+    static Apply(query, keepSelection := false) {
         if (this._running) {
             this._pending := query
             this._pendingSet := true
@@ -445,8 +453,10 @@ class NaviDirList {
         }
         this._running := true
         this._pendingSet := false
+        if !keepSelection
+            this._lastInputMs := A_TickCount
         try {
-            this._ApplyCore(query)
+            this._ApplyCore(query, keepSelection)
         } catch Any {
             ; GUI 破棄など想定内の例外は無視する
         } finally {
@@ -460,14 +470,59 @@ class NaviDirList {
         }
     }
 
-    ; 現在のフィルター欄の内容で作り直す（インデックス完成時・ルート変更時のコールバック用）
-    static ApplyCurrent() {
+    /**
+     * 現在のフィルター欄の内容で作り直す（インデックス完成時・ルート変更時のコールバック用）
+     * 打っていないときに一覧が変わるので、選んでいた行は保つ
+     * whenIdle: 打っている最中なら、打つのが止まるまで待つ（集め終わったときなど。打つたびに並びが変わらないように）
+     */
+    static ApplyCurrent(whenIdle := false) {
         nv := this._navi
-        if (this.Active && nv.GuiObj && WinExist(nv.GuiObj))
-            this.Apply(nv.GuiObj["TreeFilter"].Value)
+        if !(this.Active && nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        if (this._idleApplyCb != "") {
+            SetTimer(this._idleApplyCb, 0)
+            this._idleApplyCb := ""
+        }
+        wait := this.IDLE_MS - (A_TickCount - this._lastInputMs)
+        if (whenIdle && wait > 0) {
+            this._idleApplyCb := () => (this._idleApplyCb := "", this.ApplyCurrent(true))
+            SetTimer(this._idleApplyCb, -wait)
+            return
+        }
+        this.Apply(nv.GuiObj["TreeFilter"].Value, true)
     }
 
-    static _ApplyCore(query) {
+    /**
+     * 集めている途中に、見つかった分が増えたら呼ばれる（kind: "dirs" / "files"）
+     * 最初に届いた分で 1 回だけ一覧を出し、あとは集め終わるまでステータスバーの件数だけ進める
+     * （増えるたびに全件を並べ直すと、そのたびに入力が止まり、行も入れ替わってガタつく）
+     * すでに集めた一覧があり、裏で集め直しているだけなら何もしない（古い一覧で絞り込める）
+     */
+    static OnIndexProgress(kind) {
+        nv := this._navi
+        if !(this.Active && this.Kind == kind && nv.GuiObj && WinExist(nv.GuiObj))
+            return
+        rootPath := nv._FolderMap.Has(nv.lastRoot) ? nv._FolderMap[nv.lastRoot] : ""
+        if (kind == "files") {
+            if (this._FileIndexedRoot == rootPath)
+                return
+            part := (this._FilePid != 0 && this._FileRoot == rootPath) ? this._FilePartial : ""
+        } else {
+            if (NaviFilter._IndexedRoot == rootPath)
+                return
+            part := NaviFilter.PartialIndex(rootPath)
+        }
+        if (part == "" || part.Length == 0)
+            return
+        if (this._progressCount == 0) {
+            this.Apply(nv.GuiObj["TreeFilter"].Value, true)
+            return
+        }
+        this._collected := part.Length
+        nv._UpdateStatusBar()
+    }
+
+    static _ApplyCore(query, keepSelection := false) {
         nv := this._navi
         if !(this.Active && nv.GuiObj && WinExist(nv.GuiObj))
             return
@@ -485,29 +540,42 @@ class NaviDirList {
         if (isFiles) {
             if (!built)
                 this._ShowSlowNotice(rootPath, "ファイル")
-            if !this._EnsureFileIndex(rootPath) {
-                this._ShowMessage("ファイルを集めています…")
-                return
-            }
-            index := this._FileIndex
+            if this._EnsureFileIndex(rootPath)
+                index := this._FileIndex
+            else
+                index := (this._FilePid != 0 && this._FileRoot == rootPath) ? this._FilePartial : ""
         } else {
+            ready := true
             if (NaviFilter._IndexedRoot != rootPath) {
                 this._ShowSlowNotice(rootPath, "フォルダ")
-                onReady := () => SetTimer(() => this.ApplyCurrent(), -1)
-                if !NaviFilter._EnsureIndex(rootPath, onReady) {
-                    this._ShowMessage("フォルダを集めています…")
-                    return
-                }
+                onReady := () => SetTimer(() => this.ApplyCurrent(true), -1)
+                ready := NaviFilter._EnsureIndex(rootPath, onReady)
             }
-            index := NaviFilter._FolderIndex
+            ; fd がなくその場で集めたときは _FolderIndex が作り直されているので、呼んだ後に取る
+            index := ready ? NaviFilter._FolderIndex : NaviFilter.PartialIndex(rootPath)
         }
+        ; 集めている途中なら、ここまでに見つかった分で先に出す（集め終わったら ApplyCurrent で作り直す）
+        partial := isFiles ? (this._FileIndexedRoot != rootPath) : (NaviFilter._IndexedRoot != rootPath)
+        if (partial && (index == "" || index.Length == 0)) {
+            this._partial := false
+            this._ShowMessage((isFiles ? "ファイル" : "フォルダ") . "を集めています…")
+            return
+        }
+        this._partial := partial
+        this._collected := index.Length
+        this._progressCount := partial ? index.Length : 0
         rootBase := RTrim(rootPath, "\")
         terms := this._ParseQuery(query)
         rels := this._Candidates(rootBase, query, index)
 
         matched := []
+        ; 件数が多いと並べ替えの間スクリプトが止まるので、先に「絞り込み中…」を描いておく
+        if (rels.Length >= nv.BUSY_ITEMS)
+            nv.SetBusy("rank", "絞り込み中…", true)
         top := this._Rank(rels, terms, matched)
-        this._cacheIndex := index
+        nv.ClearBusy("rank")
+        ; 途中の結果はこのあと増えるので、次の絞り込みに使い回さない
+        this._cacheIndex := partial ? "" : index
         this._cacheRoot := rootBase
         this._cacheQuery := query
         this._cacheRels := matched
@@ -515,10 +583,15 @@ class NaviDirList {
         this._total := index.Length
 
         if (matched.Length == 0) {
-            this._ShowMessage("(一致なし)")
+            this._ShowMessage(partial ? "(まだ一致なし。集めています…)" : "(一致なし)")
             return
         }
         lv := nv.GuiObj["DirList"]
+        ; 打っていないのに作り直すとき（集めている途中・集め終わったとき）は、自分で選んだ行を保つ
+        ; （先頭のままなら先頭のまま。行が入れ替わって、選んだつもりと別の行を開かないように）
+        keepPath := ""
+        if (keepSelection && (sel := lv.GetNext(0)) > 1 && sel <= this._rows.Length)
+            keepPath := this._rows[sel]
         lv.Opt("-Redraw")
         lv.Delete()
         this._rows := []
@@ -534,7 +607,16 @@ class NaviDirList {
             this._dirs.Push(dir)
             this._hl.Push(this._MatchSpans(rel, name, dir, terms))
         }
-        lv.Modify(1, "Select Focus Vis")
+        selRow := 1
+        if (keepPath != "") {
+            for i, path in this._rows {
+                if (path = keepPath) {
+                    selRow := i
+                    break
+                }
+            }
+        }
+        lv.Modify(selRow, "Select Focus Vis")
         lv.Opt("+Redraw")
         nv._UpdateStatusBar()
     }
@@ -657,6 +739,7 @@ class NaviDirList {
         lv := nv.GuiObj["DirList"]
         lv.Delete()
         lv.Add(, msg)
+        this._partial := false
         this._rows := []
         this._dirs := []
         this._names := []
@@ -782,6 +865,8 @@ class NaviDirList {
             count .= "（上位 " . this.DISPLAY_CAP . "）"  ; ステータスバーの左の欄に収まる長さにする
         if (this.Kind == "files" && this._FileIndexTruncated)
             count .= " ※打ち切り"
+        if this._partial  ; 集めている途中。一致はこの後も増える
+            count := this._Num(this._matchCount) . " 件一致（集めています… " . this._Num(this._collected) . " 件）"
         return kind . "   " . count
     }
 
@@ -836,6 +921,9 @@ class NaviDirList {
         this._FileTmp := tmpFile
         this._FileRoot := rootPath
         this._FileStartMs := A_TickCount
+        this._FilePartial := []
+        this._FileReadPos := 0
+        try nv.SetBusy("files", "ファイルを集めています…")
         cb := () => this._PollFileIndex()
         this._FilePollCb := cb
         SetTimer(cb, 200)
@@ -845,22 +933,29 @@ class NaviDirList {
     ; fd の終了（またはタイムアウト）を待って結果を読み込む
     static _PollFileIndex() {
         if (this._FilePid != 0 && ProcessExist(this._FilePid)) {
-            if ((A_TickCount - this._FileStartMs) <= this.FILE_INDEX_TIMEOUT_MS)
+            if ((A_TickCount - this._FileStartMs) <= this.FILE_INDEX_TIMEOUT_MS) {
+                ; 実行中: ここまでに見つかった分を読み足し、一覧を先に出す
+                pos := this._FileReadPos
+                for line in NaviFd.ReadNewLines(this._FileTmp, &pos)
+                    this._FilePartial.Push(line)
+                this._FileReadPos := pos
+                this.OnIndexProgress("files")
                 return
+            }
             try ProcessClose(this._FilePid)
             this._FileIndexTruncated := true
         }
         SetTimer(this._FilePollCb, 0)
         this._FilePollCb := ""
         this._FilePid := 0
-        index := []
-        try {
-            raw := FileRead(this._FileTmp, "UTF-8")
-            for line in StrSplit(raw, "`n", "`r") {
-                if (line != "")
-                    index.Push(line)
-            }
-        }
+        ; 残りを読み足して、集めた分をそのままインデックスにする
+        pos := this._FileReadPos
+        for line in NaviFd.ReadNewLines(this._FileTmp, &pos, true)
+            this._FilePartial.Push(line)
+        index := this._FilePartial
+        this._FilePartial := []
+        this._FileReadPos := 0
+        try this._navi.ClearBusy("files")
         try FileDelete(this._FileTmp)
         this._FileTmp := ""
         if (index.Length >= this.FILE_INDEX_MAX)
@@ -869,7 +964,7 @@ class NaviDirList {
         this._FileIndexedRoot := this._FileRoot
         this._FileRoot := ""
         ; 索引は一覧とツリーの絞り込み（ファイル）で共用。待っている方をやり直す
-        SetTimer(() => (this.ApplyCurrent(), NaviFilter.ReapplyTree()), -1)
+        SetTimer(() => (this.ApplyCurrent(true), NaviFilter.ReapplyTree()), -1)
     }
 
     ; フォールバック（fd がない・ネットワーク上）: 上限まで同期に集める。範囲は fd と同じ（NaviFilter.WalkTree）
@@ -895,5 +990,8 @@ class NaviDirList {
         }
         this._FileRoot := ""
         this._FileIndexTruncated := false
+        this._FilePartial := []
+        this._FileReadPos := 0
+        try this._navi.ClearBusy("files")
     }
 }

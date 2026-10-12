@@ -18,11 +18,14 @@ class NaviFilter {
     static _FdIndexStartMs := 0
     static _FdIndexTimedOut := false
     static _FdPollCb      := ""
+    static _FdPartial     := []   ; fd が集めている途中のフォルダ（_FdIndexRoot の分。一覧はこれで先に出す）
+    static _FdReadPos     := 0    ; fd の出力ファイルをどこまで読んだか（バイト）
     static FD_INDEX_TIMEOUT_MS := 10000  ; インデックス構築タイムアウト(ms)
 
     ; --- フォルダインデックス ---
     static _FolderIndex       := []
     static _IndexedRoot       := ""
+    static _IndexStale        := false  ; 集めた後にフォルダが増減したかもしれない（古いまま使い、裏で集め直す）
     static _OnIndexReadyCb    := ""
     static _indexBuildCallback := ""
 
@@ -76,6 +79,7 @@ class NaviFilter {
         this._IndexedRoot := ""
         this._FolderIndex := this.WalkTree(rootPath, "D")
         this._IndexedRoot := rootPath
+        this._IndexStale := false
     }
 
     /**
@@ -148,6 +152,11 @@ class NaviFilter {
         this._FdIndexFile   := tmpFile
         this._FdIndexRoot   := rootPath
         this._FdIndexStartMs := A_TickCount
+        this._FdPartial := []
+        this._FdReadPos := 0
+        ; 初めて集めるときだけ「動いている」表示を出す（古い一覧を使いながら裏で集め直すときは、待たせていないので出さない）
+        if (this._IndexedRoot != rootPath)
+            try nv.SetBusy("dirs", "フォルダを集めています…")
         cb := () => this._PollFdIndex()
         this._FdPollCb := cb
         SetTimer(cb, 200)  ; 200ms ごとに完了チェック
@@ -167,15 +176,12 @@ class NaviFilter {
                 this._FdIndexPid    := 0
                 this._FdIndexTimedOut := true
             } else {
-                ; 実行中: ステータスバーにアニメーションドットを表示
-                try {
-                    if (nv.GuiObj && WinExist(nv.GuiObj)) {
-                        static dots  := [" .", " ..", " ..."]
-                        static frame := 0
-                        frame := Mod(frame, 3) + 1
-                        nv.GuiObj._sbRef.SetText(" インデックス構築中" . dots[frame])
-                    }
-                }
+                ; 実行中: ここまでに見つかった分を読み足す。一覧はこれを使って先に出す（集め終わるのを待たない）
+                pos := this._FdReadPos
+                this._PushFdFolders(NaviFd.ReadNewLines(this._FdIndexFile, &pos))
+                this._FdReadPos := pos
+                if NaviDirList.Active
+                    NaviDirList.OnIndexProgress("dirs")
                 return
             }
         }
@@ -183,28 +189,21 @@ class NaviFilter {
         SetTimer(this._FdPollCb, 0)
         this._FdPollCb  := ""
         this._FdIndexPid := 0
-        ; 結果を読み込んでインデックスを構築（fd は UTF-8 出力のため明示指定）
-        this._FolderIndex := []
-        try {
-            raw := FileRead(this._FdIndexFile, "UTF-8")
-            for line in StrSplit(raw, "`n", "`r") {
-                p := Trim(line)
-                if (p = "")
-                    continue
-                if (SubStr(p, -1) = "\" && StrLen(p) > 3)
-                    p := SubStr(p, 1, -1)
-                SplitPath(p, &fname)
-                if (SubStr(fname, 1, 1) != ".")
-                    this._FolderIndex.Push(p)
-            }
-        }
+        ; 残りを読み足して、集めた分をそのままインデックスにする
+        pos := this._FdReadPos
+        this._PushFdFolders(NaviFd.ReadNewLines(this._FdIndexFile, &pos, true))
+        this._FolderIndex := this._FdPartial
+        this._FdPartial := []
+        this._FdReadPos := 0
         try FileDelete(this._FdIndexFile)
         this._FdIndexFile := ""
         timedOut := this._FdIndexTimedOut
         this._FdIndexTimedOut := false
+        refreshed := (this._IndexedRoot == this._FdIndexRoot)  ; 古い一覧を使いながら裏で集め直していた
         this._IndexedRoot  := this._FdIndexRoot
         this._FdIndexRoot  := ""
         this._StartDirWatch(this._IndexedRoot)
+        try nv.ClearBusy("dirs")
         ; ステータスバーを通常表示に戻す（タイムアウト時は警告表示）
         if (timedOut) {
             try {
@@ -220,6 +219,46 @@ class NaviFilter {
             this._OnIndexReadyCb := ""
             SetTimer(cb, -1)
         }
+        if refreshed
+            this._OnIndexRefreshed()
+        ; 集め直している間にまたフォルダが増減していたら、もう一度集め直す
+        if this._IndexStale
+            this._ScheduleRefresh()
+    }
+
+    ; 裏で集め直した一覧に入れ替わったら、見えている結果を作り直す（打っている最中は打ち終わるまで待つ）
+    static _OnIndexRefreshed() {
+        nv := this._navi
+        try {
+            if !(nv.GuiObj && WinExist(nv.GuiObj))
+                return
+            if NaviDirList.Active {
+                NaviDirList.ApplyCurrent(true)
+                return
+            }
+            query := nv.GuiObj["TreeFilter"].Value
+            if (Trim(query) != "")
+                SetTimer(() => this.ApplyTreeFilter(query), -1)
+        }
+    }
+
+    ; fd の出力の行（フォルダのフルパス）を _FdPartial に足す。. で始まる名前は除く
+    static _PushFdFolders(lines) {
+        for line in lines {
+            p := Trim(line)
+            if (p = "")
+                continue
+            if (SubStr(p, -1) = "\" && StrLen(p) > 3)
+                p := SubStr(p, 1, -1)
+            SplitPath(p, &fname)
+            if (SubStr(fname, 1, 1) != ".")
+                this._FdPartial.Push(p)
+        }
+    }
+
+    /** rootPath のフォルダを fd が集めている途中なら、ここまでに見つかった分（なければ ""） */
+    static PartialIndex(rootPath) {
+        return (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath) ? this._FdPartial : ""
     }
 
     /**
@@ -239,6 +278,9 @@ class NaviFilter {
         this._FdPollCb       := ""
         this._FdIndexTimedOut := false
         this._OnIndexReadyCb  := ""
+        this._FdPartial       := []
+        this._FdReadPos       := 0
+        try this._navi.ClearBusy("dirs")
     }
 
     /**
@@ -249,7 +291,7 @@ class NaviFilter {
      */
     static _EnsureIndex(rootPath, onReady) {
         if (this._IndexedRoot == rootPath)
-            return true
+            return true  ; 古いかもしれなくても、そのまま使う（裏で集め直して入れ替える: _RefreshStaleIndex）
         if (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath) {
             this._OnIndexReadyCb := onReady
             return false
@@ -275,9 +317,31 @@ class NaviFilter {
         ; ネットワークパスは自動インデックス構築をスキップ（サーバー負荷対策）
         if (this.IsOnNetwork(rootPath))
             return
-        if (this._IndexedRoot == rootPath || (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath))
+        if (this._FdIndexPid != 0 && this._FdIndexRoot == rootPath)
             return
+        if (this._IndexedRoot == rootPath) {
+            ; 前に開いたときの一覧を使い回している。閉じている間の増減を拾うため、裏で集め直す
+            if this._IndexStale
+                this._RefreshStaleIndex()
+            return
+        }
         this._EnsureIndex(rootPath, () => "")
+    }
+
+    /**
+     * Navi を閉じるとき: 集めた一覧は捨てずに残し、次に開いたときすぐ絞り込めるようにする
+     * 閉じている間は監視しないので古いものとして扱い、次に開いたときに裏で集め直す（PrefetchFolderIndex）
+     * ネットワーク上のルートは捨てる（次に開いたら、読んでよいかをまた確かめるため）
+     */
+    static KeepForReopen() {
+        root := this._IndexedRoot
+        index := this._FolderIndex
+        this.ResetForNewRoot()
+        if (root != "" && !this.IsOnNetwork(root)) {
+            this._IndexedRoot := root
+            this._FolderIndex := index
+            this._IndexStale := true
+        }
     }
 
     /**
@@ -292,6 +356,7 @@ class NaviFilter {
         this._FilterPending    := ""
         this._IndexedRoot      := ""
         this._FolderIndex      := []
+        this._IndexStale       := false
     }
 
     /**
@@ -384,20 +449,36 @@ class NaviFilter {
             , "UInt*", 0
             , "Ptr",  this._DirOvBuf
             , "Ptr",  0, "Int")
-        ; 変更検知と同時にインデックスを即時無効化（フィルター入力が古いインデックスを使わないよう）
-        this._IndexedRoot := ""
-        this._FolderIndex := []
-        ; デバウンス: フィルター自動再適用のタイミング制御のみ
+        ; フォルダが増減した: 一覧は捨てずに古いまま使い続け、増減が落ち着いたら裏で集め直す
+        ; （捨てると次の絞り込みが集め終わるまで待たされる。ルートの下ではアプリが頻繁にフォルダを作る）
+        this._IndexStale := true
+        this._ScheduleRefresh()
+    }
+
+    ; 増減が WATCH_DEBOUNCE_MS 止まったら集め直す（続けて増減している間は待つ）
+    static _ScheduleRefresh() {
         if (this._WatchInvCb != "")
             SetTimer(this._WatchInvCb, 0)
-        cb := () => this._InvalidateIndex()
+        cb := () => this._RefreshStaleIndex()
         this._WatchInvCb := cb
         SetTimer(cb, -this.WATCH_DEBOUNCE_MS)
     }
 
-    ; インデックスを無効化し、フィルタ入力中なら自動再適用する
-    static _InvalidateIndex() {
-        this._WatchInvCb  := ""
+    /**
+     * 古くなった一覧を裏で集め直す。集め終わるまでは古い一覧で絞り込める（_PollFdIndex が入れ替える）
+     * fd が使えないとき（その場でたどると止まる）は捨てて、次に絞り込むときにその場で集め直す
+     */
+    static _RefreshStaleIndex() {
+        this._WatchInvCb := ""
+        root := this._IndexedRoot
+        if (root == "" || this._FdIndexPid != 0)
+            return  ; 集め直している最中なら、終わったときにもう一度集め直す（_PollFdIndex）
+        useFd := !this.IsOnNetwork(root)
+            && (IniRead(NaviFd.IniPath, "Search", "UseFdForFilter", "1") != "0")
+        fdPath := useFd ? NaviFd._FindFd() : ""
+        this._IndexStale := false
+        if (fdPath != "" && this._StartFolderIndexFd(root, fdPath))
+            return
         this._IndexedRoot := ""
         this._FolderIndex := []
         nv := this._navi
@@ -523,8 +604,9 @@ class NaviFilter {
                 ; fd 完了後コールバック: フィルタを再スケジュール
                 onReady := () => SetTimer(() => this.ApplyTreeFilter(query), -1)
                 if !this._EnsureIndex(rootPath, onReady) {
-                    ; fd 非同期待ち: 完了後に _OnIndexReadyCb が再実行する
+                    ; fd 非同期待ち: 完了後に _OnIndexReadyCb が再実行する。待っていることをツリーにも出す
                     this._FilterPendingSet := false
+                    this._ShowTreeMessage(tv, "フォルダを集めています…")
                     return
                 }
             }
@@ -541,6 +623,8 @@ class NaviFilter {
             maxDepth := Integer(IniRead(nv.IniPath, "Search", "FilterMaxDepth", "8"))
             rootLen := StrLen(RTrim(rootPath, "\"))
             results := []  ; [{ path, isFile }]。フォルダを先に並べる（ツリーでもフォルダがファイルより上に来るように）
+            if ((wantDirs ? this._FolderIndex.Length : 0) + (wantFiles ? NaviDirList._FileIndex.Length : 0) >= nv.BUSY_ITEMS)
+                nv.SetBusy("filter", "絞り込み中…", true)
             for spec in [[wantDirs, this._FolderIndex, false], [wantFiles, NaviDirList._FileIndex, true]] {
                 if !spec[1]
                     continue
@@ -555,6 +639,7 @@ class NaviFilter {
                         results.Push({ path: fullPath, isFile: spec[3] })
                 }
             }
+            nv.ClearBusy("filter")
             ; ツリー再構築
             tv.Delete()
             nv.FilesShown          := Map()
