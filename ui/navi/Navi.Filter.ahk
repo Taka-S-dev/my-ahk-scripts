@@ -243,6 +243,17 @@ class NaviFilter {
         }
     }
 
+    ; 深さの制限（maxDepth）より深い所で terms に一致するフォルダの数（1,000 件で数えるのをやめる）
+    static _CountDeeperMatches(index, terms, rootLen, maxDepth) {
+        count := 0
+        for fullPath in index {
+            StrReplace(SubStr(fullPath, rootLen + 2), "\", , , &depth)
+            if (depth + 1 > maxDepth && this._TermsMatch(fullPath, terms) && ++count >= 1000)
+                break
+        }
+        return count
+    }
+
     ; fd の出力の行（フォルダのフルパス）を _FdPartial に足す。. で始まる名前は除く
     static _PushFdFolders(lines) {
         for line in lines {
@@ -653,7 +664,11 @@ class NaviFilter {
             this._FilterMatchIdSet := Map()
             NaviMark._MarkFilterActive := false
             if (results.Length == 0) {
-                this._ShowTreeMessage(tv, "(一致なし)")
+                ; 深さの制限で隠れただけなら、そう分かるように出す（何もないと思って探すのをやめないように）
+                deep := (wantDirs && maxDepth > 0) ? this._CountDeeperMatches(this._FolderIndex, terms, rootLen, maxDepth) : 0
+                this._ShowTreeMessage(tv, (deep == 0) ? "(一致なし)"
+                    : "(深さ " . maxDepth . " までに一致なし。もっと深い所に " . (deep >= 1000 ? "1,000 件以上" : deep . " 件")
+                    . "あります。一覧（Ctrl+E）で探すか、⚙ → 設定 で深さを変えてください)")
                 return
             }
             ; 結果件数が多すぎると tv.Add ループが GUI を長時間ブロックするためキャップする
