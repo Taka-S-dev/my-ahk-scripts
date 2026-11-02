@@ -62,15 +62,14 @@ class NaviActions {
             , items: this.MenuItems((k) => this.Execute(k)) })
     }
 
-    static Execute(key) {
+    ; key のアクションを実行する。fullPath を渡さなければ、選んでいるもの（なければ前面の窓のフォルダ）に対して
+    static Execute(key, fullPath := "") {
         nv := this._navi
-        fullPath := ""
-        if (nv.GuiObj && WinExist(nv.GuiObj)) {
+        if (fullPath == "" && nv.GuiObj && WinExist(nv.GuiObj))
             fullPath := nv._GetSelectedPath()
-            ; 操作したパスをメモリに保存
-            if (fullPath != "")
-                nv.lastPath := fullPath
-        }
+        ; 操作したパスをメモリに保存
+        if (fullPath != "")
+            nv.lastPath := fullPath
         if (fullPath == "") {
             fullPath := nv._GetActiveWindowPath()
         }
