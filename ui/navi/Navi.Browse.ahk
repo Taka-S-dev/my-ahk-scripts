@@ -40,6 +40,12 @@ class NaviBrowse {
     static _navEnabled := Map()     ; ボタン名 → 押せるか
     static _tipFor := 0             ; ツールチップを出しているボタンの hwnd
     static _tipTimer := ""
+    static _curHdr := 0             ; 中央の列の見出し（今いるフォルダ名。クリックでエクスプローラーで開く）
+    static _curHwnd := 0            ; 中央の列
+    static _hotRow := 0             ; 中央の列でマウスが乗っている行（その行の右端に「開く」ボタンを出す）
+    static _hotOnButton := false    ; マウスがそのボタンの上にあるか
+    static _hotTimer := ""
+    static _iconFont := 0           ; ボタンの絵柄用のフォント（Segoe Fluent Icons）
     static HIST_MAX  := 50          ; 戻る履歴の上限
     static NAV_BTN_W := 24          ; 戻る・進む・上へのボタンの幅
 
@@ -87,7 +93,7 @@ class NaviBrowse {
             bg := (role == "Cur") ? NaviTheme.BG : NaviTheme.SURFACE
             NaviTheme.SetFont(gui, (role == "Cur") ? "heading" : "body")  ; 今いるフォルダだけ太字
             this._hdrCtrls.Push(
-                gui.Add("Text", "x0 y0 w10 h10 +0x4280" . (role == "Parent" ? " +0x100" : "")  ; 0x100 = SS_NOTIFY
+                gui.Add("Text", "x0 y0 w10 h10 +0x4280" . (role != "Preview" ? " +0x100" : "")  ; 0x100 = SS_NOTIFY
                     . " Background" . bg . " vBrowse" . role . "Hdr"),
                 gui.Add("Text", "x0 y0 w10 h1 Background" . NaviTheme.DIVIDER . " vBrowse" . role . "Line"),
                 gui.Add("Text", "x0 y0 w10 h1 Background" . bg . " vBrowse" . role . "Gap"))
@@ -111,15 +117,24 @@ class NaviBrowse {
         text.Visible := false
 
         cur.OnEvent("ItemSelect", (*) => this._SchedulePreview())
-        cur.OnEvent("DoubleClick", (*) => this.Activate())
+        cur.OnEvent("Click", (ctrl, row) => this._ClickCur(row))
+        cur.OnEvent("DoubleClick", (*) => this._ClickedRowButton() ? 0 : this.Activate())  ; ボタンの上では入らない
+        this._curHwnd := cur.Hwnd
         parent.OnEvent("Click", (*) => this._ClickParent())
         ; 左の列の見出し（‹ 親フォルダ名）はクリックで 1 つ上へ（手の形のカーソルで押せると分かるようにする）
         hdrUp := (*) => (this.Active && this._cur != "") ? this.Up() : 0
         gui["BrowseParentHdr"].OnEvent("Click", hdrUp)
         gui["BrowseParentHdr"].OnEvent("DoubleClick", hdrUp)  ; 続けて押したときの 2 回目も 1 回として数える
         this._parentHdr := gui["BrowseParentHdr"].Hwnd
+        ; 中央の列の見出し（今いるフォルダ名）はクリックでそのフォルダをエクスプローラーで開く（Enter と同じ）
+        ; 列をたどって着いた先を開くのが 3 列で一番多い操作なので、名前を押す 1 動作で済むようにする
+        hdrOpen := (*) => this.OpenCurrent()
+        gui["BrowseCurHdr"].OnEvent("Click", hdrOpen)
+        gui["BrowseCurHdr"].OnEvent("DoubleClick", hdrOpen)
+        this._curHdr := gui["BrowseCurHdr"].Hwnd
         if (this._hdrHandlers == "") {
-            this._hdrHandlers := Map(0x0020, (w, l, m, hw) => this._OnHeaderCursor(w))  ; WM_SETCURSOR
+            this._hdrHandlers := Map(0x0020, (w, l, m, hw) => this._OnHeaderCursor(w)  ; WM_SETCURSOR
+                , 0x0200, (w, l, m, hw) => this._OnMouseMove(hw, l))  ; WM_MOUSEMOVE: 中央の列の行のボタン
             for msg, fn in this._hdrHandlers
                 OnMessage(msg, fn)
         }
@@ -222,21 +237,17 @@ class NaviBrowse {
             SendMessage(0x101E, 0, NumGet(rc, 8, "int"), lv)  ; LVM_SETCOLUMNWIDTH
     }
 
-    ; 押せるところ（左の列の見出し・戻る・進む・上へ）では手の形のカーソルにする。ボタンには名前とキーを出す
+    ; 押せるところ（左右の見出し・戻る・進む・上へ）では手の形のカーソルにする。ボタンには名前とキーを出す
     static _OnHeaderCursor(hwnd) {
         if (!this.Active)
             return
         if this._navBtns.Has(hwnd) {
             btn := this._navBtns[hwnd]
-            if (this._tipFor != hwnd) {
-                this._tipFor := hwnd
-                ToolTip(btn.tip, , , 3)
-                if (this._tipTimer == "")
-                    this._tipTimer := () => this._HideTipWhenLeft()
-                SetTimer(this._tipTimer, 200)
-            }
+            this._ShowTip(hwnd, btn.tip)
             if !(this._navEnabled.Has(btn.name) && this._navEnabled[btn.name])
                 return
+        } else if (hwnd == this._curHdr && this._cur != "") {
+            this._ShowTip(hwnd, "エクスプローラーで開く (Enter)")
         } else if (hwnd != this._parentHdr || this._cur == "") {
             return
         }
@@ -244,10 +255,25 @@ class NaviBrowse {
         return true
     }
 
+    ; 部品（hwnd）にマウスがある間だけ出すツールチップ。離れたらタイマーで消す
+    static _ShowTip(hwnd, text) {
+        if (this._tipFor == hwnd)
+            return
+        this._tipFor := hwnd
+        ToolTip(text, , , 3)
+        if (this._tipTimer == "")
+            this._tipTimer := () => this._HideTipWhenLeft()
+        SetTimer(this._tipTimer, 200)
+    }
+
     static _HideTipWhenLeft() {
         MouseGetPos(, , , &under, 2)
-        if (under == this._tipFor)
+        if (under == this._tipFor && !(under == this._curHwnd && !this._hotOnButton))
             return
+        this._HideTip()
+    }
+
+    static _HideTip() {
         ToolTip(, , , 3)
         this._tipFor := 0
         SetTimer(this._tipTimer, 0)
@@ -596,6 +622,23 @@ class NaviBrowse {
         this._SchedulePreview()
     }
 
+    /** 今いるフォルダをエクスプローラーで開く（中央の見出しのクリック。Enter と同じ流れで、ピン留めしていなければ閉じる） */
+    static OpenCurrent() {
+        if (!this.Active || this._cur == "")
+            return
+        NaviActions.Execute("e", this._cur)
+    }
+
+    ; 中央の列のクリック: 行の右端の「開く」ボタンの上なら、その行を選んでエクスプローラーで開く（Enter と同じ）
+    static _ClickCur(row) {
+        if (!row || !this._ClickedRowButton())
+            return
+        lv := this._navi.GuiObj["BrowseCur"]
+        lv.Modify(0, "-Select")
+        lv.Modify(row, "Select Focus")
+        this._navi._HandleActivate()
+    }
+
     ; 左の列のクリック: そのフォルダへ移る（ファイルなら親を開いてそれを選ぶ）
     static _ClickParent() {
         row := this._navi.GuiObj["BrowseParent"].GetNext(0)
@@ -733,6 +776,7 @@ class NaviBrowse {
     }
 
     static _FillCur(selectName := "", query := "") {
+        this._hotRow := 0, this._hotOnButton := false  ; 行が作り直されるので、次にマウスが動いたときに付け直す
         terms := NaviDirList._ParseQuery(query)
         if (terms.Length == 0) {
             shown := this._entries
@@ -966,6 +1010,7 @@ class NaviBrowse {
             NumPut("uint", NaviTheme.BGR(color), l, x64 ? 80 : 48)  ; clrText
             if (role = "cur") {
                 NaviTheme.PaintSoftSelection(l, hwnd)
+                return 0x12       ; CDRF_NOTIFYPOSTPAINT | CDRF_NEWFONT（行の後でボタンを描く）
             } else if (role = "parent") {
                 item := NumGet(l, x64 ? 56 : 36, "uptr")
                 if (SendMessage(0x102C, item, 0x2, hwnd) & 0x2) {  ; LVM_GETITEMSTATE: LVIS_SELECTED
@@ -977,6 +1022,128 @@ class NaviBrowse {
             }
             return 0x2            ; CDRF_NEWFONT
         }
+        if (stage = 0x10002 && hwnd == this._curHwnd) {  ; CDDS_ITEMPOSTPAINT（中央の列だけ頼んでいる）
+            row := NumGet(l, x64 ? 56 : 36, "uptr") + 1
+            if (row == this._hotRow)
+                this._DrawRowButton(NumGet(l, x64 ? 32 : 16, "ptr"), row)
+        }
         return 0
+    }
+
+    ; ==============================================================================
+    ; 中央の列の「開く」ボタン（マウスを乗せた行だけ右端に出す。Explorer Switcher の最小化ボタンと同じ作り）
+    ; ==============================================================================
+
+    ; WM_MOUSEMOVE: 中央の列の上ならマウスの行を覚え、ボタンの上ならツールチップを出す
+    static _OnMouseMove(hwnd, lParam) {
+        if (!this.Active || !this._curHwnd)
+            return
+        if (hwnd != this._curHwnd) {
+            if this._hotRow
+                this._SetHotRow(0, false)
+            return
+        }
+        x := lParam & 0xFFFF, y := (lParam >> 16) & 0xFFFF
+        row := this._RowAtPoint(x, y)
+        this._SetHotRow(row, row && this._PointInRowButton(row, x, y))
+    }
+
+    ; 中央の列の中の位置（物理ピクセル）にある行（1 始まり。なければ 0）
+    static _RowAtPoint(x, y) {
+        info := Buffer(24, 0)
+        NumPut("int", x, info, 0), NumPut("int", y, info, 4)
+        index := DllCall("user32\SendMessageW", "ptr", this._curHwnd, "uint", 0x1012, "ptr", 0, "ptr", info, "int")  ; LVM_HITTEST
+        return (index >= 0 && index < this._shown.Length) ? index + 1 : 0
+    }
+
+    ; 行のボタンの範囲（行の右端の正方形。行の内側に収め、選択行の枠からはみ出さないようにする）
+    static _RowButtonRect(row) {
+        rect := Buffer(16, 0)  ; LVIR_BOUNDS
+        if !DllCall("user32\SendMessageW", "ptr", this._curHwnd, "uint", 0x100E, "ptr", row - 1, "ptr", rect)  ; LVM_GETITEMRECT
+            return 0
+        inset := Round(3 * A_ScreenDPI / 96)
+        top := NumGet(rect, 4, "int") + inset, bottom := NumGet(rect, 12, "int") - inset
+        right := NumGet(rect, 8, "int") - inset * 2
+        size := bottom - top
+        return { left: right - size, top: top, right: right, bottom: bottom }
+    }
+
+    static _PointInRowButton(row, x, y) {
+        b := this._RowButtonRect(row)
+        return b && x >= b.left && x < b.right && y >= b.top && y < b.bottom
+    }
+
+    ; マウスの位置が、中央の列で選んでいる行のボタンの上か（クリックの判定用）
+    static _ClickedRowButton() {
+        if (!this._curHwnd)
+            return false
+        CoordMode("Mouse", "Screen")
+        MouseGetPos(&mx, &my)
+        pt := Buffer(8, 0)
+        NumPut("int", mx, pt, 0), NumPut("int", my, pt, 4)
+        DllCall("user32\ScreenToClient", "ptr", this._curHwnd, "ptr", pt)
+        x := NumGet(pt, 0, "int"), y := NumGet(pt, 4, "int")
+        row := this._RowAtPoint(x, y)
+        return row && this._PointInRowButton(row, x, y)
+    }
+
+    ; マウスが乗っている行と、ボタンの上かを覚え、変わった行だけ描き直す
+    static _SetHotRow(row, onButton) {
+        if (row == this._hotRow && onButton == this._hotOnButton)
+            return
+        old := this._hotRow
+        this._hotRow := row, this._hotOnButton := onButton
+        for r in [old, row]
+            if (r >= 1)
+                DllCall("user32\SendMessageW", "ptr", this._curHwnd, "uint", 0x1015, "ptr", r - 1, "ptr", r - 1)  ; LVM_REDRAWITEMS
+        if onButton {
+            item := this._shown[row]
+            this._ShowTip(this._curHwnd, item.isDir ? "エクスプローラーで開く (Enter)" : "開く (Enter)")
+        } else if (this._tipFor == this._curHwnd) {
+            this._HideTip()
+        }
+        ; 一覧の外へ出たときは WM_MOUSEMOVE が来ないので、タイマーで見て消す
+        if (this._hotTimer == "")
+            this._hotTimer := () => this._ClearHotRowWhenLeft()
+        SetTimer(this._hotTimer, row ? 100 : 0)
+    }
+
+    static _ClearHotRowWhenLeft() {
+        MouseGetPos(, , , &under, 2)
+        if (!this.Active || under != this._curHwnd)
+            this._SetHotRow(0, false)
+    }
+
+    /**
+     * 行のボタンを描く（絵柄は「別の窓で開く」）。下地は塗らず、乗せている間だけ丸い下地を付ける
+     * （行の背景はテーマの選択色・ホバー色で変わり、カスタムドローの DC からは正しく取れないので、塗ると色が浮く）
+     */
+    static _DrawRowButton(hdc, row) {
+        b := this._RowButtonRect(row)
+        if !b
+            return
+        rect := Buffer(16, 0)
+        NumPut("int", b.left, rect, 0), NumPut("int", b.top, rect, 4), NumPut("int", b.right, rect, 8), NumPut("int", b.bottom, rect, 12)
+        if this._hotOnButton {
+            ; 角を丸めた下地（Windows 11 のボタンと同じ）。枠線は引かない
+            brush := DllCall("gdi32\CreateSolidBrush", "uint", NaviTheme.BGR(NaviTheme.HOVER), "ptr")
+            oldBrush := DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", brush, "ptr")
+            oldPen := DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", DllCall("gdi32\GetStockObject", "int", 8, "ptr"), "ptr")  ; NULL_PEN
+            radius := Round(4 * A_ScreenDPI / 96)
+            DllCall("gdi32\RoundRect", "ptr", hdc, "int", b.left, "int", b.top, "int", b.right + 1, "int", b.bottom + 1
+                , "int", radius, "int", radius)
+            DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", oldPen)
+            DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", oldBrush)
+            DllCall("gdi32\DeleteObject", "ptr", brush)
+        }
+        if !this._iconFont
+            this._iconFont := DllCall("gdi32\CreateFontW", "int", -Round(10 * A_ScreenDPI / 72), "int", 0, "int", 0, "int", 0
+                , "int", 400, "uint", 0, "uint", 0, "uint", 0, "uint", 1, "uint", 0, "uint", 0, "uint", 5, "uint", 0
+                , "str", NaviTheme.IconFont(), "ptr")
+        old := DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", this._iconFont, "ptr")
+        DllCall("gdi32\SetBkMode", "ptr", hdc, "int", 1)  ; TRANSPARENT
+        DllCall("gdi32\SetTextColor", "ptr", hdc, "uint", NaviTheme.BGR(this._hotOnButton ? NaviTheme.TEXT : NaviTheme.TEXT_MUTED))
+        DllCall("user32\DrawTextW", "ptr", hdc, "wstr", Chr(0xE8A7), "int", -1, "ptr", rect, "uint", 0x1 | 0x4 | 0x20 | 0x800)  ; OpenInNewWindow / CENTER | VCENTER | SINGLELINE | NOPREFIX
+        DllCall("gdi32\SelectObject", "ptr", hdc, "ptr", old)
     }
 }
